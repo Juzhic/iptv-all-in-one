@@ -26,7 +26,7 @@ curl -X POST http://你的IP:5000/api/generate \
   "download_url": "/api/download?file=latest_list.m3u",
   "config": {
     "duration": 30,
-    "m3u_url": "http://120.26.145.99:50085/sub?wxfmk4X8=m3u",
+    "m3u_url": "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
     "workers": 5
   }
 }
@@ -85,7 +85,7 @@ curl -X POST http://你的IP:5000/api/generate
 curl -X POST http://你的IP:5000/api/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "m3u_url": "http://120.26.145.99:50085/sub?wxfmk4X8=m3u",
+    "m3u_url": "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
     "duration": 30,
     "workers": 5
   }'
@@ -193,7 +193,7 @@ curl http://你的IP:5000/api/config
 **响应：**
 ```json
 {
-  "m3u_url": "http://120.26.145.99:50085/sub?wxfmk4X8=m3u",
+  "m3u_url": "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
   "test_duration": 30,
   "max_workers": 5,
   "output_file": "latest_list.m3u"

@@ -16,19 +16,14 @@
 
 ## 🚀 快速开始
 
-### 本地测试（推荐新手）
+### 本地测试
 
 #### 1. 安装依赖
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 2. 快速测试（前 10 个频道）
-```bash
-python test.py
-```
-
-#### 3. 完整测试（所有频道）
+#### 2. 使用 app.py 本地快速测试
 ```bash
 python app.py
 ```
@@ -48,7 +43,7 @@ gunicorn -w 4 -b 0.0.0.0:5000 server:app
 ```bash
 curl -X POST http://localhost:5000/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"m3u_url":"http://120.26.145.99:50085/sub?wxfmk4X8=m3u","duration":30,"workers":5}'
+  -d '{"duration":30,"workers":5}'
 ```
 
 ---
@@ -56,9 +51,8 @@ curl -X POST http://localhost:5000/api/generate \
 ## 📁 文件说明
 
 ### 核心程序
-- **app.py** - 主程序，完整功能版本
-- **test.py** - 快速测试版本（仅测试前 10 个频道）
-- **server.py** - Flask API 服务器
+- **server.py** - Flask API 服务器（主入口）
+- **app.py** - 核心测试逻辑，也可直接运行做本地快速测试
 - **FFmpegTest.py** - FFmpeg 测试模块
 
 ### 配置文件
@@ -93,19 +87,16 @@ http://example.com/live/cctv2.m3u8
 
 ## 🔧 配置说明
 
-### app.py / test.py 配置
+### app.py 配置
 
 ```python
 # M3U 数据源 URL
-m3u_url = "http://120.26.145.99:50085/sub?wxfmk4X8=m3u"
+m3u_url = "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
 
 # 性能配置
 TEST_DURATION = 30      # 每个频道测试时长（秒）
 MAX_WORKERS = 5         # 最大并发线程数
 OUTPUT_FILE = 'list.m3u'  # 输出文件名
-
-# test.py 专属配置
-MAX_CHANNELS = 10       # 只测试前 10 个频道
 ```
 
 ### 性能参考
@@ -133,7 +124,7 @@ http://服务器IP:5000
 curl -X POST http://localhost:5000/api/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "m3u_url": "http://120.26.145.99:50085/sub?wxfmk4X8=m3u",
+    "m3u_url": "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
     "duration": 30,
     "workers": 5
   }'
@@ -178,7 +169,7 @@ cd /www/wwwroot/iptv-filter
 # 每天凌晨 2 点执行
 curl -X POST http://127.0.0.1:5000/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"m3u_url":"http://120.26.145.99:50085/sub?wxfmk4X8=m3u","duration":30,"workers":5}' \
+  -d '{"m3u_url":"https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u","duration":30,"workers":5}' \
   > /dev/null 2>&1
 
 # 等待完成
@@ -213,10 +204,10 @@ python app.py >> logs/cron.log 2>&1
 **解决**: 
 ```bash
 # 测试网络连接
-ping 120.26.145.99
+ping gh-proxy.com
 
 # 检查 URL 是否可访问
-curl -I http://120.26.145.99:50085/sub?wxfmk4X8=m3u
+curl -I https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u
 ```
 
 ### Q2: FFmpeg 未找到
@@ -351,8 +342,7 @@ find /www/wwwroot/iptv-filter -name "list_*.m3u" -mtime +7 -delete
 
 ### 本地测试
 1. 安装依赖：`pip install -r requirements.txt`
-2. 快速测试：`python test.py`
-3. 完整测试：`python app.py`
+2. 本地快速测试：`python app.py`
 
 ### 服务器部署
 1. 上传文件到服务器

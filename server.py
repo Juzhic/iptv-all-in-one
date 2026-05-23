@@ -19,9 +19,10 @@ app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 # 配置
 DEFAULT_CONFIG = {
-    'm3u_url': 'http://120.26.145.99:50085/sub?wxfmk4X8=m3u',
+    'm3u_url': 'https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u',
     'test_duration': 30,
-    'max_workers': 100,
+    'max_workers': 30,
+    'bandwidth_limit_mbps': 50,
     'output_file': 'list.m3u'
 }
 
@@ -34,6 +35,37 @@ task_status = {
     'success': 0,
     'message': '空闲'
 }
+task_lock = threading.Lock()
+
+
+def update_task_status(**kwargs):
+    """线程安全地更新任务状态。"""
+    with task_lock:
+        task_status.update(kwargs)
+
+
+def get_task_status_snapshot():
+    """线程安全地读取任务状态。"""
+    with task_lock:
+        return task_status.copy()
+
+
+def parse_positive_int(value, default, min_value=1, max_value=100):
+    """解析接口传入的正整数参数，并限制合理范围。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
+def parse_nonnegative_float(value, default, max_value=1000):
+    """解析接口传入的非负数字参数。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0, min(parsed, max_value))
 
 
 @app.route('/')
@@ -71,61 +103,99 @@ def generate_playlist():
     """
     global task_status
     
-    if task_status['running']:
-        return jsonify({
-            'error': '已有任务正在运行',
-            'status': task_status
-        }), 400
-    
     # 获取参数（支持 GET 和 POST）
     if request.method == 'POST':
         data = request.get_json() or {}
         m3u_url = data.get('m3u_url', DEFAULT_CONFIG['m3u_url'])
-        duration = data.get('duration', DEFAULT_CONFIG['test_duration'])
-        workers = data.get('workers', DEFAULT_CONFIG['max_workers'])
+        duration = parse_positive_int(data.get('duration'), DEFAULT_CONFIG['test_duration'], max_value=300)
+        workers = parse_positive_int(data.get('workers'), DEFAULT_CONFIG['max_workers'], max_value=100)
+        bandwidth_limit = parse_nonnegative_float(
+            data.get('bandwidth_limit_mbps', data.get('bandwidth_limit')),
+            DEFAULT_CONFIG['bandwidth_limit_mbps']
+        )
     else:
         m3u_url = request.args.get('m3u_url', DEFAULT_CONFIG['m3u_url'])
-        duration = int(request.args.get('duration', DEFAULT_CONFIG['test_duration']))
-        workers = int(request.args.get('workers', DEFAULT_CONFIG['max_workers']))
+        duration = parse_positive_int(request.args.get('duration'), DEFAULT_CONFIG['test_duration'], max_value=300)
+        workers = parse_positive_int(request.args.get('workers'), DEFAULT_CONFIG['max_workers'], max_value=100)
+        bandwidth_limit = parse_nonnegative_float(
+            request.args.get('bandwidth_limit_mbps', request.args.get('bandwidth_limit')),
+            DEFAULT_CONFIG['bandwidth_limit_mbps']
+        )
     
     output_file = 'latest_list.m3u'  # 使用固定的输出文件名
+
+    with task_lock:
+        if task_status['running']:
+            return jsonify({
+                'error': '已有任务正在运行',
+                'status': task_status.copy()
+            }), 400
+
+        task_status.update({
+            'running': True,
+            'progress': 0,
+            'total': 0,
+            'processed': 0,
+            'success': 0,
+            'message': '任务已启动'
+        })
     
     # 启动后台线程执行任务
     def run_task():
-        nonlocal m3u_url, duration, workers, output_file
+        nonlocal m3u_url, duration, workers, bandwidth_limit, output_file
         
         try:
-            task_status['running'] = True
-            task_status['message'] = '正在获取 M3U 数据...'
+            update_task_status(message='正在获取 M3U 数据...')
             
             # 获取数据
             m3u_content = fetch_m3u_playlist(m3u_url)
             if not m3u_content:
-                task_status['message'] = '获取 M3U 数据失败'
-                task_status['running'] = False
+                update_task_status(message='获取 M3U 数据失败', running=False)
                 return
             
             # 解析地址
             iptv_list = parse_iptv_addresses(m3u_content)
-            task_status['total'] = len(iptv_list)
-            task_status['message'] = f'解析到 {len(iptv_list)} 个频道，开始测试...'
+            update_task_status(
+                total=len(iptv_list),
+                message=f'解析到 {len(iptv_list)} 个频道，开始测试...'
+            )
             
             if len(iptv_list) == 0:
-                task_status['message'] = '未解析到任何 IPTV 地址'
-                task_status['running'] = False
+                update_task_status(message='未解析到任何 IPTV 地址', running=False)
                 return
+
+            def on_progress(progress):
+                total = progress['total']
+                processed = progress['processed']
+                percent = round((processed / total) * 100, 1) if total else 0
+                update_task_status(
+                    progress=percent,
+                    total=total,
+                    processed=processed,
+                    success=progress['success'],
+                    message=f"测试中 {processed}/{total}，符合条件 {progress['success']} 个"
+                )
             
-            # 执行测试（这里需要修改 filter_and_save_playlist 来更新进度）
-            # 简化版本：直接调用原函数
-            filter_and_save_playlist(iptv_list, output_file, duration, workers)
+            filtered_list = filter_and_save_playlist(
+                iptv_list,
+                output_file,
+                duration,
+                workers,
+                progress_callback=on_progress,
+                bandwidth_limit_mbps=bandwidth_limit
+            )
             
-            task_status['success'] = len(iptv_list)
-            task_status['message'] = f'完成！结果已保存到 {output_file}'
-            task_status['running'] = False
+            update_task_status(
+                running=False,
+                progress=100,
+                processed=len(iptv_list),
+                total=len(iptv_list),
+                success=len(filtered_list),
+                message=f'完成！结果已保存到 {output_file}'
+            )
             
         except Exception as e:
-            task_status['message'] = f'错误：{str(e)}'
-            task_status['running'] = False
+            update_task_status(message=f'错误：{str(e)}', running=False)
     
     # 启动线程
     thread = threading.Thread(target=run_task)
@@ -139,7 +209,8 @@ def generate_playlist():
         'config': {
             'm3u_url': m3u_url,
             'duration': duration,
-            'workers': workers
+            'workers': workers,
+            'bandwidth_limit_mbps': bandwidth_limit
         }
     })
 
@@ -147,13 +218,13 @@ def generate_playlist():
 @app.route('/api/status')
 def get_status():
     """获取任务状态"""
-    return jsonify(task_status)
+    return jsonify(get_task_status_snapshot())
 
 
 @app.route('/api/download')
 def download_file():
     """下载最新的播放列表文件"""
-    filename = request.args.get('file', 'latest_list.m3u')
+    filename = os.path.basename(request.args.get('file', 'latest_list.m3u'))
     
     if not os.path.exists(filename):
         return jsonify({
