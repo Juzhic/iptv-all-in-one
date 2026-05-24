@@ -8,6 +8,275 @@ from datetime import datetime
 DB_PATH = 'iptv.db'
 MAX_RUNS = 50
 
+# ─── 内置默认 demo 模板 ───
+DEFAULT_DEMO = """📢公告,#genre#
+添加频道联系1261334596@qq.com
+
+📺央视频道,#genre#
+CCTV-1
+CCTV-2
+CCTV-3
+CCTV-4
+CCTV-5
+CCTV-5+
+CCTV-6
+CCTV-7
+CCTV-8
+CCTV-9
+CCTV-10
+CCTV-11
+CCTV-12
+CCTV-13
+CCTV-14
+CCTV-15
+CCTV-16
+CCTV-17
+CETV-1
+CETV-2
+CETV-3
+CETV-4
+
+💰央视付费频道,#genre#
+文化精品
+央视台球
+风云音乐
+第一剧场
+风云剧场
+怀旧剧场
+女性时尚
+高尔夫网球
+风云足球
+电视指南
+世界地理
+兵器科技
+
+📡卫视频道,#genre#
+广东卫视
+香港卫视
+浙江卫视
+湖南卫视
+北京卫视
+湖北卫视
+黑龙江卫视
+安徽卫视
+重庆卫视
+东方卫视
+东南卫视
+甘肃卫视
+广西卫视
+贵州卫视
+海南卫视
+河北卫视
+河南卫视
+吉林卫视
+江苏卫视
+江西卫视
+辽宁卫视
+内蒙古卫视
+宁夏卫视
+青海卫视
+山东卫视
+山西卫视
+陕西卫视
+四川卫视
+深圳卫视
+三沙卫视
+天津卫视
+西藏卫视
+新疆卫视
+云南卫视
+
+☘️广东频道,#genre#
+广东珠江
+广东体育
+广东新闻
+广东卫视
+广东民生
+
+🌊港·澳·台,#genre#
+翡翠台
+明珠台
+凤凰中文
+凤凰资讯
+凤凰香港
+凤凰卫视
+TVBS亚洲
+香港卫视
+纬来体育
+纬来育乐
+J2
+Viutv
+三立台湾
+无线新闻
+三立新闻
+东森综合
+东森超视
+东森电影
+Now剧集
+Now华剧
+靖天资讯
+星卫娱乐
+卫视卡式
+
+🎮游戏频道,#genre#
+游戏风云
+游戏竞技
+电竞游戏
+海看电竞
+电竞天堂
+爱电竞
+
+🎵音乐频道,#genre#
+CCTV-15
+风云音乐
+音乐现场
+音乐之声
+潮流音乐
+天津音乐
+音乐广播
+音乐调频广播
+
+🎬电影频道,#genre#
+CHC家庭影院
+CHC动作电影
+CHC高清电影
+淘剧场
+淘娱乐
+淘电影
+NewTV惊悚悬疑
+NewTV动作电影
+黑莓电影
+纬来电影
+靖天映画
+靖天戏剧
+星卫娱乐
+艾尔达娱乐
+经典电影
+IPTV经典电影
+天映经典
+无线星河
+星空卫视
+私人影院
+东森电影
+龙祥电影
+东森洋片
+东森超视
+
+🏀体育频道,#genre#
+CCTV-5
+CCTV-5+
+广东体育
+纬来体育
+五星体育
+体育赛事
+劲爆体育
+爱体育
+超级体育
+精品体育
+广州竞赛
+深圳体育
+福建体育
+辽宁体育
+山东体育
+成都体育
+天津体育
+江苏体育
+安徽综艺体育
+吉林篮球
+睛彩篮球
+睛彩羽毛球
+睛彩广场舞
+风云足球
+足球频道
+魅力足球
+天元围棋
+快乐垂钓
+JJ斗地主""".lstrip()
+
+# ─── 内置默认 alias 别名 ───
+DEFAULT_ALIAS = r"""# 这是频道名称的别名名单，用于获取接口时将多种名称映射为一个名称的结果，可以提升获取量与准确率
+# 格式：主名（对应demo.txt模板中的频道名称）,别名1,别名2,别名3
+# 支持使用正则表达式匹配别名，以re:开头的别名将被识别为正则表达式
+
+CCTV-1,re:(?i)^\s*CCTV[-\s_]*0?1(?![0-9Kk+])[\s\S]*$,CCTV1,CCTV-01,CCTV-01_ITV,CCTV-01高清,CCTV1综合,CCTV-1综合,CCTV1HD,CCTV-1HD,CCTV1-标清,CCTV-1高清
+CCTV-2,re:(?i)^\s*CCTV[-\s_]*0?2(?![0-9Kk+])[\s\S]*$,CCTV2,CCTV-02高清,CCTV2财经,CCTV-2财经,CCTV2HD,CCTV-2HD,CCTV2-标清,CCTV2-财经
+CCTV-3,re:(?i)^\s*CCTV[-\s_]*0?3(?![0-9Kk+])[\s\S]*$,CCTV3,CCTV-03,CCTV3综艺,CCTV-3综艺,CCTV3HD,CCTV-3HD,CCTV3-标清
+CCTV-4,re:(?i)^\s*CCTV[-\s_]*0?4(?![0-9Kk+])(?!.*(?:欧洲|美洲|Europe|America|Americas))[\s\S]*$,CCTV4,CCTV-04,CCTV4HD,CCTV-4HD,CCTV-4标清
+CCTV-5,re:(?i)^\s*CCTV[-\s_]*0?5(?![0-9Kk+])[\s\S]*$,CCTV5,CCTV-05,CCTV5体育,CCTV-5体育,CCTV5HD,CCTV-5HD
+CCTV-5+,re:(?i)^\s*CCTV[-\s_]*0?5\s*(?:\+|＋)[\s\S]*$,CCTV5+,CCTV5＋,CCTV5+体育赛事,CCTV-5+体育赛事,CCTV5+HD,CCTV-5+HD
+CCTV-6,re:(?i)^\s*CCTV[-\s_]*0?6(?![0-9Kk+])[\s\S]*$,CCTV6,CCTV-06,CCTV6电影,CCTV-6电影,CCTV6HD,CCTV-6HD
+CCTV-7,re:(?i)^\s*CCTV[-\s_]*0?7(?![0-9Kk+])[\s\S]*$,CCTV7,CCTV-07,CCTV7 国防军事,CCTV-7国防军事,CCTV7HD,CCTV-7HD
+CCTV-8,re:(?i)^\s*CCTV[-\s_]*0?8(?![0-9Kk+])[\s\S]*$,CCTV8,CCTV-08,CCTV8 电视剧,CCTV-8电视剧,CCTV8HD,CCTV-8HD
+CCTV-9,re:(?i)^\s*CCTV[-\s_]*0?9(?![0-9Kk+])[\s\S]*$,CCTV9,CCTV-09,CCTV9 纪录,CCTV-9纪录,CCTV9HD,CCTV-9HD
+CCTV-10,re:(?i)^\s*CCTV[-\s_]*0?10(?![0-9Kk+])[\s\S]*$,CCTV10,CCTV10 科教,CCTV-10科教,CCTV10HD,CCTV-10HD
+CCTV-11,re:(?i)^\s*CCTV[-\s_]*0?11(?![0-9Kk+])[\s\S]*$,CCTV11,CCTV11 戏曲,CCTV-11戏曲,CCTV11HD,CCTV-11HD
+CCTV-12,re:(?i)^\s*CCTV[-\s_]*0?12(?![0-9Kk+])[\s\S]*$,CCTV12,CCTV12 社会与法,CCTV-12社会与法,CCTV12HD,CCTV-12HD
+CCTV-13,re:(?i)^\s*CCTV[-\s_]*0?13(?![0-9Kk+])[\s\S]*$,CCTV13,CCTV13 新闻,CCTV-13新闻,CCTV13HD,CCTV-13HD
+CCTV-14,re:(?i)^\s*CCTV[-\s_]*0?14(?![0-9Kk+])[\s\S]*$,CCTV14,CCTV14 少儿,CCTV-14少儿,CCTV14HD,CCTV-14HD
+CCTV-15,re:(?i)^\s*CCTV[-\s_]*0?15(?![0-9Kk+])[\s\S]*$,CCTV15,CCTV15 音乐,CCTV-15音乐,CCTV15HD,CCTV-15HD
+CCTV-16,re:(?i)^\s*CCTV[-\s_]*0?16(?![0-9Kk+])[\s\S]*$,CCTV16,CCTV16 4K,CCTV-16 4K,CCTV16HD,CCTV-16HD
+CCTV-17,re:(?i)^\s*CCTV[-\s_]*0?17(?![0-9Kk+])[\s\S]*$,CCTV17,CCTV17 农业农村,CCTV-17农业农村,CCTV17HD,CCTV-17HD
+CCTV-4美洲,re:(?i)^\s*CCTV[-\s_]*0?4(?![0-9Kk+])[\s\S]*\b(?:美洲|America|Americas)\b[\s\S]*$
+CCTV-4欧洲,re:(?i)^\s*CCTV[-\s_]*0?4(?![0-9Kk+])[\s\S]*\b(?:欧洲|Europe)\b[\s\S]*$
+CCTV-4K,re:(?i)^\s*CCTV[-\s_]*0?4(?![0-9])\s*(?:[Kk]|Ｋ)\b[\s\S]*$,CCTV4K,CCTV4K超高清,CCTV-4K超高清
+CCTV-8K,re:(?i)^\s*CCTV[-\s_]*0?8(?![0-9])\s*(?:[Kk]|Ｋ)\b[\s\S]*$,CCTV8K,CCTV8K超高清,CCTV-8K超高清
+
+兵器科技,CCTV兵器,CCTV兵器科技,CCTV-兵器科技
+第一剧场,CCTV第一剧场,CCTV-第一剧场
+发现之旅,CCTV发现之旅,CCTV-发现之旅
+风云剧场,CCTV风云剧场,CCTV-风云剧场
+风云音乐,CCTV风云音乐,CCTV-风云音乐
+风云足球,CCTV风云足球,CCTV-风云足球
+央视台球,CCTV央视台球,CCTV-央视台球
+高尔夫网球,CCTV高尔夫球,CCTV高尔夫·网球,CCTV-高尔夫网球
+怀旧剧场,CCTV怀旧剧场,CCTV-怀旧剧场
+老故事,CCTV老故事,CCTV-老故事
+女性时尚,CCTV女性时尚,CCTV-女性时尚
+世界地理,CCTV世界地理,CCTV-世界地理
+文化精品,CCTV文化精品,CCTV-文化精品
+百姓健康,CCTV卫生健康,CCTV-卫生健康
+中学生,CCTV中学生,CCTV-中学生
+
+CETV-1,CETV1,CETV1中国教育,中国教育1
+CETV-2,CETV2,CETV2中国教育,中国教育2
+CETV-3,CETV3,CETV3中国教育,中国教育3
+CETV-4,CETV4,CETV4中国教育,中国教育4
+
+广东珠江,GDTV-2,珠江,珠江频道,珠江台
+广东卫视,广东卫视高清,广东卫视HD
+翡翠台,TVb翡翠台,tvb翡翠台,TVB翡翠台
+明珠台,TVb明珠台,tvb明珠台,TVB明珠台
+凤凰中文,凤凰卫视中文台
+凤凰香港,凤凰卫视香港台
+凤凰资讯,凤凰资讯台HD
+
+无线新闻台,無綫新聞台,無線新聞台,无线新闻,TVB无线新闻
+港台电视 31,港台電視 31,RTHK31
+港台电视 32,港台電視 32,RTHK32
+
+北京卡酷少儿,卡酷少儿,卡酷少儿高清,卡酷少儿HD
+
+黑莓电影,NewTV黑莓电影
+黑莓动画,NewTV黑莓动画
+家庭剧场,NewTV家庭剧场
+惊悚悬疑,NewTV惊悚悬疑
+超级电影,NewTV超级电影
+动作电影,NewTV动作电影
+游戏风云,SiTV游戏风云
+动漫秀场,SiTV动漫秀场
+爱动漫,iHOT爱动漫
+新动漫,iHOT新动漫
+电竞天堂,BesTV电竞天堂
+宝宝动画,BesTV宝宝动画
+嘉佳卡通,广东嘉佳卡通
+金鹰卡通,湖南金鹰卡通
+哈哈炫动,炫动卡通,上海哈哈炫动
+优漫卡通,江苏优漫卡通
+
+四川卫视,四川卫视4K
+湖南卫视,湖南卫视4K
+北京卫视,北京卫视4K""".lstrip()
+
 _local = threading.local()
 
 
@@ -57,8 +326,15 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_results_run_id ON run_results(run_id);
         CREATE INDEX IF NOT EXISTS idx_results_channel ON run_results(channel);
+
+        CREATE TABLE IF NOT EXISTS config_data (
+            key TEXT PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
     """)
     conn.commit()
+    _init_default_data()
 
 
 def insert_run(run_data):
@@ -284,6 +560,43 @@ def delete_run(run_id):
     conn = _get_conn()
     conn.execute("DELETE FROM run_results WHERE run_id = ?", (run_id,))
     conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+    conn.commit()
+
+
+def get_config_data(key):
+    """获取配置数据内容（alias / demo / subscribe）。"""
+    conn = _get_conn()
+    row = conn.execute("SELECT content FROM config_data WHERE key = ?", (key,)).fetchone()
+    return row['content'] if row else ''
+
+
+def set_config_data(key, content):
+    """保存配置数据内容。"""
+    conn = _get_conn()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute(
+        "INSERT OR REPLACE INTO config_data (key, content, updated_at) VALUES (?, ?, ?)",
+        (key, content, now)
+    )
+    conn.commit()
+
+
+def _init_default_data():
+    """首次启动时写入默认配置数据（已存在则跳过）。"""
+    conn = _get_conn()
+    defaults = {
+        'demo': DEFAULT_DEMO,
+        'alias': DEFAULT_ALIAS,
+        'subscribe': '',
+    }
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    for key, content in defaults.items():
+        existing = conn.execute("SELECT 1 FROM config_data WHERE key = ?", (key,)).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO config_data (key, content, updated_at) VALUES (?, ?, ?)",
+                (key, content, now)
+            )
     conn.commit()
 
 

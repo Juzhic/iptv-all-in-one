@@ -27,9 +27,6 @@ DEFAULT_CONFIG = {
     'update_time_position': 'top',
     'min_width': 1920,
     'min_height': 1080,
-    'alias_file': 'alias.txt',
-    'demo_file': 'demo.txt',
-    'subscribe_file': 'subscribe.txt',
     'output_txt': 'output/result.txt',
     'output_m3u': 'output/result.m3u',
 }
@@ -305,15 +302,14 @@ def filter_and_save_playlist(
             ffmpeg_resolution_found = result.get('ffmpeg_resolution_found', width > 0 and height > 0)
             sample_seconds, min_sample_seconds, sample_seconds_pass = get_bandwidth_sample_info(result, duration)
 
-            # H.265/HEVC 编码检测，带宽阈值按比例降低
+            # H.265/HEVC 编码检测，压缩率更高，相同画质所需带宽更低
             codec = result.get('codec', '')
             is_h265 = codec in ('hevc', 'h265')
             if is_h265:
                 effective_min_bw = min_bw * h265_ratio
-                effective_bw_comp = bw_comp * h265_ratio
             else:
                 effective_min_bw = min_bw
-                effective_bw_comp = bw_comp
+            effective_bw_comp = bw_comp
 
             resolution_pass = (width >= min_width and height >= min_height)
             bandwidth_pass = bandwidth_MBps > effective_min_bw
@@ -587,7 +583,9 @@ def filter_and_save_playlist(
 
             pending = fill_pending_slots(pending)
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        # 不等待残留线程：主循环已通过 channel_timeout 标记并收集了所有结果，
+        # 残留线程仅剩网络/FFmpeg 清理，无需阻塞主线程。
+        executor.shutdown(wait=False, cancel_futures=True)
 
     # 任务结束日志
     total_elapsed = time.time() - start_time
@@ -595,47 +593,49 @@ def filter_and_save_playlist(
 
     return filtered_list, test_results
 
-def load_urls_from_file(filepath='subscribe.txt'):
-    """从配置文件读取 M3U 地址，每行一个，忽略空行和 # 注释行。"""
+def load_subscribe_urls():
+    """从数据库读取订阅源地址，每行一个，忽略空行和 # 注释行。"""
+    from db import get_config_data
+    content = get_config_data('subscribe')
     urls = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                urls.append(line)
+    for line in content.split('\n'):
+        line = line.strip()
+        if line and not line.startswith('#'):
+            urls.append(line)
     return urls
 
 
-def load_aliases(filepath='alias.txt'):
+def load_aliases():
     """
-    从 alias.txt 读取频道别名，返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
+    从数据库读取频道别名，返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
     canonical_to_aliases: {主名: [别名列表]}
     name_to_canonical:    {频道名(精确): 主名}
     regex_aliases:        [(compiled_regex, 主名), ...]
     """
+    from db import get_config_data
+    content = get_config_data('alias')
     canonical_to_aliases = {}
     name_to_canonical = {}
     regex_aliases = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = [p.strip() for p in line.split(',') if p.strip()]
-            if not parts:
-                continue
-            canonical = parts[0]
-            aliases = parts[1:]
-            canonical_to_aliases[canonical] = aliases
-            name_to_canonical[canonical] = canonical
-            for alias in aliases:
-                if alias.startswith('re:'):
-                    try:
-                        regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
-                    except re.error:
-                        continue
-                else:
-                    name_to_canonical[alias] = canonical
+    for line in content.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split(',') if p.strip()]
+        if not parts:
+            continue
+        canonical = parts[0]
+        aliases = parts[1:]
+        canonical_to_aliases[canonical] = aliases
+        name_to_canonical[canonical] = canonical
+        for alias in aliases:
+            if alias.startswith('re:'):
+                try:
+                    regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
+                except re.error:
+                    continue
+            else:
+                name_to_canonical[alias] = canonical
     return canonical_to_aliases, name_to_canonical, regex_aliases
 
 
@@ -654,23 +654,24 @@ def match_channel_name(name, name_to_canonical, regex_aliases=None):
     return None
 
 
-def parse_demo_file(filepath='demo.txt'):
-    """解析 demo.txt，返回 [(genre, [channel_name, ...]), ...]。"""
+def parse_demo_file():
+    """从数据库读取 demo 模板，返回 [(genre, [channel_name, ...]), ...]。"""
+    from db import get_config_data
+    content = get_config_data('demo')
     structure = []
     current_genre = None
     current_channels = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if ',#genre#' in line:
-                if current_genre is not None:
-                    structure.append((current_genre, current_channels))
-                current_genre = line.split(',')[0]
-                current_channels = []
-            else:
-                current_channels.append(line)
+    for line in content.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        if ',#genre#' in line:
+            if current_genre is not None:
+                structure.append((current_genre, current_channels))
+            current_genre = line.split(',')[0]
+            current_channels = []
+        else:
+            current_channels.append(line)
     if current_genre is not None:
         structure.append((current_genre, current_channels))
     return structure
@@ -775,22 +776,27 @@ def save_run_result(run_data, filepath='output/history.json'):
     insert_run(run_data)
 
 
-def run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases):
-    """执行一轮完整的测速筛选流程。"""
+def run_test_cycle():
+    """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     _clear_timeouts()
     run_start_time = time.time()
+
+    cfg = load_config()
+    _, name_to_canonical, regex_aliases = load_aliases()
+    demo_structure = parse_demo_file()
+
+    if not demo_structure:
+        print("demo 模板为空，跳过")
+        return
+
     TEST_DURATION = cfg['test_duration']
     MAX_WORKERS = cfg['max_workers']
 
     # 获取订阅源
-    try:
-        m3u_urls = load_urls_from_file(cfg['subscribe_file'])
-    except FileNotFoundError:
-        print(f"未找到 {cfg['subscribe_file']}，请在其中每行填写一个 M3U 数据源地址")
-        return
+    m3u_urls = load_subscribe_urls()
 
     if not m3u_urls:
-        print(f"{cfg['subscribe_file']} 中没有有效地址")
+        print("订阅源为空，请在 Web 后台「系统配置」中填写订阅源地址")
         return
 
     print(f"数据源数量：{len(m3u_urls)}")
@@ -914,21 +920,6 @@ def _next_run_datetime(run_mode, run_times, run_interval_minutes):
     return None
 
 
-def _load_cycle_resources(cfg):
-    """加载一轮测速所需的所有外部资源（配置、别名、模板），失败返回 None。"""
-    try:
-        canonical_to_aliases, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
-    except FileNotFoundError:
-        canonical_to_aliases, name_to_canonical, regex_aliases = {}, {}, []
-
-    try:
-        demo_structure = parse_demo_file(cfg['demo_file'])
-    except FileNotFoundError:
-        demo_structure = []
-
-    return canonical_to_aliases, name_to_canonical, regex_aliases, demo_structure
-
-
 if __name__ == "__main__":
     cfg = load_config('config.json')
     run_mode = cfg.get('run_mode', 'once')
@@ -943,59 +934,36 @@ if __name__ == "__main__":
     if migrated > 0:
         print(f"已从 history.json 迁移 {migrated} 轮历史数据到 SQLite")
 
-    # 加载别名
-    try:
-        canonical_to_aliases, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
-        print(f"已加载 {len(canonical_to_aliases)} 个频道别名组（含 {len(regex_aliases)} 条正则）")
-    except FileNotFoundError:
-        print(f"未找到 {cfg['alias_file']}，将使用频道原名匹配")
-        canonical_to_aliases, name_to_canonical, regex_aliases = {}, {}, []
+    if not load_subscribe_urls():
+        print("订阅源为空，请先运行 python web.py 在后台配置订阅源")
+    elif run_mode == 'once':
+        run_test_cycle()
 
-    # 加载 demo 模板
-    try:
-        demo_structure = parse_demo_file(cfg['demo_file'])
-        total_demo_channels = sum(len(chs) for _, chs in demo_structure)
-        print(f"已加载 {cfg['demo_file']}：{len(demo_structure)} 个分类，{total_demo_channels} 个频道")
-    except FileNotFoundError:
-        print(f"错误：未找到 {cfg['demo_file']}")
-        demo_structure = []
-
-    if not demo_structure:
-        print(f"{cfg['demo_file']} 为空，退出")
     else:
-        if run_mode == 'once':
-            run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
+        cfg = load_config()
+        label = f"指定时间 {cfg['run_times']}" if run_mode == 'times' else f"每 {cfg['run_interval_minutes']} 分钟"
+        print(f"循环模式：{label}，Ctrl+C 退出")
+        print("=" * 60)
+        try:
+            while True:
+                cfg = load_config()
+                next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
+                if next_run is None:
+                    print("无法计算下次执行时间，退出")
+                    break
+                wait_sec = (next_run - datetime.now()).total_seconds()
+                if wait_sec > 0:
+                    print(f"\n下次执行：{next_run.strftime('%Y-%m-%d %H:%M:%S')}（{wait_sec/60:.1f} 分钟后）")
+                    time.sleep(wait_sec)
 
-        else:
-            label = f"指定时间 {cfg['run_times']}" if run_mode == 'times' else f"每 {cfg['run_interval_minutes']} 分钟"
-            print(f"循环模式：{label}，Ctrl+C 退出")
-            print("=" * 60)
-            try:
-                while True:
-                    next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
-                    if next_run is None:
-                        print("无法计算下次执行时间，退出")
-                        break
-                    wait_sec = (next_run - datetime.now()).total_seconds()
-                    if wait_sec > 0:
-                        print(f"\n下次执行：{next_run.strftime('%Y-%m-%d %H:%M:%S')}（{wait_sec/60:.1f} 分钟后）")
-                        time.sleep(wait_sec)
+                print(f"\n{'#' * 60}")
+                print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'#' * 60}")
 
-                    # 每轮重新加载配置和资源文件，运行中修改即时生效
-                    cfg = load_config('config.json')
-                    canonical_to_aliases, name_to_canonical, regex_aliases, demo_structure = _load_cycle_resources(cfg)
-                    if not demo_structure:
-                        print(f"{cfg['demo_file']} 为空，本轮跳过")
-                        continue
-
-                    print(f"\n{'#' * 60}")
-                    print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    print(f"{'#' * 60}")
-
-                    try:
-                        run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
-                    except Exception as e:
-                        print(f"\n本轮执行异常：{e}")
-                        print("继续等待下一轮...")
-            except KeyboardInterrupt:
-                print("\n用户中断，退出")
+                try:
+                    run_test_cycle()
+                except Exception as e:
+                    print(f"\n本轮执行异常：{e}")
+                    print("继续等待下一轮...")
+        except KeyboardInterrupt:
+            print("\n用户中断，退出")

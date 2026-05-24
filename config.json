@@ -31,15 +31,6 @@
     "min_height": 1080,
     "# min_height": "最低分辨率高度（像素）",
 
-    "alias_file": "alias.txt",
-    "# alias_file": "频道别名文件路径",
-
-    "demo_file": "demo.txt",
-    "# demo_file": "频道模板文件路径（决定要测哪些频道）",
-
-    "subscribe_file": "subscribe.txt",
-    "# subscribe_file": "订阅源地址文件路径（每行一个M3U地址）",
-
     "output_txt": "output/result.txt",
     "# output_txt": "TXT格式输出文件路径",
 

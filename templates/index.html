@@ -111,7 +111,7 @@ tr:hover{background:#f8f9fb}
 .file-tab{padding:8px 16px;cursor:pointer;font-size:12px;font-weight:500;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-bottom:none;border-radius:6px 6px 0 0;transition:all .15s}
 .file-tab:hover{color:#1a1a2e}
 .file-tab.active{color:#2563eb;background:#fff;border-color:#2563eb;font-weight:600}
-.text-editor{width:100%;min-height:300px;padding:12px;border:1px solid #d1d5db;border-radius:0 6px 6px 6px;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:13px;line-height:1.5;resize:vertical;outline:none;tab-size:4}
+.text-editor{width:100%;height:calc(100vh - 360px);min-height:200px;padding:12px;border:1px solid #d1d5db;border-radius:0 6px 6px 6px;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:13px;line-height:1.5;resize:vertical;outline:none;tab-size:4}
 .text-editor:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
 
 /* Toast */
@@ -120,16 +120,61 @@ tr:hover{background:#f8f9fb}
 .toast.success{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
 .toast.error{background:#fee2e2;color:#b91c1c;border:1px solid #fecaca}
 
-/* Responsive */
+/* ───── Mobile responsive ───── */
 @media(max-width:768px){
-  .cards{grid-template-columns:repeat(2,1fr)}
+  .container{padding:10px}
+  h1{font-size:17px}
+  .header{flex-direction:column;gap:4px;align-items:flex-start}
+  .header .meta{font-size:11px}
+  .cards{grid-template-columns:repeat(2,1fr);gap:8px}
+  .card{padding:12px}
   .card .value{font-size:22px}
-  .toolbar{flex-direction:column}
-  .toolbar input{min-width:100%}
-  .bar-label{width:70px;font-size:11px}
+  .card .sub{font-size:11px}
+  .tabs{gap:2px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .tab{padding:6px 12px;font-size:12px;white-space:nowrap}
+  .toolbar{flex-direction:column;gap:6px}
+  .toolbar input,.toolbar select{width:100%;min-width:0}
+  .table-wrap{margin:0 -10px;border-radius:0}
+  table{font-size:12px}
+  th,td{padding:6px 8px}
+  .url-cell{max-width:160px;font-size:11px}
+  td.ch-name{max-width:120px;font-size:12px}
+  .bar-label{width:60px;font-size:11px}
+  .bar-row{gap:4px}
+  .bar-chart{padding:10px}
+  .run-selector{flex-wrap:wrap}
+  .run-selector select{min-width:100%;font-size:12px}
+  .download-row{flex-wrap:wrap;gap:6px}
+  .download-row a{font-size:11px;word-break:break-all}
+  .config-section{padding:14px}
+  .config-grid{grid-template-columns:1fr}
+  .ch-header{padding:10px 12px}
+  .ch-header .name{font-size:13px}
+  .ch-header .stats{font-size:11px;gap:8px}
+  .ch-body table{font-size:11px}
+  .badge{font-size:10px;padding:1px 6px}
 }
 
 .no-data{padding:40px;text-align:center;color:#9ca3af;font-size:13px}
+
+/* Channel name nowrap */
+td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+
+/* Copy button */
+.copy-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:12px;color:#374151;cursor:pointer;transition:all .15s}
+.copy-btn:hover{background:#f3f4f6;border-color:#9ca3af}
+.copy-btn.copied{background:#dcfce7;color:#15803d;border-color:#bbf7d0}
+
+/* Download links */
+.download-row{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.download-row a{font-size:13px;color:#2563eb;text-decoration:none;font-family:monospace}
+.download-row a:hover{text-decoration:underline}
+
+/* Run selector */
+.run-selector{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.run-selector label{font-size:13px;font-weight:600;color:#374151;white-space:nowrap}
+.run-selector select{padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none;min-width:280px}
+.run-selector select:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
 </style>
 </head>
 <body>
@@ -227,6 +272,14 @@ tr:hover{background:#f8f9fb}
 
 <!-- Tab 2: Details -->
 <div id="details" class="tab-content">
+  <div class="run-selector">
+    <label>测试轮次：</label>
+    <select id="runSelector" onchange="loadRunDetail(this.value)">
+      {% for run in runs %}
+      <option value="{{ run.run_id }}" {% if loop.first %}selected{% endif %}>{{ run.finished_at }} （{{ run.summary.total_passed }}/{{ run.summary.total_tested }} 通过）</option>
+      {% endfor %}
+    </select>
+  </div>
   <div class="toolbar">
     <input type="text" id="detailSearch" placeholder="搜索频道名或 URL...">
     <select id="detailFilter">
@@ -240,14 +293,14 @@ tr:hover{background:#f8f9fb}
     <table id="detailTable">
       <thead>
         <tr>
-          <th>频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th>
+          <th style="min-width:100px">频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th>
           <th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="detailBody">
         {% for r in latest.results %}
         <tr class="{% if r.passed %}pass{% else %}fail{% endif %}" data-channel="{{ r.channel }}" data-passed="{{ '1' if r.passed else '0' }}" data-h265="{{ '1' if r.is_h265 else '0' }}">
-          <td><strong>{{ r.channel }}</strong></td>
+          <td class="ch-name"><strong>{{ r.channel }}</strong></td>
           <td><div class="url-cell" title="{{ r.url }}">{{ r.url }}</div></td>
           <td>{{ r.resolution }}</td>
           <td>{{ r.bandwidth_MBps }}</td>
@@ -378,7 +431,47 @@ tr:hover{background:#f8f9fb}
 
 <!-- Tab 5: Settings (always shown) -->
 <div id="settings" class="tab-content">
-  <!-- Config Form -->
+
+  <!-- Text File Editors (top - most used) -->
+  <div class="config-section">
+    <h3>数据文件编辑</h3>
+    <div class="file-tabs">
+      <div class="file-tab active" data-file="subscribe">订阅源</div>
+      <div class="file-tab" data-file="demo">频道模板</div>
+      <div class="file-tab" data-file="alias">别名映射</div>
+    </div>
+    <textarea class="text-editor" id="fileEditor" spellcheck="false" placeholder="加载中..."></textarea>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveTextFile()">保存</button>
+      <button class="btn btn-outline" onclick="loadTextFile()">重新加载</button>
+      <button class="btn btn-danger btn-sm" id="btnResetDemo" style="display:none" onclick="resetDemo()">恢复默认模板</button>
+      <span id="fileStatus" style="font-size:12px;color:#6b7280;margin-left:8px"></span>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="config-section">
+    <h3>系统操作</h3>
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
+      <div id="triggerStatus" style="font-size:12px;color:#6b7280"></div>
+    </div>
+    <div style="margin-top:16px">
+      <div class="label" style="margin-bottom:8px">结果订阅地址（复制到播放器使用）</div>
+      <div class="download-row">
+        <span style="font-size:12px;color:#6b7280;width:36px">TXT</span>
+        <a id="linkTxt" href="/api/download/txt" target="_blank">/api/download/txt</a>
+        <button class="copy-btn" onclick="copyLink('txt', this)">复制</button>
+      </div>
+      <div class="download-row">
+        <span style="font-size:12px;color:#6b7280;width:36px">M3U</span>
+        <a id="linkM3u" href="/api/download/m3u" target="_blank">/api/download/m3u</a>
+        <button class="copy-btn" onclick="copyLink('m3u', this)">复制</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Form (bottom - rarely changed) -->
   <div class="config-section">
     <h3>参数配置</h3>
     <div class="config-grid">
@@ -464,32 +557,6 @@ tr:hover{background:#f8f9fb}
     </div>
   </div>
 
-  <!-- Text File Editors -->
-  <div class="config-section">
-    <h3>数据文件编辑</h3>
-    <div class="file-tabs">
-      <div class="file-tab active" data-file="subscribe.txt">订阅源 (subscribe.txt)</div>
-      <div class="file-tab" data-file="demo.txt">频道模板 (demo.txt)</div>
-      <div class="file-tab" data-file="alias.txt">别名映射 (alias.txt)</div>
-    </div>
-    <textarea class="text-editor" id="fileEditor" spellcheck="false" placeholder="加载中..."></textarea>
-    <div class="btn-group">
-      <button class="btn btn-primary" onclick="saveTextFile()">保存文件</button>
-      <button class="btn btn-outline" onclick="loadTextFile()">重新加载</button>
-      <span id="fileStatus" style="font-size:12px;color:#6b7280;margin-left:8px"></span>
-    </div>
-  </div>
-
-  <!-- Actions -->
-  <div class="config-section">
-    <h3>系统操作</h3>
-    <div class="btn-group" style="margin-top:0">
-      <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
-      <button class="btn btn-outline" onclick="downloadResult('txt')">下载 result.txt</button>
-      <button class="btn btn-outline" onclick="downloadResult('m3u')">下载 result.m3u</button>
-    </div>
-    <div id="triggerStatus" style="margin-top:8px;font-size:12px;color:#6b7280"></div>
-  </div>
 </div>
 
 </div><!-- /container -->
@@ -626,12 +693,13 @@ function saveConfig() {
 }
 
 // ───── Text file editor ─────
-let currentFile = 'subscribe.txt';
+let currentFile = 'subscribe';
 document.querySelectorAll('.file-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     currentFile = tab.dataset.file;
+    document.getElementById('btnResetDemo').style.display = currentFile === 'demo' ? '' : 'none';
     loadTextFile();
   });
 });
@@ -672,6 +740,21 @@ function saveTextFile() {
     document.getElementById('fileStatus').textContent = '保存失败';
     showToast('保存失败: ' + e, 'error');
   });
+}
+
+function resetDemo() {
+  if (!confirm('确定恢复为默认频道模板？当前修改将丢失。')) return;
+  fetch('/api/reset-demo', {method: 'POST'})
+    .then(r => r.json())
+    .then(res => {
+      if (res.ok) {
+        showToast('已恢复默认模板', 'success');
+        loadTextFile();
+      } else {
+        showToast('恢复失败', 'error');
+      }
+    })
+    .catch(e => showToast('恢复失败: ' + e, 'error'));
 }
 
 // ───── Trigger test ─────
@@ -716,10 +799,71 @@ function pollStatus() {
     });
 }
 
-// ───── Download result ─────
-function downloadResult(fmt) {
-  window.open('/api/download/' + fmt, '_blank');
+// ───── Run detail selector ─────
+function loadRunDetail(runId) {
+  if (!runId) return;
+  fetch('/api/run/' + runId)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { showToast(data.error, 'error'); return; }
+      const tbody = document.getElementById('detailBody');
+      tbody.innerHTML = '';
+      (data.results || []).forEach(r => {
+        const cls = r.passed ? 'pass' : 'fail';
+        const h265 = r.is_h265 ? '1' : '0';
+        const passed = r.passed ? '1' : '0';
+        let codecHtml = '<span style="color:#9ca3af">-</span>';
+        if (r.is_h265) codecHtml = '<span class="badge h265">H.265</span>';
+        else if (r.codec) codecHtml = '<span class="badge h264">' + r.codec.toUpperCase() + '</span>';
+        const statusHtml = r.passed ? '<span class="badge pass">通过</span>' : '<span class="badge fail">失败</span>';
+        const tr = document.createElement('tr');
+        tr.className = cls;
+        tr.dataset.channel = r.channel;
+        tr.dataset.passed = passed;
+        tr.dataset.h265 = h265;
+        tr.innerHTML =
+          '<td class="ch-name"><strong>' + r.channel + '</strong></td>' +
+          '<td><div class="url-cell" title="' + r.url + '">' + r.url + '</div></td>' +
+          '<td>' + r.resolution + '</td>' +
+          '<td>' + r.bandwidth_MBps + '</td>' +
+          '<td>' + codecHtml + '</td>' +
+          '<td>' + r.sample_seconds + '</td>' +
+          '<td>' + r.cost_seconds + '</td>' +
+          '<td>' + statusHtml + '</td>' +
+          '<td style="font-size:12px;color:#6b7280">' + (r.reason || '') + '</td>';
+        tbody.appendChild(tr);
+      });
+    })
+    .catch(e => showToast('加载失败: ' + e, 'error'));
 }
+
+// ───── Copy link ─────
+function copyLink(fmt, btn) {
+  const url = location.origin + '/api/download/' + fmt;
+  navigator.clipboard.writeText(url).then(() => {
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// ───── Init download links ─────
+(function() {
+  const base = location.origin;
+  document.getElementById('linkTxt').textContent = base + '/api/download/txt';
+  document.getElementById('linkM3u').textContent = base + '/api/download/m3u';
+})();
 
 // ───── Delete run ─────
 function deleteRun(runId) {

@@ -10,17 +10,25 @@ from db import (
     get_latest_run, get_latest_passed_results,
     get_run_history, get_run_detail, get_channel_summary,
     get_codec_stats, delete_run,
+    get_config_data, set_config_data, DEFAULT_DEMO,
 )
 from app import load_config, DEFAULT_CONFIG
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
-# 允许通过 Web 编辑的文本文件白名单
-ALLOWED_TEXT_FILES = {
-    'alias.txt': 'alias.txt',
-    'demo.txt': 'demo.txt',
-    'subscribe.txt': 'subscribe.txt',
-}
+
+@app.after_request
+def add_no_cache_headers(response):
+    """禁止浏览器缓存页面，确保每次刷新都获取最新内容。"""
+    if 'text/html' in response.content_type:
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+# 允许通过 Web 编辑的数据 key
+ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe'}
 
 # 测试运行状态锁
 _test_running = False
@@ -109,43 +117,34 @@ def api_save_config():
         return jsonify({'error': f'写入失败: {e}'}), 500
 
 
-# ─────────────── 文本文件 API ───────────────
+# ─────────────── 数据文件 API ───────────────
 
-@app.route('/api/text/<filename>', methods=['GET'])
-def api_get_text(filename):
-    """读取文本文件内容。"""
-    real_path = ALLOWED_TEXT_FILES.get(filename)
-    if not real_path:
-        return jsonify({'error': '不允许访问该文件'}), 403
-
-    if not os.path.exists(real_path):
-        return jsonify({'content': '', 'filename': filename})
-
-    try:
-        with open(real_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return jsonify({'content': content, 'filename': filename})
-    except OSError as e:
-        return jsonify({'error': str(e)}), 500
+@app.route('/api/text/<key>', methods=['GET'])
+def api_get_text(key):
+    """读取配置数据内容。"""
+    if key not in ALLOWED_DATA_KEYS:
+        return jsonify({'error': '不允许访问该数据'}), 403
+    content = get_config_data(key)
+    return jsonify({'content': content, 'filename': key})
 
 
-@app.route('/api/text/<filename>', methods=['POST'])
-def api_save_text(filename):
-    """保存文本文件内容。"""
-    real_path = ALLOWED_TEXT_FILES.get(filename)
-    if not real_path:
-        return jsonify({'error': '不允许访问该文件'}), 403
-
+@app.route('/api/text/<key>', methods=['POST'])
+def api_save_text(key):
+    """保存配置数据内容。"""
+    if key not in ALLOWED_DATA_KEYS:
+        return jsonify({'error': '不允许访问该数据'}), 403
     data = request.get_json(silent=True)
     if not data or 'content' not in data:
         return jsonify({'error': '缺少 content 字段'}), 400
+    set_config_data(key, data['content'])
+    return jsonify({'ok': True, 'filename': key})
 
-    try:
-        with open(real_path, 'w', encoding='utf-8') as f:
-            f.write(data['content'])
-        return jsonify({'ok': True, 'filename': filename})
-    except OSError as e:
-        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reset-demo', methods=['POST'])
+def api_reset_demo():
+    """恢复 demo 模板为默认内容。"""
+    set_config_data('demo', DEFAULT_DEMO)
+    return jsonify({'ok': True, 'message': '已恢复默认模板'})
 
 
 # ─────────────── 测试历史 API ───────────────
@@ -304,18 +303,8 @@ def api_trigger():
     def _run():
         global _test_running
         try:
-            from app import run_test_cycle, load_aliases, parse_demo_file
-            cfg = load_config()
-            try:
-                _, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
-            except FileNotFoundError:
-                name_to_canonical, regex_aliases = {}, []
-            try:
-                demo_structure = parse_demo_file(cfg['demo_file'])
-            except FileNotFoundError:
-                demo_structure = []
-            if demo_structure:
-                run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
+            from app import run_test_cycle
+            run_test_cycle()
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Web 触发测试失败: {e}")
@@ -337,15 +326,25 @@ def api_status():
 # ─────────────── 启动 ───────────────
 
 if __name__ == '__main__':
-    init_db()
-    migrate_from_json()
-
-    port = 5000
     try:
-        cfg = load_config()
-        port = int(cfg.get('web_port', 5000))
-    except Exception:
-        pass
+        init_db()
+        migrate_from_json()
 
-    print(f"Web 管理后台已启动: http://localhost:{port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+        port = 5000
+        try:
+            cfg = load_config()
+            port = int(cfg.get('web_port', 5000))
+        except Exception:
+            pass
+
+        print(f"Web 管理后台已启动: http://localhost:{port}")
+        app.run(host='0.0.0.0', port=port, debug=False)
+    except OSError as e:
+        print(f"\n端口 {port} 被占用，请关闭占用该端口的程序，或在 config.json 中修改 web_port")
+        print(f"错误详情: {e}")
+        input("\n按回车键退出...")
+    except Exception as e:
+        import traceback
+        print(f"\n启动失败: {e}")
+        traceback.print_exc()
+        input("\n按回车键退出...")
