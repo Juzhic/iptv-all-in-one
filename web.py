@@ -1,0 +1,351 @@
+"""IPTV 测速管理后台 — Web 服务。"""
+import json
+import os
+import threading
+from datetime import datetime
+
+from flask import Flask, render_template, request, jsonify, send_file
+from db import (
+    init_db, migrate_from_json,
+    get_latest_run, get_latest_passed_results,
+    get_run_history, get_run_detail, get_channel_summary,
+    get_codec_stats, delete_run,
+)
+from app import load_config, DEFAULT_CONFIG
+
+app = Flask(__name__)
+
+# 允许通过 Web 编辑的文本文件白名单
+ALLOWED_TEXT_FILES = {
+    'alias.txt': 'alias.txt',
+    'demo.txt': 'demo.txt',
+    'subscribe.txt': 'subscribe.txt',
+}
+
+# 测试运行状态锁
+_test_running = False
+_test_lock = threading.Lock()
+
+
+# ─────────────── 页面路由 ───────────────
+
+@app.route('/')
+def index():
+    """渲染主页面（仪表盘 + 配置管理）。"""
+    latest = get_latest_run()
+    runs = get_run_history()
+
+    channel_summary = {}
+    codec_stats = {}
+    if latest and latest.get('results'):
+        channel_summary = get_channel_summary(latest['run_id'])
+        codec_stats = get_codec_stats(latest['run_id'])
+
+    return render_template(
+        'index.html',
+        latest=latest,
+        runs=runs,
+        channel_summary=channel_summary,
+        codec_stats=codec_stats,
+    )
+
+
+# ─────────────── 配置 API ───────────────
+
+@app.route('/api/config', methods=['GET'])
+def api_get_config():
+    """读取当前配置（合并默认值）。"""
+    cfg = load_config()
+    return jsonify(cfg)
+
+
+@app.route('/api/config', methods=['POST'])
+def api_save_config():
+    """保存配置到 config.json。"""
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': '无效的请求数据'}), 400
+
+    # 合法配置项白名单（来自 DEFAULT_CONFIG）
+    valid_keys = set(DEFAULT_CONFIG.keys())
+    # 允许 web_port
+    valid_keys.add('web_port')
+
+    # 读取现有 config.json（保留注释行和未知 key）
+    config_path = 'config.json'
+    existing = {}
+    comments = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                if k.startswith('#'):
+                    comments[k] = v
+                else:
+                    existing[k] = v
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 更新合法 key
+    updated_keys = []
+    for key, value in data.items():
+        if key in valid_keys:
+            existing[key] = value
+            updated_keys.append(key)
+
+    # 合并写回：先注释行，再配置项
+    output = {}
+    for k, v in comments.items():
+        output[k] = v
+    for k, v in existing.items():
+        output[k] = v
+
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(output, f, ensure_ascii=False, indent=4)
+        return jsonify({'ok': True, 'updated': updated_keys})
+    except OSError as e:
+        return jsonify({'error': f'写入失败: {e}'}), 500
+
+
+# ─────────────── 文本文件 API ───────────────
+
+@app.route('/api/text/<filename>', methods=['GET'])
+def api_get_text(filename):
+    """读取文本文件内容。"""
+    real_path = ALLOWED_TEXT_FILES.get(filename)
+    if not real_path:
+        return jsonify({'error': '不允许访问该文件'}), 403
+
+    if not os.path.exists(real_path):
+        return jsonify({'content': '', 'filename': filename})
+
+    try:
+        with open(real_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({'content': content, 'filename': filename})
+    except OSError as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/text/<filename>', methods=['POST'])
+def api_save_text(filename):
+    """保存文本文件内容。"""
+    real_path = ALLOWED_TEXT_FILES.get(filename)
+    if not real_path:
+        return jsonify({'error': '不允许访问该文件'}), 403
+
+    data = request.get_json(silent=True)
+    if not data or 'content' not in data:
+        return jsonify({'error': '缺少 content 字段'}), 400
+
+    try:
+        with open(real_path, 'w', encoding='utf-8') as f:
+            f.write(data['content'])
+        return jsonify({'ok': True, 'filename': filename})
+    except OSError as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─────────────── 测试历史 API ───────────────
+
+@app.route('/api/runs', methods=['GET'])
+def api_get_runs():
+    """获取测试历史列表。"""
+    runs = get_run_history()
+    return jsonify(runs)
+
+
+@app.route('/api/run/<run_id>', methods=['GET'])
+def api_get_run(run_id):
+    """获取单轮测试详情。"""
+    detail = get_run_detail(run_id)
+    if not detail:
+        return jsonify({'error': '未找到该轮记录'}), 404
+    return jsonify(detail)
+
+
+@app.route('/api/run/<run_id>', methods=['DELETE'])
+def api_delete_run(run_id):
+    """删除指定轮次记录。"""
+    delete_run(run_id)
+    return jsonify({'ok': True})
+
+
+# ─────────────── 结果下载 API ───────────────
+
+def _generate_result_txt(passed_results):
+    """从通过的结果动态生成 result.txt 格式内容。"""
+    # 按频道分组，保持顺序
+    from collections import OrderedDict
+    channels = OrderedDict()
+    for r in passed_results:
+        ch = r['channel']
+        url = r['url']
+        if ch not in channels:
+            channels[ch] = []
+        channels[ch].append(url)
+
+    lines = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines.append(f'🕘️更新时间,#genre#')
+    lines.append(f'{now_str},邮箱联系')
+    lines.append('')
+
+    # 按 demo.txt 的分类结构输出
+    try:
+        from app import parse_demo_file
+        demo = parse_demo_file()
+        for genre, ch_list in demo:
+            genre_lines = []
+            for ch in ch_list:
+                if ch in channels:
+                    for url in channels[ch]:
+                        genre_lines.append(f'{ch},{url}')
+            if genre_lines:
+                lines.append(f'{genre},#genre#')
+                lines.extend(genre_lines)
+                lines.append('')
+    except Exception:
+        # fallback: 简单列表
+        for ch, urls in channels.items():
+            for url in urls:
+                lines.append(f'{ch},{url}')
+
+    return '\n'.join(lines)
+
+
+def _generate_result_m3u(passed_results):
+    """从通过的结果动态生成 result.m3u 格式内容。"""
+    from collections import OrderedDict
+    channels = OrderedDict()
+    for r in passed_results:
+        ch = r['channel']
+        url = r['url']
+        if ch not in channels:
+            channels[ch] = []
+        channels[ch].append(url)
+
+    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = ['#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"']
+
+    # 更新时间条目
+    lines.append(
+        f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
+        f'group-title="🕘️更新时间",{now_str}'
+    )
+    lines.append('http://localhost/update_time')
+
+    try:
+        from app import parse_demo_file
+        demo = parse_demo_file()
+        for genre, ch_list in demo:
+            for ch in ch_list:
+                if ch in channels:
+                    for url in channels[ch]:
+                        lines.append(
+                            f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
+                            f'tvg-logo="{logo_base}/{ch}.png" '
+                            f'group-title="{genre}",{ch}'
+                        )
+                        lines.append(url)
+    except Exception:
+        for ch, urls in channels.items():
+            for url in urls:
+                lines.append(
+                    f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
+                    f'tvg-logo="{logo_base}/{ch}.png" '
+                    f'group-title="默认",{ch}'
+                )
+                lines.append(url)
+
+    return '\n'.join(lines)
+
+
+@app.route('/api/download/<fmt>', methods=['GET'])
+def api_download(fmt):
+    """下载结果文件（从数据库动态生成）。"""
+    if fmt not in ('txt', 'm3u'):
+        return jsonify({'error': '格式仅支持 txt 或 m3u'}), 400
+
+    passed = get_latest_passed_results()
+    if not passed:
+        return jsonify({'error': '暂无通过的频道数据'}), 404
+
+    if fmt == 'txt':
+        content = _generate_result_txt(passed)
+        filename = 'result.txt'
+        mimetype = 'text/plain'
+    else:
+        content = _generate_result_m3u(passed)
+        filename = 'result.m3u'
+        mimetype = 'application/x-mpegurl'
+
+    # 写入临时文件返回
+    import io
+    buf = io.BytesIO(content.encode('utf-8'))
+    buf.seek(0)
+    return send_file(buf, mimetype=mimetype, as_attachment=True, download_name=filename)
+
+
+# ─────────────── 触发测试 API ───────────────
+
+@app.route('/api/trigger', methods=['POST'])
+def api_trigger():
+    """触发一次测试运行。"""
+    global _test_running
+    with _test_lock:
+        if _test_running:
+            return jsonify({'error': '测试正在运行中，请等待完成'}), 409
+        _test_running = True
+
+    def _run():
+        global _test_running
+        try:
+            from app import run_test_cycle, load_aliases, parse_demo_file
+            cfg = load_config()
+            try:
+                _, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
+            except FileNotFoundError:
+                name_to_canonical, regex_aliases = {}, []
+            try:
+                demo_structure = parse_demo_file(cfg['demo_file'])
+            except FileNotFoundError:
+                demo_structure = []
+            if demo_structure:
+                run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Web 触发测试失败: {e}")
+        finally:
+            with _test_lock:
+                _test_running = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({'ok': True, 'message': '测试已启动'})
+
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """获取当前运行状态。"""
+    return jsonify({'running': _test_running})
+
+
+# ─────────────── 启动 ───────────────
+
+if __name__ == '__main__':
+    init_db()
+    migrate_from_json()
+
+    port = 5000
+    try:
+        cfg = load_config()
+        port = int(cfg.get('web_port', 5000))
+    except Exception:
+        pass
+
+    print(f"Web 管理后台已启动: http://localhost:{port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

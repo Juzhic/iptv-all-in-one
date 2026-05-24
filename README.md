@@ -1,375 +1,227 @@
-# IPTV 频道质量筛选工具 - 完整使用指南
+# IPTV 频道质量筛选工具
 
-## 📋 项目简介
+## 简介
 
-自动化的 IPTV 频道质量筛选工具，使用 FFmpeg 分析视频流，筛选出高质量的频道（1080P + 高带宽），支持多线程并发测试。
-
-**核心功能:**
-- ✅ 自动获取 M3U 播放列表
-- ✅ 智能解析 IPTV 地址（支持 RTP、m3u8、HTTP 流）
-- ✅ FFmpeg 专业质量分析
-- ✅ 多线程并发测试（速度提升 5-20 倍）
-- ✅ Flask API 服务（支持远程调用）
-- ✅ 定时任务支持（宝塔面板集成）
+从多个 M3U 订阅源中筛选高质量 IPTV 频道（1080P + 高带宽），支持频道别名识别、模板化输出、实时写入和定时执行。
 
 ---
 
-## 🚀 快速开始
+## 核心功能
 
-### 本地测试
+- 多订阅源聚合，自动解析 M3U 播放列表
+- FFmpeg 分辨率探测 + 带宽测速
+- 频道别名识别（精确匹配 + 正则），同一频道多个名字自动归一
+- 按模板文件（demo.txt）决定测哪些频道，跳过不需要的
+- 测速通过实时写入 result.txt 和 result.m3u，不等全部完成
+- 超时自动中断 HTTP 连接，无残留
+- 系统级下行带宽限速，防止打满带宽
+- 定时执行：固定时间 / 间隔循环 / 单次运行
 
-#### 1. 安装依赖
+---
+
+## 快速开始
+
+### 1. 安装依赖
+
 ```bash
 pip install -r requirements.txt
+# 需要系统已安装 FFmpeg
 ```
 
-#### 2. 使用 app.py 本地快速测试
+### 2. 准备配置文件
+
+项目根目录放置以下文件：
+
+| 文件 | 作用 | 格式 |
+|------|------|------|
+| `config.json` | 所有可配置项 | JSON |
+| `subscribe.txt` | M3U 订阅源地址，每行一个 | 纯文本 |
+| `alias.txt` | 频道别名映射，支持正则 | CSV |
+| `demo.txt` | 目标频道模板，决定输出哪些频道 | 分类 + 频道名 |
+
+### 3. 运行
+
 ```bash
 python app.py
 ```
 
-### 服务器部署（生产环境）
+---
 
-#### 1. 启动 API 服务
-```bash
-# 开发环境
-python server.py
+## 配置文件说明
 
-# 生产环境（推荐）
-gunicorn -w 4 -b 0.0.0.0:5000 server:app
+### config.json
+
+```json
+{
+    "test_duration": 15,
+    "max_workers": 30,
+    "system_bandwidth_limit_MBps": 50,
+    "min_bandwidth_MBps": 1.0,
+    "bandwidth_compensation_MBps": 2.0,
+    "min_width": 1920,
+    "min_height": 1080,
+    "alias_file": "alias.txt",
+    "demo_file": "demo.txt",
+    "subscribe_file": "subscribe.txt",
+    "output_txt": "result.txt",
+    "output_m3u": "result.m3u",
+    "run_mode": "once",
+    "run_times": ["06:00", "12:00", "18:00"],
+    "run_interval_minutes": 120
+}
 ```
 
-#### 2. API 调用
-```bash
-curl -X POST http://localhost:5000/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"duration":30,"workers":5}'
+**配置项说明：**
+
+| 配置项 | 类型 | 说明 |
+|--------|------|------|
+| `test_duration` | int | 每个频道测速时长（秒） |
+| `max_workers` | int | 最大同时测试频道数（并发线程） |
+| `system_bandwidth_limit_MBps` | float | 系统下行带宽限速（MB/s），超过暂停新测试，0 关闭 |
+| `min_bandwidth_MBps` | float | 频道带宽合格标准（MB/s） |
+| `bandwidth_compensation_MBps` | float | 未获取分辨率时的带宽补偿阈值（MB/s） |
+| `min_width` / `min_height` | int | 最低分辨率要求（像素） |
+| `run_mode` | string | `once` 单次运行 / `times` 按指定时间 / `interval` 按间隔 |
+| `run_times` | list | `times` 模式下的执行时间列表，24 小时制 |
+| `run_interval_minutes` | int | `interval` 模式的间隔分钟数，从上一轮结束开始计 |
+
+---
+
+### subscribe.txt
+
+每行一个 M3U 数据源地址，空行和 `#` 开头的行忽略：
+
+```
+https://example.com/playlist1.m3u
+https://example.com/playlist2.m3u
 ```
 
 ---
 
-## 📁 文件说明
+### alias.txt
 
-### 核心程序
-- **server.py** - Flask API 服务器（主入口）
-- **app.py** - 核心测试逻辑，也可直接运行做本地快速测试
-- **FFmpegTest.py** - FFmpeg 测试模块
+将多个频道名映射到同一个主名，提升匹配率：
 
-### 配置文件
-- **requirements.txt** - Python 依赖包
+```
+# 格式：主名,别名1,别名2,re:正则表达式
+CCTV-1,re:(?i)^\s*CCTV[-\s_]*0?1(?![0-9Kk+])[\s\S]*$,CCTV1,CCTV-01高清,CCTV1综合
+```
 
-### 文档
-- **README.md** - 本文件（完整使用指南）
-- **DEPLOYMENT.md** - 宝塔面板部署教程
-- **SERVER_DEPLOY.md** - 服务器部署检查清单
+- 第一列是主名（对应 demo.txt 中的频道名）
+- 以 `re:` 开头的为正则表达式，自动按正则匹配
+- 其余为精确匹配别名
 
 ---
 
-## 🎯 筛选标准
+### demo.txt
 
-### 质量标准
-- **分辨率**: ≥ 1920x1080 (1080P)
-- **实时带宽**: > 1 MB/s
-- **采样时长**: 30 秒（可配置）
-- **码率**: 保留信息（不作为筛选条件）
+定义要测哪些频道和分类结构，只有这里出现的频道才会被测试和输出：
 
-### 输出格式
-生成的 `list.m3u` 文件格式:
-```m3u
-#EXTM3U x-tvg-url="https://live.fanmingming.cn/e.xml"
-#EXTINF:-1 group-title="央视",CCTV1
-http://example.com/live/cctv1.m3u8
-#EXTINF:-1 group-title="央视",CCTV2
-http://example.com/live/cctv2.m3u8
 ```
+📺央视频道,#genre#
+CCTV-1
+CCTV-5
+
+📡卫视频道,#genre#
+广东卫视
+浙江卫视
+```
+
+- 包含 `,#genre#` 的行是分类标题
+- 其余每行一个频道名（使用主名）
+- demo.txt 为空时不进行任何测试
 
 ---
 
-## 🔧 配置说明
+## 输出格式
 
-### app.py 配置
+### result.txt
 
-```python
-# M3U 数据源 URL
-m3u_url = "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
+```
+🕘️更新时间,#genre#
+2026-05-24 18:00:00,邮箱联系
 
-# 性能配置
-TEST_DURATION = 30      # 每个频道测试时长（秒）
-MAX_WORKERS = 5         # 最大并发线程数
-OUTPUT_FILE = 'list.m3u'  # 输出文件名
+📺央视频道,#genre#
+CCTV-1,http://example.com/cctv1.m3u8
+CCTV-5,http://example.com/cctv5.m3u8
+CCTV-5,http://example.com/cctv5_bak.m3u8
+
+📡卫视频道,#genre#
+广东卫视,http://example.com/gdws.m3u8
 ```
 
-### 性能参考
+- 同一频道多个 URL 都通过测速时输出多条
+- 没有通过测速的频道不输出
+- 空分类不输出
 
-| 频道数 | workers=5 | workers=10 | workers=20 |
-|--------|-----------|------------|------------|
-| 10     | 1 分钟    | 0.5 分钟   | 0.25 分钟  |
-| 50     | 5 分钟    | 2.5 分钟   | 1.25 分钟  |
-| 100    | 10 分钟   | 5 分钟     | 2.5 分钟   |
-| 500    | 50 分钟   | 25 分钟    | 12.5 分钟  |
+### result.m3u
+
+标准 M3U 格式，可直接导入 VLC / IPTV 播放器 / 电视盒子。
 
 ---
 
-## 🌐 API 接口（server.py）
+## 运行模式
 
-### 基础地址
-```
-http://服务器IP:5000
-```
+### 单次运行（once）
 
-### 1. 生成播放列表
-
-**POST 请求（推荐）**
-```bash
-curl -X POST http://localhost:5000/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "m3u_url": "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
-    "duration": 30,
-    "workers": 5
-  }'
+```json
+"run_mode": "once"
 ```
 
-**GET 请求**
-```bash
-curl "http://localhost:5000/api/generate?duration=30&workers=5"
+运行一次，完成退出。
+
+### 按指定时间循环（times）
+
+```json
+"run_mode": "times",
+"run_times": ["06:00", "12:00", "18:00"]
 ```
 
-### 2. 查看任务状态
-```bash
-curl http://localhost:5000/api/status
+程序持续运行，到达指定时间自动执行，支持跨天，Ctrl+C 退出。
+
+### 按间隔循环（interval）
+
+```json
+"run_mode": "interval",
+"run_interval_minutes": 120
 ```
 
-### 3. 下载播放列表
-```bash
-curl -O http://localhost:5000/api/download?file=list_20260330_120000.m3u
-```
-
-或在浏览器打开：
-```
-http://localhost:5000/api/download?file=list_20260330_120000.m3u
-```
-
-### 4. 健康检查
-```bash
-curl http://localhost:5000/api/health
-```
+每轮结束后等待指定分钟数再执行下一轮，不会时间漂移，Ctrl+C 退出。
 
 ---
 
-## ⏰ 宝塔定时任务配置
+## 项目文件结构
 
-### 方案 1: 调用 API（服务常驻）
-
-**计划任务内容:**
-```bash
-#!/bin/bash
-cd /www/wwwroot/iptv-filter
-
-# 每天凌晨 2 点执行
-curl -X POST http://127.0.0.1:5000/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"m3u_url":"https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u","duration":30,"workers":5}' \
-  > /dev/null 2>&1
-
-# 等待完成
-sleep 300
-
-# 复制最新文件
-cp list_*.m3u latest_list.m3u 2>/dev/null
-
-echo "IPTV 筛选完成 - $(date)" >> logs/cron.log
 ```
-
-**执行周期:** 每天 凌晨 2:00
-
-### 方案 2: 直接运行脚本
-
-**计划任务内容:**
-```bash
-#!/bin/bash
-cd /www/wwwroot/iptv-filter
-source venv/bin/activate
-python app.py >> logs/cron.log 2>&1
-```
-
-**执行周期:** 每天 凌晨 2:00
-
----
-
-## 🛠️ 常见问题
-
-### Q1: 无法获取 M3U 数据
-**原因**: 网络不通或服务器不可用  
-**解决**: 
-```bash
-# 测试网络连接
-ping gh-proxy.com
-
-# 检查 URL 是否可访问
-curl -I https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u
-```
-
-### Q2: FFmpeg 未找到
-**原因**: 系统未安装 FFmpeg  
-**解决**:
-```bash
-# CentOS/RHEL
-yum install -y ffmpeg
-
-# Ubuntu/Debian
-apt-get install -y ffmpeg
-
-# 验证安装
-ffmpeg -version
-```
-
-### Q3: 所有频道都不符合
-**原因**: 筛选条件太严格  
-**解决**: 修改 `app.py` 中的判断条件:
-```python
-# 降低为 720P 和 0.5MB/s
-resolution_pass = (width >= 1280 and height >= 720)
-bandwidth_pass = speed_mbps > 0.5
-```
-
-### Q4: 服务无法启动
-**原因**: 端口占用或依赖缺失  
-**解决**:
-```bash
-# 检查端口占用
-netstat -tlnp | grep 5000
-
-# 重新安装依赖
-pip install -r requirements.txt --force-reinstall
-```
-
-### Q5: 内存不足
-**原因**: 并发线程数过多  
-**解决**:
-```python
-# 减少并发数到 3-5
-MAX_WORKERS = 3
+IPTV-Test/
+├── app.py              # 核心逻辑 + 命令行入口（含定时调度）
+├── FFmpegTest.py       # FFmpeg 分辨率探测 + 带宽测速
+├── config.json         # 配置文件
+├── subscribe.txt       # M3U 订阅源地址
+├── alias.txt           # 频道别名映射
+├── demo.txt            # 目标频道模板
+├── requirements.txt    # Python 依赖
+├── output/             # 输出目录（运行后自动生成）
+│   ├── result.txt      # TXT 格式输出
+│   └── result.m3u      # M3U 格式输出
+└── logs/               # 日志目录（运行后自动生成）
 ```
 
 ---
 
-## 📊 故障排查
+## 常见问题
 
-### 查看日志
-```bash
-# 应用日志
-tail -f logs/error.log
+**Q: FFmpeg 未找到**  
+安装 FFmpeg 并确保在 PATH 中：`yum install -y ffmpeg` 或 `apt install ffmpeg`
 
-# 定时任务日志
-tail -f logs/cron.log
-```
+**Q: 所有频道都不通过**  
+在 config.json 中降低标准：调小 `min_bandwidth_MBps` 或 `min_width` / `min_height`
 
-### 资源监控
-```bash
-# CPU 和内存
-top -p $(pgrep -f server.py)
+**Q: 内存不足**  
+减小 `max_workers`，建议 5~10
 
-# 磁盘空间
-df -h
+**Q: 频道名字不一样匹配不上**  
+在 alias.txt 中添加对应的别名或正则
 
-# 网络连接
-netstat -an | grep 5000
-```
-
-### 清理旧文件
-```bash
-# 只保留最近 10 个播放列表
-ls -t list_*.m3u | tail -n +11 | xargs rm -f
-
-# 清理日志（保留 7 天）
-find logs/ -name "*.log" -mtime +7 -delete
-```
-
----
-
-## 📈 性能优化建议
-
-### 低配服务器（1 核 1GB）
-```python
-TEST_DURATION = 20      # 缩短测试时间
-MAX_WORKERS = 3         # 减少并发
-```
-
-### 中等配置（2 核 2GB）
-```python
-TEST_DURATION = 30      # 标准测试时间
-MAX_WORKERS = 5         # 默认并发数
-```
-
-### 高配服务器（4 核 4GB+）
-```python
-TEST_DURATION = 30      # 标准测试时间
-MAX_WORKERS = 10        # 增加并发
-```
-
----
-
-## 🔒 安全建议
-
-### 1. 防火墙设置
-```bash
-# 只允许特定 IP 访问
-iptables -A INPUT -p tcp --dport 5000 -s 允许的 IP -j ACCEPT
-iptables -A INPUT -p tcp --dport 5000 -j DROP
-```
-
-### 2. 添加 API 认证（可选）
-在 `server.py` 中添加 token 验证:
-```python
-@app.before_request
-def check_auth():
-    if request.endpoint != 'health_check':
-        token = request.headers.get('Authorization')
-        if token != 'Bearer YOUR_SECRET_TOKEN':
-            return jsonify({'error': 'Unauthorized'}), 401
-```
-
-### 3. 定期清理
-```bash
-# 每周清理旧文件
-find /www/wwwroot/iptv-filter -name "list_*.m3u" -mtime +7 -delete
-```
-
----
-
-## 📝 部署步骤总结
-
-### 本地测试
-1. 安装依赖：`pip install -r requirements.txt`
-2. 本地快速测试：`python app.py`
-
-### 服务器部署
-1. 上传文件到服务器
-2. 安装依赖：`pip install -r requirements.txt`
-3. 安装 FFmpeg: `yum install -y ffmpeg`
-4. 启动服务：`python server.py` 或 `gunicorn -w 4 -b 0.0.0.0:5000 server:app`
-5. 测试 API: `curl http://localhost:5000/api/health`
-6. 设置定时任务（可选）
-
----
-
-## 🎯 下一步
-
-测试成功后，可以将生成的 `list.m3u` 导入到:
-- VLC 播放器
-- Kodi 媒体中心
-- IPTV 播放软件
-- 电视盒子
-
----
-
-## 📞 更多帮助
-
-查看详细部署教程:
-- [DEPLOYMENT.md](DEPLOYMENT.md) - 宝塔面板详细教程
-- [SERVER_DEPLOY.md](SERVER_DEPLOY.md) - 快速检查清单
-
----
-
-**祝你使用愉快！🎉**
+**Q: 跑完后系统还有连接在跑**  
+已在代码中处理：超时连接会主动中断，线程池等待全部结束后才退出

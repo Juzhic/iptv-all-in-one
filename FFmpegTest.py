@@ -10,6 +10,25 @@ import urllib3
 from requests.exceptions import SSLError
 
 
+# 超时 URL 注册表，供流读取循环主动退出并释放连接
+_timed_out_urls = set()
+
+
+def register_timeout(url):
+    """将 URL 标记为超时，正在进行的流读取会尽快退出。"""
+    _timed_out_urls.add(url)
+
+
+def clear_timeouts():
+    """清除上一轮的超时标记，在新一轮测试开始前调用。"""
+    _timed_out_urls.clear()
+
+
+def _is_timed_out(url):
+    """检查 URL 是否已被标记为超时。"""
+    return url in _timed_out_urls
+
+
 def request_timeout(deadline, connect_timeout=3, read_timeout=3):
     """根据单频道截止时间动态收紧 requests 超时。"""
     remaining = deadline - time.monotonic()
@@ -143,11 +162,19 @@ def ffmpeg_test(url):
         stderr_output = stderr_output.decode('utf-8', errors='ignore')
 
     resolution_match = re.search(r'(\d{3,5})x(\d{3,5})', stderr_output)
+
+    # 提取视频编码格式：匹配 "Video: h264" / "Video: hevc" 等
+    codec = ''
+    codec_match = re.search(r'Video:\s*(\w+)', stderr_output, re.IGNORECASE)
+    if codec_match:
+        codec = codec_match.group(1).lower()
+
     if resolution_match:
         return {
             'success': True,
             'width': int(resolution_match.group(1)),
             'height': int(resolution_match.group(2)),
+            'codec': codec,
             'ffmpeg_available': True,
             'error': ''
         }
@@ -156,6 +183,7 @@ def ffmpeg_test(url):
         'success': False,
         'width': 0,
         'height': 0,
+        'codec': codec,
         'ffmpeg_available': True,
         'error': 'FFmpeg 未解析到分辨率'
     }
@@ -179,12 +207,14 @@ def analyze_iptv_with_ffmpeg(url, duration=10, useffmpeg=True, min_width=1920, m
                 stream_kind = 'hls'
 
         width, height = 0, 0
+        codec = ''
         ffmpeg_error = ''
         ffmpeg_available = True
         ffmpeg_resolution_found = False
         if useffmpeg:
             ffmpeg_result = ffmpeg_test(stream_url)
             ffmpeg_available = ffmpeg_result.get('ffmpeg_available', True)
+            codec = ffmpeg_result.get('codec', '')
             if ffmpeg_result.get('success'):
                 width = ffmpeg_result.get('width', 0)
                 height = ffmpeg_result.get('height', 0)
@@ -195,6 +225,7 @@ def analyze_iptv_with_ffmpeg(url, duration=10, useffmpeg=True, min_width=1920, m
                     result['ffmpeg_available'] = ffmpeg_available
                     result['ffmpeg_resolution_found'] = True
                     result['ffmpeg_error'] = ''
+                    result['codec'] = codec
                     result['bandwidth_skipped'] = True
                     result['bandwidth_skip_reason'] = f'分辨率不足({width}x{height})，跳过测速'
                     return result
@@ -211,6 +242,7 @@ def analyze_iptv_with_ffmpeg(url, duration=10, useffmpeg=True, min_width=1920, m
             result['ffmpeg_available'] = ffmpeg_available
             result['ffmpeg_resolution_found'] = ffmpeg_resolution_found
             result['ffmpeg_error'] = ffmpeg_error
+            result['codec'] = codec
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -294,9 +326,8 @@ def test_direct_bandwidth(url, width, height, duration):
 
         with http_get(url, stream=True, timeout=request_timeout(deadline, 3, 2)) as response:
             response.raise_for_status()
-            chunk_iter = response.iter_content(chunk_size=8192)
+            chunk_iter = response.iter_content(chunk_size=131072)
 
-            measure_start = time.monotonic()
             try:
                 first_chunk = next(chunk_iter)
             except StopIteration:
@@ -306,6 +337,8 @@ def test_direct_bandwidth(url, width, height, duration):
             if is_hls_response(response, text_probe):
                 return test_hls_bandwidth(response.url, width, height, duration)
 
+            # 从第一个 chunk 到达后开始计时，排除连接建立耗时
+            data_start = time.monotonic()
             if first_chunk:
                 total_bytes += len(first_chunk)
 
@@ -313,13 +346,17 @@ def test_direct_bandwidth(url, width, height, duration):
                 if chunk:
                     total_bytes += len(chunk)
 
-                current_elapsed = time.monotonic() - measure_start
-                if current_elapsed > 3 and total_bytes < 100 * 1024:
-                    break
-                if current_elapsed >= duration or time.monotonic() >= deadline:
+                # 超时标记检查：立即退出，触发 with 块关闭连接
+                if _is_timed_out(url):
                     break
 
-        elapsed_time = time.monotonic() - measure_start
+                current_elapsed = time.monotonic() - data_start
+                if current_elapsed > 3 and total_bytes < 100 * 1024:
+                    break
+                if time.monotonic() >= deadline:
+                    break
+
+        elapsed_time = time.monotonic() - data_start
         return build_bandwidth_result(width, height, total_bytes, elapsed_time)
     except Exception as e:
         return {'success': False, 'error': f"直链 测试失败: {str(e)}"}
@@ -357,6 +394,8 @@ def test_hls_bandwidth(url, width, height, duration):
             now = time.monotonic()
             if now >= deadline:
                 break
+            if _is_timed_out(url):
+                break
             if media_seconds > 3 and total_bytes < 100 * 1024:
                 break
             if media_seconds >= duration:
@@ -374,9 +413,13 @@ def test_hls_bandwidth(url, width, height, duration):
                     segment_bytes = 0
                     interrupted = False
                     try:
-                        for chunk in ts_resp.iter_content(chunk_size=8192):
+                        for chunk in ts_resp.iter_content(chunk_size=131072):
                             if chunk:
                                 segment_bytes += len(chunk)
+
+                            if _is_timed_out(url):
+                                interrupted = True
+                                break
 
                             now = time.monotonic()
                             if now >= deadline:
@@ -401,10 +444,12 @@ def test_hls_bandwidth(url, width, height, duration):
                     break
                 continue
 
+        if download_seconds <= 0:
+            download_seconds = time.monotonic() - test_start
         if media_seconds <= 0:
             media_seconds = download_seconds
 
-        result = build_bandwidth_result(width, height, total_bytes, media_seconds, basis='hls_media_duration')
+        result = build_bandwidth_result(width, height, total_bytes, download_seconds, basis='hls_download_elapsed')
         result['media_seconds'] = round(media_seconds, 2)
         result['download_seconds'] = round(download_seconds, 2)
         if download_seconds > 0:
@@ -414,8 +459,36 @@ def test_hls_bandwidth(url, width, height, duration):
         return {'success': False, 'error': f"HLS 测试失败: {str(e)}"}
 
 
+def load_urls_from_file(filepath='subscribe.txt'):
+    """从配置文件读取地址，每行一个，忽略空行和 # 注释行。"""
+    urls = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                urls.append(line)
+    return urls
+
+
 if __name__ == "__main__":
-    iptv_url = "http://101.66.194.65:9901/tsfile/live/0123_1.m3u8?key=txiptv&playlive=0&authid=0"
-    result = analyze_iptv_with_ffmpeg(iptv_url, duration=10, useffmpeg=True)
-    if result:
-        print(f"结果: {result}")
+    try:
+        urls = load_urls_from_file('subscribe.txt')
+    except FileNotFoundError:
+        print("未找到 subscribe.txt，请在 subscribe.txt 中每行填写一个待测地址")
+        urls = []
+
+    if not urls:
+        print("subscribe.txt 中没有有效地址")
+    else:
+        print(f"共 {len(urls)} 个地址待测\n")
+        for i, url in enumerate(urls, 1):
+            print(f"[{i}/{len(urls)}] {url}")
+            result = analyze_iptv_with_ffmpeg(url, duration=10, useffmpeg=True)
+            if result and result.get('success'):
+                print(f"  -> {result.get('resolution','?')}  "
+                      f"带宽 {result.get('bandwidth_mbps', 0)} Mb/s  "
+                      f"({result.get('bandwidth_basis','')})")
+            else:
+                reason = (result or {}).get('error', '分析失败')
+                print(f"  -> 失败: {reason}")
+            print()

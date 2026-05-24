@@ -1,17 +1,51 @@
 import time
-import requests
+import threading
 import re
+import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from requests.exceptions import SSLError
-from FFmpegTest import analyze_iptv_with_ffmpeg
+from FFmpegTest import analyze_iptv_with_ffmpeg, register_timeout as _reg_timeout, clear_timeouts as _clear_timeouts, http_get
+from db import init_db, insert_run, migrate_from_json
 
 try:
     import psutil
 except ImportError:
     psutil = None
+
+
+# 默认配置（config.json 不存在时使用）
+DEFAULT_CONFIG = {
+    'test_duration': 15,
+    'max_workers': 30,
+    'system_bandwidth_limit_MBps': 50,
+    'min_bandwidth_MBps': 1.0,
+    'bandwidth_compensation_MBps': 2.0,
+    'h265_bandwidth_ratio': 0.6,
+    'show_update_time': True,
+    'update_time_position': 'top',
+    'min_width': 1920,
+    'min_height': 1080,
+    'alias_file': 'alias.txt',
+    'demo_file': 'demo.txt',
+    'subscribe_file': 'subscribe.txt',
+    'output_txt': 'output/result.txt',
+    'output_m3u': 'output/result.m3u',
+}
+
+
+def load_config(filepath='config.json'):
+    """加载配置文件，缺失项使用默认值。"""
+    cfg = dict(DEFAULT_CONFIG)
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            user_cfg = json.load(f)
+        # 只取合法配置项，忽略注释 key（以 # 开头的）
+        for key, value in user_cfg.items():
+            if not key.startswith('#') and key in cfg:
+                cfg[key] = value
+    return cfg
 
 
 LOW_RESOLUTION_URL_PATTERNS = (
@@ -66,7 +100,7 @@ class SystemDownloadLimiter:
             return self.current_mbps
 
         byte_delta = max(0, bytes_recv - self._last_bytes)
-        self.current_mbps = (byte_delta * 8) / (elapsed * 1_000_000)
+        self.current_mbps = byte_delta / (elapsed * 1_000_000)
         self._last_bytes = bytes_recv
         self._last_time = now
         return self.current_mbps
@@ -78,7 +112,7 @@ class SystemDownloadLimiter:
         now = time.monotonic()
         if now - self._last_log_time >= self.log_interval:
             logger.info(
-                "总下行 %.2fMb/s >= %.2fMb/s，暂停启动新频道",
+                "总下行 %.2fMB/s >= %.2fMB/s，暂停启动新频道",
                 self.current_mbps,
                 self.limit_mbps
             )
@@ -86,56 +120,54 @@ class SystemDownloadLimiter:
 
 
 # --- 日志配置模块 ---
-def setup_logging():
-    """配置日志系统，创建 logs 目录并生成时间命名的日志文件"""
+def setup_logging(keep_logs=50):
+    """配置日志系统，创建 logs 目录并生成时间命名的日志文件。超出 keep_logs 个数的旧日志自动清理。"""
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # --- 关键修正 1：获取 Root Logger 并移除旧 Handlers ---
-    # 这样可以防止重复添加处理器
     root_logger = logging.getLogger()
     if root_logger.handlers:
-        # 清理旧的 handlers，防止文件句柄泄露
         for handler in root_logger.handlers[:]:
             handler.close()
             root_logger.removeHandler(handler)
 
-    # 生成日志文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = os.path.join(log_dir, f"{timestamp}.log")
 
-    # --- 关键修正 2：使用 filemode='w' 覆盖旧配置 ---
-    # 因为我们手动清理了 handlers，basicConfig 会重新生效
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file, encoding='utf-8', mode='w'),  # mode='w' 确保是新文件
+            logging.FileHandler(log_file, encoding='utf-8', mode='w'),
             logging.StreamHandler()
         ]
     )
 
     logger = logging.getLogger(__name__)
     logger.info(f"日志系统已启动，日志文件: {log_file}")
+
+    # 自动清理旧日志文件，保留最近 keep_logs 个
+    try:
+        log_files = sorted(
+            [f for f in os.listdir(log_dir) if f.endswith('.log')],
+            key=lambda f: os.path.getmtime(os.path.join(log_dir, f))
+        )
+        if len(log_files) > keep_logs:
+            for old_file in log_files[:-keep_logs]:
+                try:
+                    os.remove(os.path.join(log_dir, old_file))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
     return logger
 
-
-# 全局 logger 变量
-# logger = setup_logging()
-
 def fetch_m3u_playlist(url):
-    """
-    从指定 URL 获取 M3U 播放列表数据
-    :param url: M3U 数据的 URL
-    :return: str M3U 内容
-    """
+    """从指定 URL 获取 M3U 播放列表数据。"""
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.text
-    except SSLError:
-        response = requests.get(url, timeout=10, verify=False)
+        response = http_get(url, timeout=10, stream=False)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -184,84 +216,29 @@ def parse_iptv_addresses(m3u_content):
     return iptv_list
 
 
-def test_iptv_quality(url, duration=10):
-    """
-    测试 IPTV 流的质量（分辨率和带宽）
-    :param url: IPTV 地址
-    :param duration: 采样时长（秒）
-    :return: dict 包含测试结果
-    """
-    low_resolution_hint = detect_low_resolution_url(url)
-    if low_resolution_hint:
-        return {
-            'pass': False,
-            'resolution': f"URL标记:{low_resolution_hint}",
-            'speed_mbps': 0,
-            'bandwidth_mbps': 0,
-            'bitrate_mbps': 0,
-            'resolution_pass': False,
-            'bandwidth_pass': False,
-            'low_resolution_url': True,
-            'low_resolution_hint': low_resolution_hint,
-            'resolution_compensation_pass': False
-        }
-
-    result = analyze_iptv_with_ffmpeg(url, duration)
-    
-    if not result or not result.get('success'):
-        return {'pass': False, 'reason': '分析失败'}
-    
-    width = result.get('width', 0)
-    height = result.get('height', 0)
-    bandwidth_mbps = result.get('bandwidth_mbps', result.get('speed_mbps', 0))
-    ffmpeg_available = result.get('ffmpeg_available', True)
-    ffmpeg_resolution_found = result.get('ffmpeg_resolution_found', width > 0 and height > 0)
-    sample_seconds, min_sample_seconds, sample_seconds_pass = get_bandwidth_sample_info(result, duration)
-    
-    # 判断分辨率是否 >= 1080P (1920x1080)
-    resolution_pass = (width >= 1920 and height >= 1080)
-    
-    # 判断连接成功后的平均带宽是否 > 1Mb/s
-    bandwidth_pass = bandwidth_mbps > 1.0
-    resolution_compensation_pass = (
-        ffmpeg_available
-        and (not ffmpeg_resolution_found)
-        and bandwidth_mbps >= 2.0
-        and sample_seconds_pass
-    )
-    
-    passed = (resolution_pass and bandwidth_pass) or resolution_compensation_pass
-    
-    return {
-        'pass': passed,
-        'resolution': f"{width}x{height}",
-        'speed_mbps': bandwidth_mbps,
-        'bandwidth_mbps': bandwidth_mbps,
-        'bitrate_mbps': result.get('bitrate_mbps', bandwidth_mbps),
-        'ffmpeg_available': ffmpeg_available,
-        'bandwidth_skipped': result.get('bandwidth_skipped', False),
-        'bandwidth_skip_reason': result.get('bandwidth_skip_reason', ''),
-        'sample_seconds': sample_seconds,
-        'min_sample_seconds': min_sample_seconds,
-        'sample_seconds_pass': sample_seconds_pass,
-        'resolution_pass': resolution_pass,
-        'bandwidth_pass': bandwidth_pass,
-        'resolution_compensation_pass': resolution_compensation_pass
-    }
-
 def filter_and_save_playlist(
     iptv_list,
-    output_file='list.m3u',
     duration=10,
     max_workers=5,
     progress_callback=None,
-    bandwidth_limit_mbps=50
+    bandwidth_limit_mbps=None,
+    config=None,
+    on_pass_callback=None
 ):
     """
     过滤并保存符合条件的 IPTV 列表（修改版：增加详细日志和进度计算）
     """
+    cfg = config or DEFAULT_CONFIG
+    if bandwidth_limit_mbps is None:
+        bandwidth_limit_mbps = cfg.get('system_bandwidth_limit_MBps', 50)
+    min_width = cfg.get('min_width', 1920)
+    min_height = cfg.get('min_height', 1080)
+    min_bw = cfg.get('min_bandwidth_MBps', 1.0)
+    bw_comp = cfg.get('bandwidth_compensation_MBps', 2.0)
+    h265_ratio = cfg.get('h265_bandwidth_ratio', 0.6)
     global logger
     filtered_list = []
+    test_results = []
     total = len(iptv_list)
     processed = 0
     failed = 0
@@ -278,7 +255,7 @@ def filter_and_save_playlist(
     logger.info(f"单频道最大等待时间: {channel_timeout}秒")
     download_limiter = SystemDownloadLimiter(bandwidth_limit_mbps)
     if download_limiter.enabled:
-        logger.info(f"总下行启动限速: {download_limiter.limit_mbps:.2f}Mb/s")
+        logger.info(f"总下行启动限速: {download_limiter.limit_mbps:.2f}MB/s")
     elif bandwidth_limit_mbps and psutil is None:
         logger.info("总下行启动限速: 未安装 psutil，已关闭")
     else:
@@ -300,10 +277,9 @@ def filter_and_save_playlist(
                     'duration': time.time() - start_time,
                     'test_result': {
                         'resolution': f"URL标记:{low_resolution_hint}",
-                        'speed_mbps': 0,
-                        'bandwidth_mbps': 0,
-                        'bitrate_mbps': 0,
                         'speed_MBps': 0,
+                        'bandwidth_MBps': 0,
+                        'bitrate_mbps': 0,
                         'measured_seconds': 0,
                         'ffmpeg_used': False,
                         'ffmpeg_available': True,
@@ -324,27 +300,40 @@ def filter_and_save_playlist(
 
             width = result.get('width', 0)
             height = result.get('height', 0)
-            bandwidth_mbps = result.get('bandwidth_mbps', result.get('speed_mbps', 0))
+            bandwidth_MBps = result.get('speed_MBps', 0)
             ffmpeg_available = result.get('ffmpeg_available', True)
             ffmpeg_resolution_found = result.get('ffmpeg_resolution_found', width > 0 and height > 0)
             sample_seconds, min_sample_seconds, sample_seconds_pass = get_bandwidth_sample_info(result, duration)
 
-            resolution_pass = (width >= 1920 and height >= 1080)
-            bandwidth_pass = bandwidth_mbps > 1.0
+            # H.265/HEVC 编码检测，带宽阈值按比例降低
+            codec = result.get('codec', '')
+            is_h265 = codec in ('hevc', 'h265')
+            if is_h265:
+                effective_min_bw = min_bw * h265_ratio
+                effective_bw_comp = bw_comp * h265_ratio
+            else:
+                effective_min_bw = min_bw
+                effective_bw_comp = bw_comp
+
+            resolution_pass = (width >= min_width and height >= min_height)
+            bandwidth_pass = bandwidth_MBps > effective_min_bw
             resolution_compensation_pass = (
                 ffmpeg_available
                 and (not ffmpeg_resolution_found)
-                and bandwidth_mbps >= 2.0
+                and bandwidth_MBps >= effective_bw_comp
                 and sample_seconds_pass
             )
             passed = (resolution_pass and bandwidth_pass) or resolution_compensation_pass
 
             return {
                 'index': idx, 'channel_info': channel_info, 'url': url, 'pass': passed,'duration': time.time() - start_time ,
-                'test_result': {'resolution': f"{width}x{height}", 'speed_mbps': bandwidth_mbps,
-                                'bandwidth_mbps': bandwidth_mbps,
-                                'bitrate_mbps': result.get('bitrate_mbps', bandwidth_mbps),
-                                'speed_MBps': result.get('speed_MBps', 0),
+                'test_result': {'resolution': f"{width}x{height}", 'speed_MBps': bandwidth_MBps,
+                                'bandwidth_MBps': bandwidth_MBps,
+                                'bitrate_mbps': result.get('bitrate_mbps', 0),
+                                'codec': codec,
+                                'is_h265': is_h265,
+                                'effective_min_bw': effective_min_bw,
+                                'effective_bw_comp': effective_bw_comp,
                                 'measured_seconds': result.get('measured_seconds', 0),
                                 'media_seconds': result.get('media_seconds', 0),
                                 'download_seconds': result.get('download_seconds', 0),
@@ -382,7 +371,12 @@ def filter_and_save_playlist(
         cost_time = result.get('duration', 0)
         test_result = result.get('test_result') or {}
         resolution = test_result.get('resolution', 'N/A')
-        bandwidth = test_result.get('bandwidth_mbps', test_result.get('speed_mbps', 0))
+        bandwidth = test_result.get('bandwidth_MBps', test_result.get('speed_MBps', 0))
+        codec = test_result.get('codec', '')
+        is_h265 = test_result.get('is_h265', False)
+        eff_min_bw = test_result.get('effective_min_bw', min_bw)
+        eff_bw_comp = test_result.get('effective_bw_comp', bw_comp)
+        codec_tag = ' [H.265]' if is_h265 else ''
         sample_seconds = (
             test_result.get('sample_seconds')
             or test_result.get('media_seconds')
@@ -398,6 +392,12 @@ def filter_and_save_playlist(
             else:
                 reason = '符合条件'
             filtered_list.append((channel_info, url))
+            # 实时回调，立即写入结果文件
+            if on_pass_callback:
+                try:
+                    on_pass_callback(name, url)
+                except Exception as e:
+                    logger.warning(f"实时写入回调失败: {e}")
 
         else:
             if test_result:
@@ -411,13 +411,13 @@ def filter_and_save_playlist(
                         ffmpeg_error = test_result.get('ffmpeg_error', '')
                         if not test_result.get('ffmpeg_available', True) and ffmpeg_error:
                             reasons.append(ffmpeg_error)
-                        elif bandwidth >= 2.0 and not test_result.get('sample_seconds_pass', True):
+                        elif bandwidth >= eff_bw_comp and not test_result.get('sample_seconds_pass', True):
                             reasons.append(
                                 f"未获取分辨率且有效采样不足({test_result.get('sample_seconds', 0):.2f}秒 "
                                 f"< {test_result.get('min_sample_seconds', 0):.2f}秒)"
                             )
                         else:
-                            reasons.append(f"未获取分辨率且带宽补偿不足({bandwidth:.2f}Mb/s < 2Mb/s)")
+                            reasons.append(f"未获取分辨率且带宽补偿不足{codec_tag}({bandwidth:.2f}MB/s < {eff_bw_comp}MB/s)")
                     else:
                         reasons.append(f"分辨率不足({test_result.get('resolution', 'N/A')})")
                 if (
@@ -425,7 +425,7 @@ def filter_and_save_playlist(
                     and not test_result.get('low_resolution_url')
                     and not test_result.get('bandwidth_skipped')
                 ):
-                    reasons.append(f"带宽不足({bandwidth:.2f}Mb/s <= 1Mb/s)")
+                    reasons.append(f"带宽不足{codec_tag}({bandwidth:.2f}MB/s <= {eff_min_bw}MB/s)")
                 if not reasons:
                     reasons.append(f"分辨率不足({test_result.get('resolution', 'N/A')})")
                 reason = ', '.join(reasons)
@@ -435,15 +435,30 @@ def filter_and_save_playlist(
                 error_reason = result.get('reason', '未知错误')
                 reason = error_reason
 
+        # 收集结构化结果，供 Web 仪表盘使用
+        test_results.append({
+            'channel': name,
+            'url': url,
+            'resolution': resolution,
+            'bandwidth_MBps': round(bandwidth, 2),
+            'codec': codec,
+            'is_h265': is_h265,
+            'sample_seconds': round(sample_seconds, 2),
+            'passed': result.get('pass', False),
+            'reason': reason,
+            'cost_seconds': round(cost_time, 2)
+        })
+
         status = f"{verdict} | 原因: {reason}"
         logger.info(
-            "[%s/%s] %s | 频道: %s | 分辨率: %s | 带宽: %.2fMb/s | 采样: %.2fs | 耗时: %.2fs | 原因: %s | URL: %s",
+            "[%s/%s] %s | 频道: %s | 分辨率: %s | 带宽: %.2fMB/s%s | 采样: %.2fs | 耗时: %.2fs | 原因: %s | URL: %s",
             processed,
             total,
             verdict,
             name,
             resolution,
             bandwidth,
+            codec_tag,
             sample_seconds,
             cost_time,
             reason,
@@ -557,10 +572,13 @@ def filter_and_save_playlist(
                 future.cancel()
                 pending.remove(future)
                 future_info.pop(future, None)
+                url = info['url']
+                # 通知 FFmpegTest 主动中断流读取，释放连接
+                _reg_timeout(url)
                 timeout_result = {
                     'index': info['index'],
                     'channel_info': info['channel_info'],
-                    'url': info['url'],
+                    'url': url,
                     'pass': False,
                     'reason': f'单频道测试超时({channel_timeout}秒)',
                     'duration': elapsed
@@ -569,75 +587,415 @@ def filter_and_save_playlist(
 
             pending = fill_pending_slots(pending)
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=True, cancel_futures=True)
 
     # 任务结束日志
     total_elapsed = time.time() - start_time
     logger.info(f"任务完成 | 符合条件: {len(filtered_list)} | 耗时: {total_elapsed:.2f}秒")
 
-    # 保存结果
-    save_to_m3u(filtered_list, output_file)
-    return filtered_list  # 确保返回结果
+    return filtered_list, test_results
 
-def save_to_m3u(iptv_list, output_file):
+def load_urls_from_file(filepath='subscribe.txt'):
+    """从配置文件读取 M3U 地址，每行一个，忽略空行和 # 注释行。"""
+    urls = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                urls.append(line)
+    return urls
+
+
+def load_aliases(filepath='alias.txt'):
     """
-    将 IPTV 列表保存为 M3U 格式
-    :param iptv_list: IPTV 列表
-    :param output_file: 输出文件名
+    从 alias.txt 读取频道别名，返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
+    canonical_to_aliases: {主名: [别名列表]}
+    name_to_canonical:    {频道名(精确): 主名}
+    regex_aliases:        [(compiled_regex, 主名), ...]
     """
-    with open(output_file, 'w', encoding='utf-8') as f:
-        # 写入文件头
-        f.write('#EXTM3U x-tvg-url="https://live.fanmingming.cn/e.xml"\n')
-        
-        # 写入频道信息
-        for channel_info, url in iptv_list:
-            group = channel_info.get('group', '')
-            name = channel_info.get('name', '')
-            
-            if group:
-                f.write(f'#EXTINF:-1 group-title="{group}",{name}\n')
+    canonical_to_aliases = {}
+    name_to_canonical = {}
+    regex_aliases = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = [p.strip() for p in line.split(',') if p.strip()]
+            if not parts:
+                continue
+            canonical = parts[0]
+            aliases = parts[1:]
+            canonical_to_aliases[canonical] = aliases
+            name_to_canonical[canonical] = canonical
+            for alias in aliases:
+                if alias.startswith('re:'):
+                    try:
+                        regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
+                    except re.error:
+                        continue
+                else:
+                    name_to_canonical[alias] = canonical
+    return canonical_to_aliases, name_to_canonical, regex_aliases
+
+
+def match_channel_name(name, name_to_canonical, regex_aliases=None):
+    """根据别名表匹配频道名称，返回主名；无匹配返回 None。"""
+    if not name:
+        return None
+    # 精确匹配（O(1)）
+    if name in name_to_canonical:
+        return name_to_canonical[name]
+    # 正则匹配（预编译，比逐条快很多）
+    if regex_aliases:
+        for pattern, canonical in regex_aliases:
+            if pattern.match(name):
+                return canonical
+    return None
+
+
+def parse_demo_file(filepath='demo.txt'):
+    """解析 demo.txt，返回 [(genre, [channel_name, ...]), ...]。"""
+    structure = []
+    current_genre = None
+    current_channels = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if ',#genre#' in line:
+                if current_genre is not None:
+                    structure.append((current_genre, current_channels))
+                current_genre = line.split(',')[0]
+                current_channels = []
             else:
-                f.write(f'#EXTINF:-1,{name}\n')
-            
-            f.write(f'{url}\n')
+                current_channels.append(line)
+    if current_genre is not None:
+        structure.append((current_genre, current_channels))
+    return structure
+
+
+def match_channels_from_m3u(iptv_list, demo_structure, name_to_canonical, regex_aliases=None):
+    """
+    从 M3U 列表中找到 demo 需要的频道对应的 URL。
+    返回 {主名: [url1, url2, ...]}。
+    """
+    # 收集 demo 中所有需要的频道主名
+    needed = set()
+    for _, channels in demo_structure:
+        for ch in channels:
+            matched = match_channel_name(ch, name_to_canonical, regex_aliases)
+            needed.add(matched if matched else ch)
+
+    matched = {}
+    for channel_info, url in iptv_list:
+        raw_name = channel_info.get('name', '')
+        canonical = match_channel_name(raw_name, name_to_canonical, regex_aliases) or raw_name
+        if canonical in needed:
+            if canonical not in matched:
+                matched[canonical] = []
+            if url not in matched[canonical]:
+                matched[canonical].append(url)
+    return matched
+
+
+def _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases=None):
+    """查找频道对应的通过测速的 URL 列表，支持别名解析。"""
+    urls = filtered_urls.get(ch, [])
+    if not urls and name_to_canonical:
+        canonical = match_channel_name(ch, name_to_canonical, regex_aliases)
+        if canonical and canonical != ch:
+            urls = filtered_urls.get(canonical, [])
+    return urls
+
+
+def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.txt', show_update_time=True, update_time_position='top'):
+    """按 demo 格式输出结果到 txt 文件。只输出测速通过的频道，跳过空分类。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_block = f'🕘️更新时间,#genre#\n{now_str},邮箱联系\n\n'
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        if show_update_time and update_time_position == 'top':
+            f.write(update_block)
+
+        for genre, channels in demo_structure:
+            genre_lines = []
+            for ch in channels:
+                urls = _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases)
+                for url in urls:
+                    genre_lines.append(f'{ch},{url}\n')
+            if genre_lines:
+                f.write(f'{genre},#genre#\n')
+                for line in genre_lines:
+                    f.write(line)
+                f.write('\n')
+
+        if show_update_time and update_time_position == 'bottom':
+            f.write(update_block)
+
+
+def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top'):
+    """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
+    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_entry = (
+        f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
+        f'group-title="🕘️更新时间",{now_str}\n'
+        f'http://localhost/update_time\n'
+    )
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write('#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"\n')
+
+        if show_update_time and update_time_position == 'top':
+            f.write(update_entry)
+
+        for genre, channels in demo_structure:
+            genre_lines = []
+            for ch in channels:
+                urls = _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases)
+                for url in urls:
+                    genre_lines.append(
+                        f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
+                        f'tvg-logo="{logo_base}/{ch}.png" '
+                        f'group-title="{genre}",{ch}\n'
+                        f'{url}\n'
+                    )
+            if genre_lines:
+                for line in genre_lines:
+                    f.write(line)
+
+        if show_update_time and update_time_position == 'bottom':
+            f.write(update_entry)
+
+
+def save_run_result(run_data, filepath='output/history.json'):
+    """将本轮测速结果写入 SQLite 数据库。"""
+    insert_run(run_data)
+
+
+def run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases):
+    """执行一轮完整的测速筛选流程。"""
+    _clear_timeouts()
+    run_start_time = time.time()
+    TEST_DURATION = cfg['test_duration']
+    MAX_WORKERS = cfg['max_workers']
+
+    # 获取订阅源
+    try:
+        m3u_urls = load_urls_from_file(cfg['subscribe_file'])
+    except FileNotFoundError:
+        print(f"未找到 {cfg['subscribe_file']}，请在其中每行填写一个 M3U 数据源地址")
+        return
+
+    if not m3u_urls:
+        print(f"{cfg['subscribe_file']} 中没有有效地址")
+        return
+
+    print(f"数据源数量：{len(m3u_urls)}")
+    print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS}")
+    print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
+    print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
+    print("=" * 60)
+
+    # 获取并解析所有 M3U 数据源
+    all_iptv_list = []
+    for idx, m3u_url in enumerate(m3u_urls, 1):
+        print(f"\n[{idx}/{len(m3u_urls)}] 正在从 {m3u_url} 获取 M3U 数据...")
+        m3u_content = fetch_m3u_playlist(m3u_url)
+        if m3u_content:
+            iptv_list = parse_iptv_addresses(m3u_content)
+            print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
+            all_iptv_list.extend(iptv_list)
+        else:
+            print("  -> 获取失败，跳过")
+
+    print(f"\n共计解析 {len(all_iptv_list)} 个频道地址")
+
+    # 匹配 demo 中的频道
+    matched_urls = match_channels_from_m3u(all_iptv_list, demo_structure, name_to_canonical, regex_aliases)
+    matched_count = sum(len(v) for v in matched_urls.values())
+    print(f"匹配到 demo 中 {len(matched_urls)} 个频道，共 {matched_count} 个地址")
+
+    # 构建待测列表
+    test_list = []
+    for canonical_name, urls in matched_urls.items():
+        for url in urls:
+            test_list.append(({'name': canonical_name}, url))
+
+    print(f"待测频道数：{len(test_list)}\n")
+
+    if not test_list:
+        print("没有可测试的频道地址")
+        return
+
+    # 确保输出目录存在
+    output_dir = os.path.dirname(cfg['output_txt'])
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    # 实时写入的频道通过记录
+    filtered_urls = {}
+    _write_lock = threading.Lock()
+
+    def _on_channel_pass(name, url):
+        """频道通过测速时立即追加并重写结果文件。"""
+        with _write_lock:
+            if name not in filtered_urls:
+                filtered_urls[name] = []
+            if url not in filtered_urls[name]:
+                filtered_urls[name].append(url)
+            show_time = cfg.get('show_update_time', True)
+            time_pos = cfg.get('update_time_position', 'top')
+            save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
+            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+
+    # 测速筛选（实时写入）
+    _, test_results = filter_and_save_playlist(
+        test_list,
+        duration=TEST_DURATION,
+        max_workers=MAX_WORKERS,
+        config=cfg,
+        on_pass_callback=_on_channel_pass
+    )
+
+    # 汇总并保存结构化结果
+    run_elapsed = time.time() - run_start_time
+    passed_count = len(filtered_urls)
+    passed_urls = sum(len(v) for v in filtered_urls.values())
+    total_tested = len(test_results)
+    all_channels = {r['channel'] for r in test_results}
+    passed_channels = {r['channel'] for r in test_results if r['passed']}
+
+    run_data = {
+        'run_id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+        'started_at': datetime.fromtimestamp(run_start_time).strftime('%Y-%m-%d %H:%M:%S'),
+        'finished_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'duration_seconds': round(run_elapsed, 1),
+        'summary': {
+            'total_tested': total_tested,
+            'total_passed': passed_urls,
+            'total_failed': total_tested - passed_urls,
+            'pass_rate': round(passed_urls / total_tested * 100, 1) if total_tested else 0,
+            'unique_channels_passed': len(passed_channels),
+            'unique_channels_total': len(all_channels)
+        },
+        'results': test_results
+    }
+    history_path = os.path.join(os.path.dirname(cfg['output_txt']) or '.', 'history.json')
+    save_run_result(run_data, history_path)
+
+    print(f"\n{'=' * 60}")
+    print(f"完成！通过 {passed_count} 个频道（{passed_urls} 个地址）")
+    print(f"结果已保存到 {cfg['output_txt']} 和 {cfg['output_m3u']}")
+    print(f"历史记录已保存到 {history_path}")
+    print(f"{'=' * 60}")
+
+
+def _next_run_datetime(run_mode, run_times, run_interval_minutes):
+    """计算下一次运行的绝对时间，返回 datetime 对象。"""
+    now = datetime.now()
+    if run_mode == 'times' and run_times:
+        today = now.date()
+        candidates = []
+        for t_str in run_times:
+            try:
+                t = datetime.strptime(t_str, "%H:%M").time()
+                target = datetime.combine(today, t)
+                if target <= now:
+                    target = target + timedelta(days=1)
+                candidates.append(target)
+            except ValueError:
+                continue
+        return min(candidates) if candidates else None
+    elif run_mode == 'interval' and run_interval_minutes > 0:
+        return now + timedelta(minutes=run_interval_minutes)
+    return None
+
+
+def _load_cycle_resources(cfg):
+    """加载一轮测速所需的所有外部资源（配置、别名、模板），失败返回 None。"""
+    try:
+        canonical_to_aliases, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
+    except FileNotFoundError:
+        canonical_to_aliases, name_to_canonical, regex_aliases = {}, {}, []
+
+    try:
+        demo_structure = parse_demo_file(cfg['demo_file'])
+    except FileNotFoundError:
+        demo_structure = []
+
+    return canonical_to_aliases, name_to_canonical, regex_aliases, demo_structure
 
 
 if __name__ == "__main__":
-    # M3U 数据源 URL
-    m3u_url = "https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
-    
-    # 配置参数
-    TEST_DURATION = 15      # 每个频道测试时长（秒）
-    MAX_WORKERS = 30         # 最大并发线程数
-    OUTPUT_FILE = 'list.m3u'  # 输出文件名
-    
-    print("="*60)
-    print("IPTV 频道质量筛选工具 v2.0")
-    print("="*60)
-    print(f"数据源：{m3u_url}")
-    print(f"测试时长：{TEST_DURATION}秒/频道")
-    print(f"并发线程：{MAX_WORKERS}")
-    print(f"输出文件：{OUTPUT_FILE}")
-    print("="*60)
-    
-    # 获取 M3U 数据
-    print(f"正在从 {m3u_url} 获取 M3U 数据...")
-    m3u_content = fetch_m3u_playlist(m3u_url)
-    
-    if m3u_content:
-        # 解析 IPTV 地址
-        iptv_list = parse_iptv_addresses(m3u_content)
-        print(f"成功解析 {len(iptv_list)} 个 IPTV 组播地址")
-        
-        if len(iptv_list) > 0:
-            # 过滤并保存（采样时长 30 秒，多线程加速）
-            filter_and_save_playlist(
-                iptv_list, 
-                output_file=OUTPUT_FILE, 
-                duration=TEST_DURATION,
-                max_workers=MAX_WORKERS
-            )
-        else:
-            print("错误：未解析到任何 IPTV 地址")
+    cfg = load_config('config.json')
+    run_mode = cfg.get('run_mode', 'once')
+
+    print("=" * 60)
+    print("IPTV 频道质量筛选工具 v3.0")
+    print("=" * 60)
+
+    # 初始化数据库，迁移旧数据
+    init_db()
+    migrated = migrate_from_json()
+    if migrated > 0:
+        print(f"已从 history.json 迁移 {migrated} 轮历史数据到 SQLite")
+
+    # 加载别名
+    try:
+        canonical_to_aliases, name_to_canonical, regex_aliases = load_aliases(cfg['alias_file'])
+        print(f"已加载 {len(canonical_to_aliases)} 个频道别名组（含 {len(regex_aliases)} 条正则）")
+    except FileNotFoundError:
+        print(f"未找到 {cfg['alias_file']}，将使用频道原名匹配")
+        canonical_to_aliases, name_to_canonical, regex_aliases = {}, {}, []
+
+    # 加载 demo 模板
+    try:
+        demo_structure = parse_demo_file(cfg['demo_file'])
+        total_demo_channels = sum(len(chs) for _, chs in demo_structure)
+        print(f"已加载 {cfg['demo_file']}：{len(demo_structure)} 个分类，{total_demo_channels} 个频道")
+    except FileNotFoundError:
+        print(f"错误：未找到 {cfg['demo_file']}")
+        demo_structure = []
+
+    if not demo_structure:
+        print(f"{cfg['demo_file']} 为空，退出")
     else:
-        print("错误：无法获取 M3U 数据")
+        if run_mode == 'once':
+            run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
+
+        else:
+            label = f"指定时间 {cfg['run_times']}" if run_mode == 'times' else f"每 {cfg['run_interval_minutes']} 分钟"
+            print(f"循环模式：{label}，Ctrl+C 退出")
+            print("=" * 60)
+            try:
+                while True:
+                    next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
+                    if next_run is None:
+                        print("无法计算下次执行时间，退出")
+                        break
+                    wait_sec = (next_run - datetime.now()).total_seconds()
+                    if wait_sec > 0:
+                        print(f"\n下次执行：{next_run.strftime('%Y-%m-%d %H:%M:%S')}（{wait_sec/60:.1f} 分钟后）")
+                        time.sleep(wait_sec)
+
+                    # 每轮重新加载配置和资源文件，运行中修改即时生效
+                    cfg = load_config('config.json')
+                    canonical_to_aliases, name_to_canonical, regex_aliases, demo_structure = _load_cycle_resources(cfg)
+                    if not demo_structure:
+                        print(f"{cfg['demo_file']} 为空，本轮跳过")
+                        continue
+
+                    print(f"\n{'#' * 60}")
+                    print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"{'#' * 60}")
+
+                    try:
+                        run_test_cycle(cfg, demo_structure, name_to_canonical, regex_aliases)
+                    except Exception as e:
+                        print(f"\n本轮执行异常：{e}")
+                        print("继续等待下一轮...")
+            except KeyboardInterrupt:
+                print("\n用户中断，退出")

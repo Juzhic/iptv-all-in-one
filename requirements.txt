@@ -1,12 +1,4 @@
 # Python 依赖包
-# 核心功能
 requests>=2.31.0
 psutil>=5.9.0
-
-# Flask API 服务器（宝塔部署用）
-# 注意：必须使用 3.0+ 版本以兼容 Python 3.14
-flask>=3.1.0
-gunicorn>=25.0.0  # WSGI 服务器，生产环境使用
-
-# 可选依赖
-# python-dotenv>=1.0.0  # 环境变量管理（如需要）
+flask>=3.0.0

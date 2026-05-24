@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPTV 测速管理后台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1a1a2e;font-size:14px;line-height:1.6}
+.container{max-width:1280px;margin:0 auto;padding:16px}
+h1{font-size:20px;font-weight:600}
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 0;margin-bottom:16px;border-bottom:1px solid #e5e7eb}
+.header .meta{font-size:12px;color:#6b7280}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.green{background:#22c55e}.dot.red{background:#ef4444}.dot.gray{background:#9ca3af}.dot.yellow{background:#f59e0b}
+
+/* Summary Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.card .label{font-size:12px;color:#6b7280;margin-bottom:4px}
+.card .value{font-size:28px;font-weight:700}
+.card .sub{font-size:12px;color:#9ca3af;margin-top:2px}
+.card .value.green{color:#16a34a}.card .value.red{color:#dc2626}.card .value.blue{color:#2563eb}.card .value.purple{color:#7c3aed}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #e5e7eb;padding-bottom:0;flex-wrap:wrap}
+.tab{padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;color:#6b7280;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+.tab:hover{color:#1a1a2e}.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+.tab-content{display:none}.tab-content.active{display:block}
+
+/* Table */
+.table-wrap{overflow-x:auto;background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f8f9fb;text-align:left;padding:10px 12px;font-weight:600;color:#374151;white-space:nowrap;position:sticky;top:0}
+td{padding:8px 12px;border-top:1px solid #f3f4f6;vertical-align:middle;word-break:break-all}
+tr.pass td:first-child{border-left:3px solid #22c55e}
+tr.fail td:first-child{border-left:3px solid #ef4444}
+tr:hover{background:#f8f9fb}
+
+/* Badge */
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.pass{background:#dcfce7;color:#15803d}.badge.fail{background:#fee2e2;color:#b91c1c}
+.badge.h265{background:#ede9fe;color:#6d28d9}.badge.h264{background:#e0f2fe;color:#0369a1}
+
+/* Search/Filter Bar */
+.toolbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none}
+.toolbar input:focus,.toolbar select:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.toolbar input{flex:1;min-width:200px}
+
+/* Channel Card */
+.ch-card{background:#fff;border-radius:10px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}
+.ch-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;user-select:none}
+.ch-header:hover{background:#f8f9fb}
+.ch-header .name{font-weight:600;font-size:14px}
+.ch-header .stats{display:flex;gap:12px;align-items:center;font-size:12px;color:#6b7280}
+.ch-header .arrow{transition:transform .2s;font-size:12px;color:#9ca3af}
+.ch-header .arrow.open{transform:rotate(90deg)}
+.ch-body{display:none;padding:0 16px 12px}
+.ch-body.open{display:block}
+
+/* Progress Bar */
+.progress{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:4px}
+.progress .fill{height:100%;border-radius:3px;transition:width .3s}
+
+/* Bar Chart */
+.bar-chart{display:flex;flex-direction:column;gap:6px;padding:16px}
+.bar-row{display:flex;align-items:center;gap:8px}
+.bar-label{width:100px;font-size:12px;color:#374151;text-align:right;flex-shrink:0}
+.bar-track{flex:1;height:20px;background:#f3f4f6;border-radius:4px;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding-left:6px;font-size:11px;color:#fff;font-weight:600;min-width:fit-content;transition:width .3s}
+.bar-fill.green{background:#22c55e}.bar-fill.red{background:#ef4444}.bar-fill.blue{background:#3b82f6}.bar-fill.purple{background:#8b5cf6}.bar-fill.gray{background:#9ca3af}
+
+/* History Table */
+.history-rate{display:inline-flex;align-items:center;gap:6px}
+.history-rate .mini-bar{width:60px;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden}
+.history-rate .mini-fill{height:100%;border-radius:3px}
+
+/* Empty State */
+.empty{text-align:center;padding:60px 20px;color:#9ca3af}
+.empty .icon{font-size:48px;margin-bottom:12px}
+.empty p{font-size:14px}
+
+/* URL display */
+.url-cell{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#6b7280;font-family:monospace}
+.url-cell:hover{white-space:normal;word-break:break-all}
+
+/* ───── Config Panel ───── */
+.config-section{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:16px}
+.config-section h3{font-size:15px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #f3f4f6}
+.config-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:768px){.config-grid{grid-template-columns:1fr}}
+.config-group{margin-bottom:12px}
+.config-group label{display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px}
+.config-group .hint{font-size:11px;color:#9ca3af;margin-bottom:4px}
+.config-group input,.config-group select{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none}
+.config-group input:focus,.config-group select:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 20px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover:not(:disabled){background:#1d4ed8}
+.btn-success{background:#16a34a;color:#fff}.btn-success:hover:not(:disabled){background:#15803d}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover:not(:disabled){background:#b91c1c}
+.btn-outline{background:#fff;color:#374151;border:1px solid #d1d5db}.btn-outline:hover:not(:disabled){background:#f8f9fb;border-color:#9ca3af}
+.btn-sm{padding:6px 12px;font-size:12px}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+
+/* Text editor */
+.file-tabs{display:flex;gap:2px;margin-bottom:0}
+.file-tab{padding:8px 16px;cursor:pointer;font-size:12px;font-weight:500;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-bottom:none;border-radius:6px 6px 0 0;transition:all .15s}
+.file-tab:hover{color:#1a1a2e}
+.file-tab.active{color:#2563eb;background:#fff;border-color:#2563eb;font-weight:600}
+.text-editor{width:100%;min-height:300px;padding:12px;border:1px solid #d1d5db;border-radius:0 6px 6px 6px;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:13px;line-height:1.5;resize:vertical;outline:none;tab-size:4}
+.text-editor:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+
+/* Toast */
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;transform:translateX(120%);transition:transform .3s ease;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast.show{transform:translateX(0)}
+.toast.success{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.toast.error{background:#fee2e2;color:#b91c1c;border:1px solid #fecaca}
+
+/* Responsive */
+@media(max-width:768px){
+  .cards{grid-template-columns:repeat(2,1fr)}
+  .card .value{font-size:22px}
+  .toolbar{flex-direction:column}
+  .toolbar input{min-width:100%}
+  .bar-label{width:70px;font-size:11px}
+}
+
+.no-data{padding:40px;text-align:center;color:#9ca3af;font-size:13px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <div>
+    <h1>IPTV 测速管理后台</h1>
+  </div>
+  <div class="meta" id="headerMeta">
+    {% if latest %}
+      <span class="dot green"></span>最近更新：{{ latest.finished_at }}
+      &nbsp;|&nbsp; 耗时 {{ "%.0f"|format(latest.duration_seconds / 60) }} 分钟
+    {% else %}
+      <span class="dot gray"></span>暂无数据，请先运行 python app.py
+    {% endif %}
+  </div>
+</div>
+
+{% if latest %}
+{% set s = latest.summary %}
+
+<!-- Summary Cards -->
+<div class="cards">
+  <div class="card">
+    <div class="label">通过率</div>
+    <div class="value {% if s.pass_rate >= 50 %}green{% else %}red{% endif %}">{{ s.pass_rate }}%</div>
+    <div class="sub">{{ s.total_passed }} / {{ s.total_tested }} 个地址通过</div>
+    <div class="progress"><div class="fill {% if s.pass_rate >= 50 %}green{% else %}red{% endif %}" style="width:{{ s.pass_rate }}%;background:{% if s.pass_rate >= 50 %}#22c55e{% else %}#ef4444{% endif %}"></div></div>
+  </div>
+  <div class="card">
+    <div class="label">通过频道</div>
+    <div class="value blue">{{ s.unique_channels_passed }}</div>
+    <div class="sub">共 {{ s.unique_channels_total }} 个频道</div>
+  </div>
+  <div class="card">
+    <div class="label">测试地址</div>
+    <div class="value">{{ s.total_tested }}</div>
+    <div class="sub">失败 {{ s.total_failed }} 个</div>
+  </div>
+  <div class="card">
+    <div class="label">执行时长</div>
+    <div class="value purple">{{ "%.0f"|format(latest.duration_seconds / 60) }}<span style="font-size:14px;font-weight:400"> 分钟</span></div>
+    <div class="sub">{{ latest.started_at }} 开始</div>
+  </div>
+</div>
+
+{% endif %}
+
+<!-- Tabs -->
+<div class="tabs">
+  <div class="tab active" data-tab="overview">总览</div>
+  <div class="tab" data-tab="details">全部明细</div>
+  <div class="tab" data-tab="channels">按频道</div>
+  <div class="tab" data-tab="history">历史趋势</div>
+  <div class="tab" data-tab="settings">系统配置</div>
+</div>
+
+{% if latest %}
+
+<!-- Tab 1: Overview -->
+<div id="overview" class="tab-content active">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="card" style="grid-column:{% if channel_summary|length > 8 %}1 / -1{% endif %}">
+      <div class="label" style="margin-bottom:8px">频道通过率</div>
+      <div class="bar-chart">
+        {% for name, info in channel_summary.items() %}
+        {% set rate = (info.passed / info.total * 100) if info.total else 0 %}
+        <div class="bar-row">
+          <div class="bar-label" title="{{ name }}">{{ name }}</div>
+          <div class="bar-track">
+            <div class="bar-fill {% if rate >= 50 %}green{% elif rate > 0 %}blue{% else %}red{% endif %}" style="width:{{ [rate, 4]|max }}%">{{ info.passed }}/{{ info.total }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:8px">编码格式分布</div>
+      <div class="bar-chart">
+        {% for codec, count in codec_stats.items() %}
+        {% set pct = (count / s.total_tested * 100) if s.total_tested else 0 %}
+        <div class="bar-row">
+          <div class="bar-label">{{ codec }}</div>
+          <div class="bar-track">
+            <div class="bar-fill {% if '265' in codec or 'HEVC' in codec %}purple{% elif '264' in codec or 'AVC' in codec %}blue{% else %}gray{% endif %}" style="width:{{ [pct, 5]|max }}%">{{ count }} ({{ "%.0f"|format(pct) }}%)</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 2: Details -->
+<div id="details" class="tab-content">
+  <div class="toolbar">
+    <input type="text" id="detailSearch" placeholder="搜索频道名或 URL...">
+    <select id="detailFilter">
+      <option value="all">全部</option>
+      <option value="pass">仅通过</option>
+      <option value="fail">仅失败</option>
+      <option value="h265">仅 H.265</option>
+    </select>
+  </div>
+  <div class="table-wrap">
+    <table id="detailTable">
+      <thead>
+        <tr>
+          <th>频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th>
+          <th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in latest.results %}
+        <tr class="{% if r.passed %}pass{% else %}fail{% endif %}" data-channel="{{ r.channel }}" data-passed="{{ '1' if r.passed else '0' }}" data-h265="{{ '1' if r.is_h265 else '0' }}">
+          <td><strong>{{ r.channel }}</strong></td>
+          <td><div class="url-cell" title="{{ r.url }}">{{ r.url }}</div></td>
+          <td>{{ r.resolution }}</td>
+          <td>{{ r.bandwidth_MBps }}</td>
+          <td>
+            {% if r.is_h265 %}<span class="badge h265">H.265</span>
+            {% elif r.codec %}<span class="badge h264">{{ r.codec|upper }}</span>
+            {% else %}<span style="color:#9ca3af">-</span>{% endif %}
+          </td>
+          <td>{{ r.sample_seconds }}</td>
+          <td>{{ r.cost_seconds }}</td>
+          <td>{% if r.passed %}<span class="badge pass">通过</span>{% else %}<span class="badge fail">失败</span>{% endif %}</td>
+          <td style="font-size:12px;color:#6b7280">{{ r.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Tab 3: By Channel -->
+<div id="channels" class="tab-content">
+  <div class="toolbar">
+    <input type="text" id="channelSearch" placeholder="搜索频道名...">
+    <select id="channelFilter">
+      <option value="all">全部频道</option>
+      <option value="pass">有通过的</option>
+      <option value="fail">全部失败的</option>
+    </select>
+  </div>
+  <div id="channelList">
+    {% for name, info in channel_summary.items() %}
+    {% set rate = (info.passed / info.total * 100) if info.total else 0 %}
+    <div class="ch-card" data-channel="{{ name }}" data-passed="{{ info.passed }}">
+      <div class="ch-header" onclick="toggleChannel(this)">
+        <div class="name">
+          {{ name }}
+          {% for r in info.urls %}{% if r.is_h265 and loop.first %}<span class="badge h265" style="margin-left:6px">H.265</span>{% endif %}{% endfor %}
+        </div>
+        <div class="stats">
+          <span class="badge {% if info.passed > 0 %}pass{% else %}fail{% endif %}">{{ info.passed }}/{{ info.total }} 通过</span>
+          <span style="color:#374151">{{ "%.1f"|format(rate) }}%</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+      </div>
+      <div class="ch-body">
+        <table style="font-size:12px">
+          <thead><tr><th>URL</th><th>分辨率</th><th>带宽</th><th>编码</th><th>状态</th><th>原因</th></tr></thead>
+          <tbody>
+            {% for r in info.urls %}
+            <tr class="{% if r.passed %}pass{% else %}fail{% endif %}">
+              <td><div class="url-cell" title="{{ r.url }}">{{ r.url }}</div></td>
+              <td>{{ r.resolution }}</td>
+              <td>{{ r.bandwidth_MBps }} MB/s</td>
+              <td>{% if r.is_h265 %}<span class="badge h265">H.265</span>{% elif r.codec %}<span class="badge h264">{{ r.codec|upper }}</span>{% else %}-{% endif %}</td>
+              <td>{% if r.passed %}<span class="badge pass">通过</span>{% else %}<span class="badge fail">失败</span>{% endif %}</td>
+              <td style="font-size:11px;color:#6b7280">{{ r.reason }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Tab 4: History -->
+<div id="history" class="tab-content">
+  {% if runs|length > 1 %}
+  <div class="card" style="margin-bottom:16px">
+    <div class="label" style="margin-bottom:8px">通过率趋势（最近 {{ runs|length }} 轮）</div>
+    <svg viewBox="0 0 800 200" style="width:100%;height:200px">
+      {% set ns = namespace(points=[]) %}
+      {% for run in runs|reverse %}
+        {% set x = (loop.index0 / (runs|length - 1) * 760 + 20) if runs|length > 1 else 400 %}
+        {% set y = 190 - (run.summary.pass_rate / 100 * 170) %}
+        {% set ns.points = ns.points + [x ~ ',' ~ y] %}
+        <circle cx="{{ x }}" cy="{{ y }}" r="4" fill="{% if run.summary.pass_rate >= 50 %}#22c55e{% else %}#ef4444{% endif %}"/>
+        <text x="{{ x }}" y="200" text-anchor="middle" font-size="9" fill="#9ca3af">{{ run.finished_at[5:16] }}</text>
+        <text x="{{ x }}" text-anchor="middle" font-size="10" fill="#374151" y="{{ y - 8 }}">{{ run.summary.pass_rate }}%</text>
+      {% endfor %}
+      {% if runs|length > 1 %}
+      <polyline points="{{ ns.points|join(' ') }}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round"/>
+      {% endif %}
+      <line x1="20" y1="20" x2="780" y2="20" stroke="#f3f4f6" stroke-width="1"/>
+      <line x1="20" y1="105" x2="780" y2="105" stroke="#f3f4f6" stroke-width="1"/>
+      <line x1="20" y1="190" x2="780" y2="190" stroke="#e5e7eb" stroke-width="1"/>
+    </svg>
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>执行时间</th><th>测试数</th><th>通过数</th><th>失败数</th><th>通过率</th><th>频道覆盖</th><th>耗时</th><th>操作</th></tr>
+      </thead>
+      <tbody id="historyBody">
+        {% for run in runs %}
+        <tr data-runid="{{ run.run_id }}">
+          <td>{{ run.finished_at }}</td>
+          <td>{{ run.summary.total_tested }}</td>
+          <td style="color:#16a34a;font-weight:600">{{ run.summary.total_passed }}</td>
+          <td style="color:#dc2626">{{ run.summary.total_failed }}</td>
+          <td>
+            <div class="history-rate">
+              <span>{{ run.summary.pass_rate }}%</span>
+              <div class="mini-bar"><div class="mini-fill" style="width:{{ run.summary.pass_rate }}%;background:{% if run.summary.pass_rate >= 50 %}#22c55e{% else %}#ef4444{% endif %}"></div></div>
+            </div>
+          </td>
+          <td>{{ run.summary.unique_channels_passed }}/{{ run.summary.unique_channels_total }}</td>
+          <td>{{ "%.0f"|format(run.duration_seconds / 60) }} 分钟</td>
+          <td><button class="btn btn-danger btn-sm" onclick="deleteRun('{{ run.run_id }}')">删除</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<!-- No data -->
+<div class="empty">
+  <div class="icon">&#128202;</div>
+  <p>暂无测速数据</p>
+  <p style="margin-top:8px;font-size:12px">请先运行 <code>python app.py</code> 生成测速结果</p>
+</div>
+{% endif %}
+
+<!-- Tab 5: Settings (always shown) -->
+<div id="settings" class="tab-content">
+  <!-- Config Form -->
+  <div class="config-section">
+    <h3>参数配置</h3>
+    <div class="config-grid">
+      <div>
+        <div class="config-group">
+          <label>最低分辨率宽度</label>
+          <div class="hint">低于此宽度的频道将被过滤</div>
+          <input type="number" id="cfg_min_width" min="0" step="1">
+        </div>
+        <div class="config-group">
+          <label>最低分辨率高度</label>
+          <input type="number" id="cfg_min_height" min="0" step="1">
+        </div>
+        <div class="config-group">
+          <label>最低带宽 (MB/s)</label>
+          <div class="hint">频道带宽合格标准</div>
+          <input type="number" id="cfg_min_bandwidth_MBps" min="0" step="0.1">
+        </div>
+        <div class="config-group">
+          <label>带宽补偿阈值 (MB/s)</label>
+          <div class="hint">未获取分辨率时，达到此值可跳过分辨率判断</div>
+          <input type="number" id="cfg_bandwidth_compensation_MBps" min="0" step="0.1">
+        </div>
+        <div class="config-group">
+          <label>H.265 带宽比例</label>
+          <div class="hint">H.265 编码的带宽阈值比例（0.6 = 60%）</div>
+          <input type="number" id="cfg_h265_bandwidth_ratio" min="0" max="1" step="0.05">
+        </div>
+      </div>
+      <div>
+        <div class="config-group">
+          <label>单频道测试时长 (秒)</label>
+          <input type="number" id="cfg_test_duration" min="1" step="1">
+        </div>
+        <div class="config-group">
+          <label>最大并发线程数</label>
+          <input type="number" id="cfg_max_workers" min="1" step="1">
+        </div>
+        <div class="config-group">
+          <label>系统下行限速 (MB/s)</label>
+          <div class="hint">超过此值暂停启动新测试，设为 0 关闭</div>
+          <input type="number" id="cfg_system_bandwidth_limit_MBps" min="0" step="1">
+        </div>
+        <div class="config-group">
+          <label>运行模式</label>
+          <select id="cfg_run_mode">
+            <option value="once">once - 只运行一次</option>
+            <option value="times">times - 按指定时间循环</option>
+            <option value="interval">interval - 按间隔循环</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label>执行时间列表</label>
+          <div class="hint">run_mode=times 时生效，逗号分隔，如 06:00,12:00,18:00</div>
+          <input type="text" id="cfg_run_times" placeholder="06:00,12:00,18:00">
+        </div>
+        <div class="config-group">
+          <label>执行间隔 (分钟)</label>
+          <div class="hint">run_mode=interval 时生效</div>
+          <input type="number" id="cfg_run_interval_minutes" min="1" step="1">
+        </div>
+      </div>
+    </div>
+    <div class="config-grid" style="margin-top:8px">
+      <div class="config-group">
+        <label>显示更新时间</label>
+        <select id="cfg_show_update_time">
+          <option value="true">显示</option>
+          <option value="false">隐藏</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>更新时间位置</label>
+        <select id="cfg_update_time_position">
+          <option value="top">顶部</option>
+          <option value="bottom">底部</option>
+        </select>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveConfig()">保存配置</button>
+      <button class="btn btn-outline" onclick="loadConfig()">重新加载</button>
+    </div>
+  </div>
+
+  <!-- Text File Editors -->
+  <div class="config-section">
+    <h3>数据文件编辑</h3>
+    <div class="file-tabs">
+      <div class="file-tab active" data-file="subscribe.txt">订阅源 (subscribe.txt)</div>
+      <div class="file-tab" data-file="demo.txt">频道模板 (demo.txt)</div>
+      <div class="file-tab" data-file="alias.txt">别名映射 (alias.txt)</div>
+    </div>
+    <textarea class="text-editor" id="fileEditor" spellcheck="false" placeholder="加载中..."></textarea>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveTextFile()">保存文件</button>
+      <button class="btn btn-outline" onclick="loadTextFile()">重新加载</button>
+      <span id="fileStatus" style="font-size:12px;color:#6b7280;margin-left:8px"></span>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="config-section">
+    <h3>系统操作</h3>
+    <div class="btn-group" style="margin-top:0">
+      <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
+      <button class="btn btn-outline" onclick="downloadResult('txt')">下载 result.txt</button>
+      <button class="btn btn-outline" onclick="downloadResult('m3u')">下载 result.m3u</button>
+    </div>
+    <div id="triggerStatus" style="margin-top:8px;font-size:12px;color:#6b7280"></div>
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+// ───── Tab switching ─────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ───── Detail table search + filter ─────
+const detailSearch = document.getElementById('detailSearch');
+const detailFilter = document.getElementById('detailFilter');
+function filterDetails() {
+  const q = (detailSearch ? detailSearch.value : '').toLowerCase();
+  const f = detailFilter ? detailFilter.value : 'all';
+  document.querySelectorAll('#detailTable tbody tr').forEach(tr => {
+    const ch = tr.dataset.channel || '';
+    const url = tr.querySelector('.url-cell') ? tr.querySelector('.url-cell').textContent : '';
+    const passed = tr.dataset.passed;
+    const h265 = tr.dataset.h265;
+    let show = true;
+    if (q && !ch.toLowerCase().includes(q) && !url.toLowerCase().includes(q)) show = false;
+    if (f === 'pass' && passed !== '1') show = false;
+    if (f === 'fail' && passed !== '0') show = false;
+    if (f === 'h265' && h265 !== '1') show = false;
+    tr.style.display = show ? '' : 'none';
+  });
+}
+if (detailSearch) detailSearch.addEventListener('input', filterDetails);
+if (detailFilter) detailFilter.addEventListener('change', filterDetails);
+
+// ───── Channel search + filter ─────
+const channelSearch = document.getElementById('channelSearch');
+const channelFilter = document.getElementById('channelFilter');
+function filterChannels() {
+  const q = (channelSearch ? channelSearch.value : '').toLowerCase();
+  const f = channelFilter ? channelFilter.value : 'all';
+  document.querySelectorAll('.ch-card').forEach(card => {
+    const ch = card.dataset.channel || '';
+    const passed = parseInt(card.dataset.passed || '0');
+    let show = true;
+    if (q && !ch.toLowerCase().includes(q)) show = false;
+    if (f === 'pass' && passed === 0) show = false;
+    if (f === 'fail' && passed > 0) show = false;
+    card.style.display = show ? '' : 'none';
+  });
+}
+if (channelSearch) channelSearch.addEventListener('input', filterChannels);
+if (channelFilter) channelFilter.addEventListener('change', filterChannels);
+
+function toggleChannel(header) {
+  const body = header.nextElementSibling;
+  const arrow = header.querySelector('.arrow');
+  body.classList.toggle('open');
+  arrow.classList.toggle('open');
+}
+
+// ───── Toast notification ─────
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type;
+  setTimeout(() => t.classList.add('show'), 10);
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ───── Config management ─────
+const CONFIG_FIELDS = [
+  'min_width', 'min_height', 'min_bandwidth_MBps', 'bandwidth_compensation_MBps',
+  'h265_bandwidth_ratio', 'test_duration', 'max_workers',
+  'system_bandwidth_limit_MBps', 'run_mode', 'run_times', 'run_interval_minutes',
+  'show_update_time', 'update_time_position'
+];
+
+function loadConfig() {
+  fetch('/api/config')
+    .then(r => r.json())
+    .then(cfg => {
+      CONFIG_FIELDS.forEach(key => {
+        const el = document.getElementById('cfg_' + key);
+        if (!el) return;
+        const val = cfg[key];
+        if (key === 'run_times' && Array.isArray(val)) {
+          el.value = val.join(',');
+        } else if (key === 'show_update_time') {
+          el.value = val ? 'true' : 'false';
+        } else {
+          el.value = val !== undefined ? val : '';
+        }
+      });
+    })
+    .catch(e => showToast('加载配置失败: ' + e, 'error'));
+}
+
+function saveConfig() {
+  const data = {};
+  CONFIG_FIELDS.forEach(key => {
+    const el = document.getElementById('cfg_' + key);
+    if (!el) return;
+    let val = el.value;
+    if (key === 'run_times') {
+      data[key] = val.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (key === 'show_update_time') {
+      data[key] = val === 'true';
+    } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'run_interval_minutes'].includes(key)) {
+      data[key] = parseInt(val) || 0;
+    } else if (['min_bandwidth_MBps', 'bandwidth_compensation_MBps', 'h265_bandwidth_ratio', 'system_bandwidth_limit_MBps'].includes(key)) {
+      data[key] = parseFloat(val) || 0;
+    } else {
+      data[key] = val;
+    }
+  });
+
+  fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  })
+  .then(r => r.json())
+  .then(res => {
+    if (res.ok) showToast('配置已保存', 'success');
+    else showToast('保存失败: ' + (res.error || ''), 'error');
+  })
+  .catch(e => showToast('保存失败: ' + e, 'error'));
+}
+
+// ───── Text file editor ─────
+let currentFile = 'subscribe.txt';
+document.querySelectorAll('.file-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentFile = tab.dataset.file;
+    loadTextFile();
+  });
+});
+
+function loadTextFile() {
+  document.getElementById('fileStatus').textContent = '加载中...';
+  fetch('/api/text/' + currentFile)
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('fileEditor').value = data.content || '';
+      document.getElementById('fileStatus').textContent = '';
+    })
+    .catch(e => {
+      document.getElementById('fileStatus').textContent = '加载失败';
+      showToast('加载文件失败: ' + e, 'error');
+    });
+}
+
+function saveTextFile() {
+  const content = document.getElementById('fileEditor').value;
+  document.getElementById('fileStatus').textContent = '保存中...';
+  fetch('/api/text/' + currentFile, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({content: content})
+  })
+  .then(r => r.json())
+  .then(res => {
+    if (res.ok) {
+      document.getElementById('fileStatus').textContent = '已保存';
+      showToast(currentFile + ' 已保存', 'success');
+    } else {
+      document.getElementById('fileStatus').textContent = '保存失败';
+      showToast('保存失败: ' + (res.error || ''), 'error');
+    }
+  })
+  .catch(e => {
+    document.getElementById('fileStatus').textContent = '保存失败';
+    showToast('保存失败: ' + e, 'error');
+  });
+}
+
+// ───── Trigger test ─────
+let pollTimer = null;
+function triggerTest() {
+  const btn = document.getElementById('btnTrigger');
+  btn.disabled = true;
+  btn.textContent = '启动中...';
+  document.getElementById('triggerStatus').textContent = '';
+
+  fetch('/api/trigger', {method: 'POST'})
+    .then(r => r.json())
+    .then(res => {
+      if (res.ok) {
+        showToast('测试已启动，请等待完成', 'success');
+        document.getElementById('triggerStatus').textContent = '测试运行中...页面将在测试完成后自动刷新';
+        btn.textContent = '运行中...';
+        pollTimer = setInterval(pollStatus, 5000);
+      } else {
+        showToast(res.error || '启动失败', 'error');
+        btn.disabled = false;
+        btn.textContent = '立即测试';
+      }
+    })
+    .catch(e => {
+      showToast('启动失败: ' + e, 'error');
+      btn.disabled = false;
+      btn.textContent = '立即测试';
+    });
+}
+
+function pollStatus() {
+  fetch('/api/status')
+    .then(r => r.json())
+    .then(status => {
+      if (!status.running) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        document.getElementById('triggerStatus').textContent = '测试完成，正在刷新页面...';
+        setTimeout(() => location.reload(), 1000);
+      }
+    });
+}
+
+// ───── Download result ─────
+function downloadResult(fmt) {
+  window.open('/api/download/' + fmt, '_blank');
+}
+
+// ───── Delete run ─────
+function deleteRun(runId) {
+  if (!confirm('确定删除该轮记录？')) return;
+  fetch('/api/run/' + runId, {method: 'DELETE'})
+    .then(r => r.json())
+    .then(res => {
+      if (res.ok) {
+        const row = document.querySelector('tr[data-runid="' + runId + '"]');
+        if (row) row.remove();
+        showToast('已删除', 'success');
+      }
+    })
+    .catch(e => showToast('删除失败: ' + e, 'error'));
+}
+
+// ───── Init ─────
+loadConfig();
+loadTextFile();
+</script>
+</body>
+</html>
