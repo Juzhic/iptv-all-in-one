@@ -330,10 +330,10 @@ if __name__ == '__main__':
         init_db()
         migrate_from_json()
 
-        port = 5000
+        port = 58080
         try:
             cfg = load_config()
-            port = int(cfg.get('web_port', 5000))
+            port = int(cfg.get('web_port', 58080))
         except Exception:
             pass
 
