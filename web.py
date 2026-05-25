@@ -17,6 +17,10 @@ from app import load_config, DEFAULT_CONFIG
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
+# 初始化数据库（模块加载时执行，兼容 uWSGI / gunicorn 等 WSGI 服务器）
+init_db()
+migrate_from_json()
+
 
 @app.after_request
 def add_no_cache_headers(response):
@@ -327,9 +331,6 @@ def api_status():
 
 if __name__ == '__main__':
     try:
-        init_db()
-        migrate_from_json()
-
         port = 58080
         try:
             cfg = load_config()
