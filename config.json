@@ -1,48 +1,37 @@
 {
     "# 说明": "所有配置项均可修改，注释行不影响程序运行",
-
-    "test_duration": 15,
     "# test_duration": "每个频道测速时长（秒）",
-
-    "max_workers": 50,
     "# max_workers": "最大同时测试频道数（并发线程数）",
-
-    "system_bandwidth_limit_MBps": 50,
     "# system_bandwidth_limit_MBps": "系统下行带宽限速（MB/s），超过此值暂停启动新测试，设为0关闭",
-
-    "min_bandwidth_MBps": 1.0,
     "# min_bandwidth_MBps": "频道带宽合格标准（MB/s），低于此值判定为带宽不足",
-
-    "bandwidth_compensation_MBps": 2.0,
     "# bandwidth_compensation_MBps": "未获取分辨率时的带宽补偿阈值（MB/s），达到此值可跳过分辨率判断",
-
-    "h265_bandwidth_ratio": 0.6,
     "# h265_bandwidth_ratio": "H.265/HEVC编码的带宽阈值比例（0.6=60%），获取不到编码时不生效",
-
-    "show_update_time": true,
     "# show_update_time": "是否在输出文件中显示最后更新时间条目",
-
-    "update_time_position": "top",
     "# update_time_position": "更新时间显示位置：top=最上方 | bottom=最下方",
-
-    "min_width": 1920,
     "# min_width": "最低分辨率宽度（像素）",
-
-    "min_height": 1080,
     "# min_height": "最低分辨率高度（像素）",
-
-    "output_txt": "output/result.txt",
     "# output_txt": "TXT格式输出文件路径",
-
-    "output_m3u": "output/result.m3u",
     "# output_m3u": "M3U格式输出文件路径",
-
-    "run_mode": "once",
     "# run_mode": "运行模式：once=只运行一次 | times=按指定时间循环 | interval=按间隔循环",
-
-    "run_times": ["06:00", "12:00", "18:00"],
     "# run_times": "run_mode=times 时生效，指定执行时间列表（24小时制）",
-
-    "run_interval_minutes": 120,
-    "# run_interval_minutes": "run_mode=interval 时生效，执行间隔（分钟），从上一轮结束开始计时"
+    "# run_interval_minutes": "run_mode=interval 时生效，执行间隔（分钟），从上一轮结束开始计时",
+    "test_duration": 15,
+    "max_workers": 50,
+    "system_bandwidth_limit_MBps": 50,
+    "min_bandwidth_MBps": 1,
+    "bandwidth_compensation_MBps": 2,
+    "h265_bandwidth_ratio": 0.6,
+    "show_update_time": true,
+    "update_time_position": "top",
+    "min_width": 1920,
+    "min_height": 1080,
+    "output_txt": "output/result.txt",
+    "output_m3u": "output/result.m3u",
+    "run_mode": "once",
+    "run_times": [
+        "06:00",
+        "12:00",
+        "18:00"
+    ],
+    "run_interval_minutes": 120
 }

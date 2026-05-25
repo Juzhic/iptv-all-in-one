@@ -190,7 +190,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
       <span class="dot green"></span>最近更新：{{ latest.finished_at }}
       &nbsp;|&nbsp; 耗时 {{ "%.0f"|format(latest.duration_seconds / 60) }} 分钟
     {% else %}
-      <span class="dot gray"></span>暂无数据，请先运行 python app.py
+      <span class="dot yellow"></span>暂无测速数据，请前往系统配置页发起首次测试
     {% endif %}
   </div>
 </div>
@@ -227,11 +227,11 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 
 <!-- Tabs -->
 <div class="tabs">
-  <div class="tab active" data-tab="overview">总览</div>
+  <div class="tab {% if latest %}active{% endif %}" data-tab="overview">总览</div>
   <div class="tab" data-tab="details">全部明细</div>
   <div class="tab" data-tab="channels">按频道</div>
   <div class="tab" data-tab="history">历史趋势</div>
-  <div class="tab" data-tab="settings">系统配置</div>
+  <div class="tab {% if not latest %}active{% endif %}" data-tab="settings">系统配置</div>
 </div>
 
 {% if latest %}
@@ -425,12 +425,12 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 <div class="empty">
   <div class="icon">&#128202;</div>
   <p>暂无测速数据</p>
-  <p style="margin-top:8px;font-size:12px">请先运行 <code>python app.py</code> 生成测速结果</p>
+  <p style="margin-top:8px;font-size:12px">请前往「系统配置」页，点击「立即测试」发起首次检测</p>
 </div>
 {% endif %}
 
 <!-- Tab 5: Settings (always shown) -->
-<div id="settings" class="tab-content">
+<div id="settings" class="tab-content {% if not latest %}active{% endif %}">
 
   <!-- Text File Editors (top - most used) -->
   <div class="config-section">
