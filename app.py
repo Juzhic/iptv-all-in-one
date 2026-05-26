@@ -776,10 +776,17 @@ def save_run_result(run_data, filepath='output/history.json'):
     insert_run(run_data)
 
 
-def run_test_cycle():
+def run_test_cycle(progress_callback=None, log_callback=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     _clear_timeouts()
     run_start_time = time.time()
+
+    def _log(msg):
+        if log_callback:
+            try:
+                log_callback(msg)
+            except Exception:
+                pass
 
     cfg = load_config()
     _, name_to_canonical, regex_aliases = load_aliases()
@@ -787,6 +794,7 @@ def run_test_cycle():
 
     if not demo_structure:
         print("demo 模板为空，跳过")
+        _log("频道模板为空，请先配置频道模板")
         return
 
     TEST_DURATION = cfg['test_duration']
@@ -797,8 +805,10 @@ def run_test_cycle():
 
     if not m3u_urls:
         print("订阅源为空，请在 Web 后台「系统配置」中填写订阅源地址")
+        _log("订阅源为空，请先配置订阅源地址")
         return
 
+    _log(f"开始测试任务，共 {len(m3u_urls)} 个数据源")
     print(f"数据源数量：{len(m3u_urls)}")
     print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS}")
     print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
@@ -808,13 +818,16 @@ def run_test_cycle():
     # 获取并解析所有 M3U 数据源
     all_iptv_list = []
     for idx, m3u_url in enumerate(m3u_urls, 1):
+        _log(f"[{idx}/{len(m3u_urls)}] 正在获取: {m3u_url}")
         print(f"\n[{idx}/{len(m3u_urls)}] 正在从 {m3u_url} 获取 M3U 数据...")
         m3u_content = fetch_m3u_playlist(m3u_url)
         if m3u_content:
             iptv_list = parse_iptv_addresses(m3u_content)
+            _log(f"  -> 解析到 {len(iptv_list)} 个频道地址")
             print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
             all_iptv_list.extend(iptv_list)
         else:
+            _log(f"  -> 获取失败，跳过")
             print("  -> 获取失败，跳过")
 
     print(f"\n共计解析 {len(all_iptv_list)} 个频道地址")
@@ -822,6 +835,7 @@ def run_test_cycle():
     # 匹配 demo 中的频道
     matched_urls = match_channels_from_m3u(all_iptv_list, demo_structure, name_to_canonical, regex_aliases)
     matched_count = sum(len(v) for v in matched_urls.values())
+    _log(f"匹配到 {len(matched_urls)} 个频道，共 {matched_count} 个待测地址")
     print(f"匹配到 demo 中 {len(matched_urls)} 个频道，共 {matched_count} 个地址")
 
     # 构建待测列表
@@ -831,9 +845,11 @@ def run_test_cycle():
             test_list.append(({'name': canonical_name}, url))
 
     print(f"待测频道数：{len(test_list)}\n")
+    _log(f"开始测速，共 {len(test_list)} 个频道地址")
 
     if not test_list:
         print("没有可测试的频道地址")
+        _log("没有可测试的频道地址")
         return
 
     # 确保输出目录存在
@@ -863,6 +879,7 @@ def run_test_cycle():
         duration=TEST_DURATION,
         max_workers=MAX_WORKERS,
         config=cfg,
+        progress_callback=progress_callback,
         on_pass_callback=_on_channel_pass
     )
 
@@ -897,6 +914,7 @@ def run_test_cycle():
     print(f"结果已保存到 {cfg['output_txt']} 和 {cfg['output_m3u']}")
     print(f"历史记录已保存到 {history_path}")
     print(f"{'=' * 60}")
+    _log(f"测试完成！通过 {passed_count} 个频道（{passed_urls} 个地址），耗时 {run_elapsed:.0f} 秒")
 
 
 def _next_run_datetime(run_mode, run_times, run_interval_minutes):

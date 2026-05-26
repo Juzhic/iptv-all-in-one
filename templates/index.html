@@ -157,6 +157,29 @@ tr:hover{background:#f8f9fb}
 
 .no-data{padding:40px;text-align:center;color:#9ca3af;font-size:13px}
 
+/* Log Panel */
+.log-panel{background:#1e1e2e;color:#cdd6f4;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:12px;line-height:1.7;height:400px;overflow-y:auto;border-radius:8px;padding:12px;position:relative;scroll-behavior:smooth}
+.log-panel .log-line{white-space:pre-wrap;word-break:break-all}
+.log-panel .log-line .log-time{color:#89b4fa;margin-right:8px}
+.log-panel .log-line .log-pass{color:#a6e3a1}
+.log-panel .log-line .log-fail{color:#f38ba8}
+.log-panel .log-line .log-info{color:#cba6f7}
+.log-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.log-controls .btn-scroll{padding:4px 10px;border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:11px;cursor:pointer;color:#374151}
+.log-controls .btn-scroll.active{background:#2563eb;color:#fff;border-color:#2563eb}
+
+/* Progress bar large */
+.progress-lg{height:10px;background:#e5e7eb;border-radius:5px;overflow:hidden;margin:8px 0}
+.progress-lg .fill{height:100%;border-radius:5px;transition:width .3s;background:#2563eb}
+
+/* History detail expandable */
+.history-detail-row{display:none}
+.history-detail-row.open{display:table-row}
+.history-detail-row td{padding:0;background:#f8f9fb}
+.history-row{cursor:pointer}
+.history-row:hover{background:#f0f4ff}
+.history-row.expanded{background:#eff3ff}
+
 /* Channel name nowrap */
 td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
 
@@ -231,7 +254,8 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
   <div class="tab" data-tab="details">全部明细</div>
   <div class="tab" data-tab="channels">按频道</div>
   <div class="tab" data-tab="history">历史趋势</div>
-  <div class="tab {% if not latest %}active{% endif %}" data-tab="settings">系统配置</div>
+  <div class="tab {% if not latest %}active{% endif %}" data-tab="testing">系统测试</div>
+  <div class="tab" data-tab="settings">系统配置</div>
 </div>
 
 {% if latest %}
@@ -369,29 +393,27 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 
 <!-- Tab 4: History -->
 <div id="history" class="tab-content">
-  {% if runs|length > 1 %}
-  <div class="card" style="margin-bottom:16px">
-    <div class="label" style="margin-bottom:8px">通过率趋势（最近 {{ runs|length }} 轮）</div>
-    <svg viewBox="0 0 800 200" style="width:100%;height:200px">
-      {% set ns = namespace(points=[]) %}
-      {% for run in runs|reverse %}
-        {% set x = (loop.index0 / (runs|length - 1) * 760 + 20) if runs|length > 1 else 400 %}
-        {% set y = 190 - (run.summary.pass_rate / 100 * 170) %}
-        {% set ns.points = ns.points + [x ~ ',' ~ y] %}
-        <circle cx="{{ x }}" cy="{{ y }}" r="4" fill="{% if run.summary.pass_rate >= 50 %}#22c55e{% else %}#ef4444{% endif %}"/>
-        <text x="{{ x }}" y="200" text-anchor="middle" font-size="9" fill="#9ca3af">{{ run.finished_at[5:16] }}</text>
-        <text x="{{ x }}" text-anchor="middle" font-size="10" fill="#374151" y="{{ y - 8 }}">{{ run.summary.pass_rate }}%</text>
-      {% endfor %}
-      {% if runs|length > 1 %}
-      <polyline points="{{ ns.points|join(' ') }}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round"/>
-      {% endif %}
-      <line x1="20" y1="20" x2="780" y2="20" stroke="#f3f4f6" stroke-width="1"/>
-      <line x1="20" y1="105" x2="780" y2="105" stroke="#f3f4f6" stroke-width="1"/>
-      <line x1="20" y1="190" x2="780" y2="190" stroke="#e5e7eb" stroke-width="1"/>
-    </svg>
-  </div>
-  {% endif %}
 
+  <!-- Date range filter -->
+  <div class="config-section" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <label style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap">日期范围：</label>
+      <input type="date" id="historyStartDate" style="padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none">
+      <span style="color:#9ca3af">~</span>
+      <input type="date" id="historyEndDate" style="padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none">
+      <button class="btn btn-primary btn-sm" onclick="queryHistory()">查询</button>
+      <button class="btn btn-outline btn-sm" onclick="resetHistoryDate()">最近7天</button>
+      <button class="btn btn-outline btn-sm" onclick="resetHistoryAll()">全部</button>
+    </div>
+  </div>
+
+  <!-- Trend chart (filtered) -->
+  <div id="historyChartWrap" class="card" style="margin-bottom:16px;display:none">
+    <div class="label" style="margin-bottom:8px" id="historyChartTitle">通过率趋势</div>
+    <svg id="historyChart" viewBox="0 0 800 200" style="width:100%;height:200px"></svg>
+  </div>
+
+  <!-- History table -->
   <div class="table-wrap">
     <table>
       <thead>
@@ -399,7 +421,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
       </thead>
       <tbody id="historyBody">
         {% for run in runs %}
-        <tr data-runid="{{ run.run_id }}">
+        <tr class="history-row" data-runid="{{ run.run_id }}" onclick="toggleHistoryDetail(this, '{{ run.run_id }}')">
           <td>{{ run.finished_at }}</td>
           <td>{{ run.summary.total_tested }}</td>
           <td style="color:#16a34a;font-weight:600">{{ run.summary.total_passed }}</td>
@@ -412,12 +434,18 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
           </td>
           <td>{{ run.summary.unique_channels_passed }}/{{ run.summary.unique_channels_total }}</td>
           <td>{{ "%.0f"|format(run.duration_seconds / 60) }} 分钟</td>
-          <td><button class="btn btn-danger btn-sm" onclick="deleteRun('{{ run.run_id }}')">删除</button></td>
+          <td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun('{{ run.run_id }}')">删除</button></td>
+        </tr>
+        <tr class="history-detail-row" id="detail-{{ run.run_id }}">
+          <td colspan="8">
+            <div class="no-data" style="padding:12px">点击加载详情...</div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  <div id="historyNoData" class="no-data" style="display:none">该日期范围内暂无测速记录</div>
 </div>
 
 {% else %}
@@ -425,12 +453,68 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 <div class="empty">
   <div class="icon">&#128202;</div>
   <p>暂无测速数据</p>
-  <p style="margin-top:8px;font-size:12px">请前往「系统配置」页，点击「立即测试」发起首次检测</p>
+  <p style="margin-top:8px;font-size:12px">请前往「系统测试」页，点击「立即测试」发起首次检测</p>
 </div>
 {% endif %}
 
-<!-- Tab 5: Settings (always shown) -->
-<div id="settings" class="tab-content {% if not latest %}active{% endif %}">
+<!-- Tab 5: System Test (always shown) -->
+<div id="testing" class="tab-content {% if not latest %}active{% endif %}">
+
+  <!-- Trigger + Status -->
+  <div class="config-section">
+    <h3>测试控制</h3>
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
+      <span id="testStatusText" style="font-size:13px;color:#6b7280">空闲</span>
+    </div>
+    <div id="progressWrap" style="display:none;margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span id="progressLabel" style="font-size:12px;color:#374151">进度</span>
+        <span id="progressPercent" style="font-size:12px;font-weight:600;color:#2563eb">0%</span>
+      </div>
+      <div class="progress-lg"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      <div style="display:flex;gap:16px;margin-top:6px">
+        <span style="font-size:12px;color:#6b7280">已测：<b id="progProcessed">0</b></span>
+        <span style="font-size:12px;color:#16a34a">通过：<b id="progPassed">0</b></span>
+        <span style="font-size:12px;color:#dc2626">失败：<b id="progFailed">0</b></span>
+        <span style="font-size:12px;color:#6b7280">耗时：<b id="progElapsed">0</b>s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log Panel -->
+  <div class="config-section">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3 style="margin-bottom:0">实时日志</h3>
+      <div class="log-controls" style="margin-bottom:0">
+        <button class="btn-scroll" id="btnAutoScroll" onclick="toggleAutoScroll()">自动滚动</button>
+        <button class="btn-scroll" onclick="clearLog()">清空</button>
+      </div>
+    </div>
+    <div class="log-panel" id="logPanel">
+      <div class="log-line" style="color:#6b7280">等待测试开始...</div>
+    </div>
+  </div>
+
+  <!-- Download URLs -->
+  <div class="config-section">
+    <h3>结果订阅地址</h3>
+    <p style="font-size:12px;color:#6b7280;margin-bottom:12px">复制以下地址到播放器，可自动获取最新测速通过的频道列表</p>
+    <div class="download-row">
+      <span style="font-size:12px;color:#6b7280;width:36px">TXT</span>
+      <a id="linkTxt" href="/api/download/txt" target="_blank">/api/download/txt</a>
+      <button class="copy-btn" onclick="copyLink('txt', this)">复制</button>
+    </div>
+    <div class="download-row">
+      <span style="font-size:12px;color:#6b7280;width:36px">M3U</span>
+      <a id="linkM3u" href="/api/download/m3u" target="_blank">/api/download/m3u</a>
+      <button class="copy-btn" onclick="copyLink('m3u', this)">复制</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 6: Settings (always shown) -->
+<div id="settings" class="tab-content">
 
   <!-- Text File Editors (top - most used) -->
   <div class="config-section">
@@ -446,28 +530,6 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
       <button class="btn btn-outline" onclick="loadTextFile()">重新加载</button>
       <button class="btn btn-danger btn-sm" id="btnResetDemo" style="display:none" onclick="resetDemo()">恢复默认模板</button>
       <span id="fileStatus" style="font-size:12px;color:#6b7280;margin-left:8px"></span>
-    </div>
-  </div>
-
-  <!-- Actions -->
-  <div class="config-section">
-    <h3>系统操作</h3>
-    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
-      <div id="triggerStatus" style="font-size:12px;color:#6b7280"></div>
-    </div>
-    <div style="margin-top:16px">
-      <div class="label" style="margin-bottom:8px">结果订阅地址（复制到播放器使用）</div>
-      <div class="download-row">
-        <span style="font-size:12px;color:#6b7280;width:36px">TXT</span>
-        <a id="linkTxt" href="/api/download/txt" target="_blank">/api/download/txt</a>
-        <button class="copy-btn" onclick="copyLink('txt', this)">复制</button>
-      </div>
-      <div class="download-row">
-        <span style="font-size:12px;color:#6b7280;width:36px">M3U</span>
-        <a id="linkM3u" href="/api/download/m3u" target="_blank">/api/download/m3u</a>
-        <button class="copy-btn" onclick="copyLink('m3u', this)">复制</button>
-      </div>
     </div>
   </div>
 
@@ -757,49 +819,147 @@ function resetDemo() {
     .catch(e => showToast('恢复失败: ' + e, 'error'));
 }
 
-// ───── Trigger test ─────
-let pollTimer = null;
+// ───── Trigger test + Log polling ─────
+let logPollTimer = null;
+let lastLogSeq = 0;
+let autoScroll = true;
+
 function triggerTest() {
   const btn = document.getElementById('btnTrigger');
   btn.disabled = true;
   btn.textContent = '启动中...';
-  document.getElementById('triggerStatus').textContent = '';
+  document.getElementById('testStatusText').textContent = '正在启动...';
 
   fetch('/api/trigger', {method: 'POST'})
     .then(r => r.json())
     .then(res => {
       if (res.ok) {
-        showToast('测试已启动，请等待完成', 'success');
-        document.getElementById('triggerStatus').textContent = '测试运行中...页面将在测试完成后自动刷新';
+        showToast('测试已启动', 'success');
+        // 清空日志面板
+        const panel = document.getElementById('logPanel');
+        panel.innerHTML = '';
+        lastLogSeq = 0;
+        // 显示进度区域
+        document.getElementById('progressWrap').style.display = '';
+        document.getElementById('testStatusText').textContent = '运行中...';
         btn.textContent = '运行中...';
-        pollTimer = setInterval(pollStatus, 5000);
+        // 开始轮询日志
+        logPollTimer = setInterval(pollProgress, 2000);
       } else {
         showToast(res.error || '启动失败', 'error');
-        btn.disabled = false;
-        btn.textContent = '立即测试';
+        resetTestBtn();
       }
     })
     .catch(e => {
       showToast('启动失败: ' + e, 'error');
-      btn.disabled = false;
-      btn.textContent = '立即测试';
+      resetTestBtn();
     });
 }
 
-function pollStatus() {
-  fetch('/api/status')
+function pollProgress() {
+  fetch('/api/progress?after=' + lastLogSeq)
     .then(r => r.json())
-    .then(status => {
-      if (!status.running) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-        document.getElementById('triggerStatus').textContent = '测试完成，正在刷新页面...';
-        setTimeout(() => location.reload(), 1000);
+    .then(data => {
+      // 更新进度条
+      const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressPercent').textContent = pct + '%';
+      document.getElementById('progressLabel').textContent =
+        data.total > 0 ? ('进度 ' + data.processed + ' / ' + data.total) : '准备中...';
+      document.getElementById('progProcessed').textContent = data.processed;
+      document.getElementById('progPassed').textContent = data.passed;
+      document.getElementById('progFailed').textContent = data.failed;
+      document.getElementById('progElapsed').textContent = data.elapsed;
+
+      // 追加日志行
+      const panel = document.getElementById('logPanel');
+      (data.lines || []).forEach(line => {
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        let cls = 'log-info';
+        if (line.msg.includes('通过') || line.msg.includes('pass')) cls = 'log-pass';
+        else if (line.msg.includes('拒绝') || line.msg.includes('失败')) cls = 'log-fail';
+        div.innerHTML = '<span class="log-time">[' + line.time + ']</span><span class="' + cls + '">' + escapeHtml(line.msg) + '</span>';
+        panel.appendChild(div);
+        lastLogSeq = line.seq;
+      });
+
+      // 自动滚动到底部
+      if (autoScroll) {
+        panel.scrollTop = panel.scrollHeight;
+      }
+
+      // 测试结束
+      if (!data.running) {
+        clearInterval(logPollTimer);
+        logPollTimer = null;
+        document.getElementById('testStatusText').textContent = '已完成';
+        document.getElementById('progressLabel').textContent = '测试完成';
+        if (data.error) {
+          showToast('测试异常: ' + data.error, 'error');
+        }
+        resetTestBtn();
+        // 延迟刷新页面
+        setTimeout(() => location.reload(), 2000);
       }
     });
 }
 
-// ───── Run detail selector ─────
+function resetTestBtn() {
+  const btn = document.getElementById('btnTrigger');
+  btn.disabled = false;
+  btn.textContent = '立即测试';
+}
+
+function toggleAutoScroll() {
+  autoScroll = !autoScroll;
+  const btn = document.getElementById('btnAutoScroll');
+  btn.className = 'btn-scroll' + (autoScroll ? ' active' : '');
+}
+
+function clearLog() {
+  document.getElementById('logPanel').innerHTML = '';
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ───── Check if test is already running on page load ─────
+(function() {
+  fetch('/api/progress').then(r => r.json()).then(data => {
+    if (data.running) {
+      document.getElementById('progressWrap').style.display = '';
+      document.getElementById('testStatusText').textContent = '运行中...';
+      document.getElementById('btnTrigger').disabled = true;
+      document.getElementById('btnTrigger').textContent = '运行中...';
+      // 恢复已有日志
+      const panel = document.getElementById('logPanel');
+      panel.innerHTML = '';
+      (data.lines || []).forEach(line => {
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        div.innerHTML = '<span class="log-time">[' + line.time + ']</span>' + escapeHtml(line.msg);
+        panel.appendChild(div);
+        lastLogSeq = line.seq;
+      });
+      const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressPercent').textContent = pct + '%';
+      document.getElementById('progProcessed').textContent = data.processed;
+      document.getElementById('progPassed').textContent = data.passed;
+      document.getElementById('progFailed').textContent = data.failed;
+      document.getElementById('progElapsed').textContent = data.elapsed;
+      logPollTimer = setInterval(pollProgress, 2000);
+    }
+  }).catch(() => {});
+  // 初始化自动滚动按钮样式
+  document.getElementById('btnAutoScroll').classList.add('active');
+})();
+
+// ───── Detail tab: run selector ─────
 function loadRunDetail(runId) {
   if (!runId) return;
   fetch('/api/run/' + runId)
@@ -837,6 +997,163 @@ function loadRunDetail(runId) {
     .catch(e => showToast('加载失败: ' + e, 'error'));
 }
 
+// ───── History: date range query + expandable rows ─────
+(function() {
+  // 默认最近 7 天
+  const now = new Date();
+  const weekAgo = new Date(now - 7 * 86400000);
+  const fmt = d => d.toISOString().split('T')[0];
+  const startEl = document.getElementById('historyStartDate');
+  const endEl = document.getElementById('historyEndDate');
+  if (startEl) startEl.value = fmt(weekAgo);
+  if (endEl) endEl.value = fmt(now);
+})();
+
+function queryHistory() {
+  const start = document.getElementById('historyStartDate').value;
+  const end = document.getElementById('historyEndDate').value;
+  const params = new URLSearchParams();
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+
+  fetch('/api/runs?' + params.toString())
+    .then(r => r.json())
+    .then(runs => {
+      renderHistoryTable(runs);
+      renderHistoryChart(runs);
+    })
+    .catch(e => showToast('查询失败: ' + e, 'error'));
+}
+
+function resetHistoryDate() {
+  const now = new Date();
+  const weekAgo = new Date(now - 7 * 86400000);
+  const fmt = d => d.toISOString().split('T')[0];
+  document.getElementById('historyStartDate').value = fmt(weekAgo);
+  document.getElementById('historyEndDate').value = fmt(now);
+  queryHistory();
+}
+
+function resetHistoryAll() {
+  document.getElementById('historyStartDate').value = '';
+  document.getElementById('historyEndDate').value = '';
+  queryHistory();
+}
+
+function renderHistoryTable(runs) {
+  const tbody = document.getElementById('historyBody');
+  const noData = document.getElementById('historyNoData');
+  tbody.innerHTML = '';
+  if (!runs || runs.length === 0) {
+    noData.style.display = '';
+    return;
+  }
+  noData.style.display = 'none';
+  runs.forEach(run => {
+    const s = run.summary;
+    const rateColor = s.pass_rate >= 50 ? '#22c55e' : '#ef4444';
+    const mins = Math.round(run.duration_seconds / 60);
+    // Main row
+    const tr = document.createElement('tr');
+    tr.className = 'history-row';
+    tr.dataset.runid = run.run_id;
+    tr.onclick = function() { toggleHistoryDetail(this, run.run_id); };
+    tr.innerHTML =
+      '<td>' + run.finished_at + '</td>' +
+      '<td>' + s.total_tested + '</td>' +
+      '<td style="color:#16a34a;font-weight:600">' + s.total_passed + '</td>' +
+      '<td style="color:#dc2626">' + s.total_failed + '</td>' +
+      '<td><div class="history-rate"><span>' + s.pass_rate + '%</span><div class="mini-bar"><div class="mini-fill" style="width:' + s.pass_rate + '%;background:' + rateColor + '"></div></div></div></td>' +
+      '<td>' + s.unique_channels_passed + '/' + s.unique_channels_total + '</td>' +
+      '<td>' + mins + ' 分钟</td>' +
+      '<td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun(\'' + run.run_id + '\')">删除</button></td>';
+    tbody.appendChild(tr);
+    // Detail row
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'history-detail-row';
+    detailTr.id = 'detail-' + run.run_id;
+    detailTr.innerHTML = '<td colspan="8"><div class="no-data" style="padding:12px">点击加载详情...</div></td>';
+    tbody.appendChild(detailTr);
+  });
+}
+
+function renderHistoryChart(runs) {
+  const wrap = document.getElementById('historyChartWrap');
+  const svg = document.getElementById('historyChart');
+  const title = document.getElementById('historyChartTitle');
+  if (!runs || runs.length < 2) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  title.textContent = '通过率趋势（' + runs.length + ' 轮）';
+  svg.innerHTML = '';
+  const sorted = [...runs].reverse();
+  const n = sorted.length;
+  const points = [];
+  sorted.forEach((run, i) => {
+    const x = (i / (n - 1)) * 760 + 20;
+    const y = 190 - (run.summary.pass_rate / 100 * 170);
+    points.push(x + ',' + y);
+    const color = run.summary.pass_rate >= 50 ? '#22c55e' : '#ef4444';
+    svg.innerHTML += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '"/>';
+    svg.innerHTML += '<text x="' + x + '" y="200" text-anchor="middle" font-size="9" fill="#9ca3af">' + run.finished_at.substring(5, 16) + '</text>';
+    svg.innerHTML += '<text x="' + x + '" text-anchor="middle" font-size="10" fill="#374151" y="' + (y - 8) + '">' + run.summary.pass_rate + '%</text>';
+  });
+  svg.innerHTML += '<polyline points="' + points.join(' ') + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round"/>';
+  svg.innerHTML += '<line x1="20" y1="20" x2="780" y2="20" stroke="#f3f4f6" stroke-width="1"/>';
+  svg.innerHTML += '<line x1="20" y1="105" x2="780" y2="105" stroke="#f3f4f6" stroke-width="1"/>';
+  svg.innerHTML += '<line x1="20" y1="190" x2="780" y2="190" stroke="#e5e7eb" stroke-width="1"/>';
+}
+
+function toggleHistoryDetail(row, runId) {
+  const detailRow = document.getElementById('detail-' + runId);
+  if (!detailRow) return;
+  // Toggle
+  if (detailRow.classList.contains('open')) {
+    detailRow.classList.remove('open');
+    row.classList.remove('expanded');
+    return;
+  }
+  // Close all other open details
+  document.querySelectorAll('.history-detail-row.open').forEach(r => r.classList.remove('open'));
+  document.querySelectorAll('.history-row.expanded').forEach(r => r.classList.remove('expanded'));
+
+  row.classList.add('expanded');
+  detailRow.classList.add('open');
+  // Load detail if not already loaded
+  const content = detailRow.querySelector('.no-data');
+  if (content && content.textContent === '点击加载详情...') {
+    content.textContent = '加载中...';
+    fetch('/api/run/' + runId)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { content.textContent = data.error; return; }
+        let html = '<div class="table-wrap" style="margin:0;box-shadow:none"><table style="font-size:12px"><thead><tr>';
+        html += '<th>频道</th><th>URL</th><th>分辨率</th><th>带宽</th><th>编码</th><th>状态</th><th>原因</th></tr></thead><tbody>';
+        (data.results || []).forEach(r => {
+          const cls = r.passed ? 'pass' : 'fail';
+          let codec = '-';
+          if (r.is_h265) codec = '<span class="badge h265">H.265</span>';
+          else if (r.codec) codec = '<span class="badge h264">' + r.codec.toUpperCase() + '</span>';
+          const status = r.passed ? '<span class="badge pass">通过</span>' : '<span class="badge fail">失败</span>';
+          html += '<tr class="' + cls + '">';
+          html += '<td class="ch-name"><strong>' + r.channel + '</strong></td>';
+          html += '<td><div class="url-cell" title="' + r.url + '">' + r.url + '</div></td>';
+          html += '<td>' + r.resolution + '</td>';
+          html += '<td>' + r.bandwidth_MBps + '</td>';
+          html += '<td>' + codec + '</td>';
+          html += '<td>' + status + '</td>';
+          html += '<td style="font-size:11px;color:#6b7280">' + (r.reason || '') + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        detailRow.querySelector('td').innerHTML = html;
+      })
+      .catch(e => { content.textContent = '加载失败: ' + e; });
+  }
+}
+
 // ───── Copy link ─────
 function copyLink(fmt, btn) {
   const url = location.origin + '/api/download/' + fmt;
@@ -872,8 +1189,10 @@ function deleteRun(runId) {
     .then(r => r.json())
     .then(res => {
       if (res.ok) {
-        const row = document.querySelector('tr[data-runid="' + runId + '"]');
+        const row = document.querySelector('tr.history-row[data-runid="' + runId + '"]');
+        const detail = document.getElementById('detail-' + runId);
         if (row) row.remove();
+        if (detail) detail.remove();
         showToast('已删除', 'success');
       }
     })

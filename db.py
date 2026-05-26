@@ -446,11 +446,28 @@ def get_latest_passed_results():
     return [dict(r) for r in results]
 
 
-def get_run_history(limit=50):
-    """获取历史轮次列表（不含详细结果）。"""
+def get_run_history(limit=50, start_date=None, end_date=None):
+    """获取历史轮次列表（不含详细结果）。支持日期范围筛选。"""
     conn = _get_conn()
+    params = []
+    where = ""
+    if start_date:
+        where += " AND finished_at >= ?"
+        params.append(start_date + " 00:00:00")
+    if end_date:
+        # end_date 当天包含在内，取次日 00:00:00 作为 <
+        try:
+            from datetime import datetime, timedelta
+            d = datetime.strptime(end_date, "%Y-%m-%d")
+            next_day = (d + timedelta(days=1)).strftime("%Y-%m-%d") + " 00:00:00"
+            where += " AND finished_at < ?"
+            params.append(next_day)
+        except ValueError:
+            pass
+    params.append(limit)
     rows = conn.execute(
-        "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT * FROM runs WHERE 1=1{where} ORDER BY id DESC LIMIT ?",
+        params
     ).fetchall()
     runs = []
     for r in rows:

@@ -1,8 +1,10 @@
 """IPTV 测速管理后台 — Web 服务。"""
+import collections
 import json
 import os
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, send_file
 from db import (
@@ -37,6 +39,21 @@ ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe'}
 # 测试运行状态锁
 _test_running = False
 _test_lock = threading.Lock()
+
+# 测试进度追踪（模块级）
+_test_progress = {
+    'running': False,
+    'started_at': None,
+    'total': 0,
+    'processed': 0,
+    'passed': 0,
+    'failed': 0,
+    'elapsed': 0,
+    'finished_at': None,
+    'error': None,
+}
+_test_log_lines = collections.deque(maxlen=200)  # 环形缓冲，最多 200 行日志
+_test_log_seq = 0  # 日志序号，用于增量拉取
 
 
 # ─────────────── 页面路由 ───────────────
@@ -155,8 +172,10 @@ def api_reset_demo():
 
 @app.route('/api/runs', methods=['GET'])
 def api_get_runs():
-    """获取测试历史列表。"""
-    runs = get_run_history()
+    """获取测试历史列表。支持日期筛选：?start=2026-05-01&end=2026-05-26"""
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    runs = get_run_history(start_date=start or None, end_date=end or None)
     return jsonify(runs)
 
 
@@ -298,21 +317,58 @@ def api_download(fmt):
 @app.route('/api/trigger', methods=['POST'])
 def api_trigger():
     """触发一次测试运行。"""
-    global _test_running
+    global _test_running, _test_log_seq
     with _test_lock:
         if _test_running:
             return jsonify({'error': '测试正在运行中，请等待完成'}), 409
         _test_running = True
 
+    # 重置进度
+    _test_progress.update({
+        'running': True,
+        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
+        'elapsed': 0, 'finished_at': None, 'error': None,
+    })
+    _test_log_lines.clear()
+    _test_log_seq = 0
+    _start_time = time.time()
+
+    def _on_progress(info):
+        """由 filter_and_save_playlist 的 progress_callback 调用。"""
+        _test_progress.update({
+            'total': info.get('total', 0),
+            'processed': info.get('processed', 0),
+            'passed': info.get('success', 0),
+            'failed': info.get('failed', 0),
+            'elapsed': round(time.time() - _start_time, 1),
+        })
+
+    def _on_log(msg):
+        """由 run_test_cycle 的 log_callback 调用。"""
+        global _test_log_seq
+        _test_log_seq += 1
+        now = datetime.now().strftime('%H:%M:%S')
+        _test_log_lines.append({
+            'seq': _test_log_seq,
+            'time': now,
+            'msg': msg,
+        })
+
     def _run():
         global _test_running
         try:
             from app import run_test_cycle
-            run_test_cycle()
+            run_test_cycle(progress_callback=_on_progress, log_callback=_on_log)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Web 触发测试失败: {e}")
+            _on_log(f"测试异常终止: {e}")
+            _test_progress['error'] = str(e)
         finally:
+            _test_progress['running'] = False
+            _test_progress['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _test_progress['elapsed'] = round(time.time() - _start_time, 1)
             with _test_lock:
                 _test_running = False
 
@@ -323,8 +379,35 @@ def api_trigger():
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
-    """获取当前运行状态。"""
-    return jsonify({'running': _test_running})
+    """获取当前运行状态（精简版）。"""
+    return jsonify({
+        'running': _test_progress['running'],
+        'processed': _test_progress['processed'],
+        'total': _test_progress['total'],
+        'elapsed': _test_progress['elapsed'],
+    })
+
+
+@app.route('/api/progress', methods=['GET'])
+def api_progress():
+    """获取实时进度和日志（支持增量拉取）。
+    查询参数: after=N  只返回序号 > N 的日志行。
+    """
+    after = request.args.get('after', 0, type=int)
+    new_lines = [l for l in _test_log_lines if l['seq'] > after]
+    return jsonify({
+        'running': _test_progress['running'],
+        'started_at': _test_progress['started_at'],
+        'total': _test_progress['total'],
+        'processed': _test_progress['processed'],
+        'passed': _test_progress['passed'],
+        'failed': _test_progress['failed'],
+        'elapsed': _test_progress['elapsed'],
+        'finished_at': _test_progress['finished_at'],
+        'error': _test_progress['error'],
+        'lines': new_lines,
+        'last_seq': _test_log_seq,
+    })
 
 
 # ─────────────── 启动 ───────────────
