@@ -339,19 +339,23 @@ def test_direct_bandwidth(url, width, height, duration):
 
             # 从第一个 chunk 到达后开始计时，排除连接建立耗时
             data_start = time.monotonic()
+            last_data_time = data_start
+            stall_timeout = max(duration / 2, 5)  # 无数据超时：取测试时长一半，最少 5 秒
             if first_chunk:
                 total_bytes += len(first_chunk)
 
             for chunk in chunk_iter:
                 if chunk:
                     total_bytes += len(chunk)
+                    last_data_time = time.monotonic()
 
                 # 超时标记检查：立即退出，触发 with 块关闭连接
                 if _is_timed_out(url):
                     break
 
-                current_elapsed = time.monotonic() - data_start
-                if current_elapsed > 3 and total_bytes < 100 * 1024:
+                # 只在数据完全停止到达时才提前退出（流断开），
+                # 不因累计字节少而退出——慢启动的流可能前几秒数据少但后续正常。
+                if time.monotonic() - last_data_time > stall_timeout:
                     break
                 if time.monotonic() >= deadline:
                     break

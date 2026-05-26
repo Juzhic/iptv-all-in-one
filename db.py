@@ -7,6 +7,7 @@ from datetime import datetime
 
 DB_PATH = 'iptv.db'
 MAX_RUNS = 50
+CONFIG_DATA = 'config'  # config_data 表中存储系统配置的 key
 
 # ─── 内置默认 demo 模板 ───
 DEFAULT_DEMO = """📢公告,#genre#
@@ -332,6 +333,20 @@ def init_db():
             content TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS run_progress (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            running BOOLEAN DEFAULT 0,
+            started_at TEXT,
+            total INTEGER DEFAULT 0,
+            processed INTEGER DEFAULT 0,
+            passed INTEGER DEFAULT 0,
+            failed INTEGER DEFAULT 0,
+            elapsed REAL DEFAULT 0,
+            source TEXT DEFAULT '',
+            updated_at TEXT
+        );
+        INSERT OR IGNORE INTO run_progress (id) VALUES (1);
     """)
     conn.commit()
     _init_default_data()
@@ -598,6 +613,54 @@ def set_config_data(key, content):
     conn.commit()
 
 
+def get_config(defaults=None):
+    """从数据库读取系统配置，合并默认值。返回 dict。"""
+    defaults = defaults or {}
+    cfg = dict(defaults)
+    raw = get_config_data(CONFIG_DATA)
+    if raw:
+        try:
+            saved = json.loads(raw)
+            for key, value in saved.items():
+                if not key.startswith('#') and key in cfg:
+                    cfg[key] = value
+        except (json.JSONDecodeError, OSError):
+            pass
+    return cfg
+
+
+def save_config(cfg):
+    """保存系统配置到数据库。"""
+    set_config_data(CONFIG_DATA, json.dumps(cfg, ensure_ascii=False, indent=4))
+
+
+def migrate_config_from_file(filepath='config.json', defaults=None):
+    """将 config.json 迁移到数据库（仅在数据库中无配置时执行）。"""
+    defaults = defaults or {}
+    existing = get_config_data(CONFIG_DATA)
+    if existing:
+        return False  # 数据库已有配置，跳过
+    if not os.path.exists(filepath):
+        return False
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            file_cfg = json.load(f)
+        cfg = dict(defaults)
+        for key, value in file_cfg.items():
+            if not key.startswith('#') and key in cfg:
+                cfg[key] = value
+        save_config(cfg)
+        # 备份原文件
+        bak_path = filepath + '.bak'
+        try:
+            os.rename(filepath, bak_path)
+        except OSError:
+            pass
+        return True
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
 def _init_default_data():
     """首次启动时写入默认配置数据（已存在则跳过）。"""
     conn = _get_conn()
@@ -615,6 +678,52 @@ def _init_default_data():
                 (key, content, now)
             )
     conn.commit()
+
+
+def clear_run_progress():
+    """清空运行进度（运行结束或新运行开始时调用）。"""
+    conn = _get_conn()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute(
+        """UPDATE run_progress SET
+           running=0, started_at=NULL, total=0, processed=0,
+           passed=0, failed=0, elapsed=0, source='', updated_at=?
+           WHERE id=1""",
+        (now,)
+    )
+    conn.commit()
+
+
+def update_run_progress(total, processed, passed, failed, elapsed, source=''):
+    """更新运行进度（测试进行中由进度回调调用）。"""
+    conn = _get_conn()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute(
+        """UPDATE run_progress SET
+           running=1, total=?, processed=?, passed=?, failed=?,
+           elapsed=?, source=?, updated_at=?
+           WHERE id=1""",
+        (total, processed, passed, failed, elapsed, source, now)
+    )
+    conn.commit()
+
+
+def get_run_progress():
+    """读取当前运行进度。返回 dict 或 None。"""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM run_progress WHERE id=1").fetchone()
+    if not row:
+        return None
+    return {
+        'running': bool(row['running']),
+        'started_at': row['started_at'],
+        'total': row['total'],
+        'processed': row['processed'],
+        'passed': row['passed'],
+        'failed': row['failed'],
+        'elapsed': row['elapsed'],
+        'source': row['source'],
+    }
 
 
 def migrate_from_json(json_path='output/history.json'):

@@ -29,20 +29,18 @@ DEFAULT_CONFIG = {
     'min_height': 1080,
     'output_txt': 'output/result.txt',
     'output_m3u': 'output/result.m3u',
+    'run_mode': 'once',
+    'run_times': [],
+    'run_interval_minutes': 60,
 }
 
 
-def load_config(filepath='config.json'):
-    """加载配置文件，缺失项使用默认值。"""
-    cfg = dict(DEFAULT_CONFIG)
-    if os.path.exists(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            user_cfg = json.load(f)
-        # 只取合法配置项，忽略注释 key（以 # 开头的）
-        for key, value in user_cfg.items():
-            if not key.startswith('#') and key in cfg:
-                cfg[key] = value
-    return cfg
+def load_config(filepath=None):
+    """从数据库加载配置，缺失项使用默认值。首次启动自动从 config.json 迁移。"""
+    from db import get_config, migrate_config_from_file
+    # 首次启动：尝试从 config.json 迁移
+    migrate_config_from_file('config.json', DEFAULT_CONFIG)
+    return get_config(DEFAULT_CONFIG)
 
 
 LOW_RESOLUTION_URL_PATTERNS = (
@@ -778,8 +776,12 @@ def save_run_result(run_data, filepath='output/history.json'):
 
 def run_test_cycle(progress_callback=None, log_callback=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
+    from db import clear_run_progress, update_run_progress
     _clear_timeouts()
     run_start_time = time.time()
+
+    # 清空旧进度，标记新运行开始
+    clear_run_progress()
 
     def _log(msg):
         if log_callback:
@@ -874,14 +876,36 @@ def run_test_cycle(progress_callback=None, log_callback=None):
             save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
 
     # 测速筛选（实时写入）
+    # 始终写入 SQLite 进度表，供 Web 端读取
+    def _db_progress(info):
+        update_run_progress(
+            total=info.get('total', 0),
+            processed=info.get('processed', 0),
+            passed=info.get('success', 0),
+            failed=info.get('failed', 0),
+            elapsed=round(time.time() - run_start_time, 1),
+            source='web' if progress_callback else 'scheduler',
+        )
+
+    def _combined_progress(info):
+        _db_progress(info)
+        if progress_callback:
+            try:
+                progress_callback(info)
+            except Exception:
+                pass
+
     _, test_results = filter_and_save_playlist(
         test_list,
         duration=TEST_DURATION,
         max_workers=MAX_WORKERS,
         config=cfg,
-        progress_callback=progress_callback,
+        progress_callback=_combined_progress,
         on_pass_callback=_on_channel_pass
     )
+
+    # 运行结束，清空进度
+    clear_run_progress()
 
     # 汇总并保存结构化结果
     run_elapsed = time.time() - run_start_time
@@ -939,7 +963,7 @@ def _next_run_datetime(run_mode, run_times, run_interval_minutes):
 
 
 if __name__ == "__main__":
-    cfg = load_config('config.json')
+    cfg = load_config()
     run_mode = cfg.get('run_mode', 'once')
 
     print("=" * 60)

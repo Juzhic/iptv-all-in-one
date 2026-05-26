@@ -13,6 +13,7 @@ from db import (
     get_run_history, get_run_detail, get_channel_summary,
     get_codec_stats, delete_run,
     get_config_data, set_config_data, DEFAULT_DEMO,
+    get_config, save_config as db_save_config,
 )
 from app import load_config, DEFAULT_CONFIG
 
@@ -83,59 +84,60 @@ def index():
 
 @app.route('/api/config', methods=['GET'])
 def api_get_config():
-    """读取当前配置（合并默认值）。"""
+    """读取当前配置（从数据库，合并默认值）。"""
     cfg = load_config()
     return jsonify(cfg)
 
 
 @app.route('/api/config', methods=['POST'])
 def api_save_config():
-    """保存配置到 config.json。"""
+    """保存配置到数据库。"""
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'error': '无效的请求数据'}), 400
 
-    # 合法配置项白名单（来自 DEFAULT_CONFIG）
+    # 合法配置项白名单
     valid_keys = set(DEFAULT_CONFIG.keys())
-    # 允许 web_port
     valid_keys.add('web_port')
 
-    # 读取现有 config.json（保留注释行和未知 key）
-    config_path = 'config.json'
-    existing = {}
-    comments = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                raw = json.load(f)
-            for k, v in raw.items():
-                if k.startswith('#'):
-                    comments[k] = v
-                else:
-                    existing[k] = v
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # 更新合法 key
+    # 读取当前配置，只更新合法 key
+    cfg = get_config(DEFAULT_CONFIG)
     updated_keys = []
     for key, value in data.items():
         if key in valid_keys:
-            existing[key] = value
+            cfg[key] = value
             updated_keys.append(key)
 
-    # 合并写回：先注释行，再配置项
-    output = {}
-    for k, v in comments.items():
-        output[k] = v
-    for k, v in existing.items():
-        output[k] = v
+    # 规范化 run_times
+    if 'run_times' in updated_keys:
+        cfg['run_times'] = _normalize_run_times(cfg['run_times'])
 
-    try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(output, f, ensure_ascii=False, indent=4)
-        return jsonify({'ok': True, 'updated': updated_keys})
-    except OSError as e:
-        return jsonify({'error': f'写入失败: {e}'}), 500
+    db_save_config(cfg)
+    return jsonify({'ok': True, 'updated': updated_keys, 'config': cfg})
+
+
+def _normalize_run_times(times):
+    """规范化时间列表输入：补零、去重、排序、校验范围。"""
+    if isinstance(times, str):
+        times = [t.strip() for t in times.replace(';', ',').replace('，', ',').split(',') if t.strip()]
+    if not isinstance(times, list):
+        return []
+    result = []
+    for t in times:
+        t = str(t).strip()
+        if not t:
+            continue
+        parts = t.split(':')
+        if len(parts) != 2:
+            continue
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                result.append(f'{h:02d}:{m:02d}')
+        except ValueError:
+            continue
+    # 去重排序
+    return sorted(set(result))
 
 
 # ─────────────── 数据文件 API ───────────────
@@ -371,6 +373,12 @@ def api_trigger():
             _test_progress['elapsed'] = round(time.time() - _start_time, 1)
             with _test_lock:
                 _test_running = False
+            # 确保 SQLite 进度也被清空
+            try:
+                from db import clear_run_progress
+                clear_run_progress()
+            except Exception:
+                pass
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -379,12 +387,31 @@ def api_trigger():
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
-    """获取当前运行状态（精简版）。"""
+    """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
+    if _test_progress['running']:
+        return jsonify({
+            'running': True,
+            'processed': _test_progress['processed'],
+            'total': _test_progress['total'],
+            'elapsed': _test_progress['elapsed'],
+            'source': 'web',
+        })
+    from db import get_run_progress
+    db_progress = get_run_progress()
+    if db_progress and db_progress.get('running'):
+        return jsonify({
+            'running': True,
+            'processed': db_progress.get('processed', 0),
+            'total': db_progress.get('total', 0),
+            'elapsed': db_progress.get('elapsed', 0),
+            'source': db_progress.get('source', 'scheduler'),
+        })
     return jsonify({
-        'running': _test_progress['running'],
-        'processed': _test_progress['processed'],
-        'total': _test_progress['total'],
-        'elapsed': _test_progress['elapsed'],
+        'running': False,
+        'processed': 0,
+        'total': 0,
+        'elapsed': 0,
+        'source': '',
     })
 
 
@@ -392,21 +419,61 @@ def api_status():
 def api_progress():
     """获取实时进度和日志（支持增量拉取）。
     查询参数: after=N  只返回序号 > N 的日志行。
+    优先返回 Web 触发的内存数据（含日志），否则查 SQLite（定时任务）。
     """
     after = request.args.get('after', 0, type=int)
-    new_lines = [l for l in _test_log_lines if l['seq'] > after]
+
+    # 优先检查 Web 触发的内存进度
+    if _test_progress['running']:
+        new_lines = [l for l in _test_log_lines if l['seq'] > after]
+        return jsonify({
+            'running': True,
+            'started_at': _test_progress['started_at'],
+            'total': _test_progress['total'],
+            'processed': _test_progress['processed'],
+            'passed': _test_progress['passed'],
+            'failed': _test_progress['failed'],
+            'elapsed': _test_progress['elapsed'],
+            'finished_at': _test_progress['finished_at'],
+            'error': _test_progress['error'],
+            'lines': new_lines,
+            'last_seq': _test_log_seq,
+            'source': 'web',
+        })
+
+    # 检查 SQLite 中的定时任务进度
+    from db import get_run_progress
+    db_progress = get_run_progress()
+    if db_progress and db_progress.get('running'):
+        return jsonify({
+            'running': True,
+            'started_at': db_progress.get('started_at'),
+            'total': db_progress.get('total', 0),
+            'processed': db_progress.get('processed', 0),
+            'passed': db_progress.get('passed', 0),
+            'failed': db_progress.get('failed', 0),
+            'elapsed': db_progress.get('elapsed', 0),
+            'finished_at': None,
+            'error': None,
+            'lines': [],
+            'last_seq': 0,
+            'source': db_progress.get('source', 'scheduler'),
+        })
+
+    # 没有运行中的测试
     return jsonify({
-        'running': _test_progress['running'],
-        'started_at': _test_progress['started_at'],
-        'total': _test_progress['total'],
-        'processed': _test_progress['processed'],
-        'passed': _test_progress['passed'],
-        'failed': _test_progress['failed'],
-        'elapsed': _test_progress['elapsed'],
-        'finished_at': _test_progress['finished_at'],
-        'error': _test_progress['error'],
-        'lines': new_lines,
-        'last_seq': _test_log_seq,
+        'running': False,
+        'started_at': None,
+        'total': 0,
+        'processed': 0,
+        'passed': 0,
+        'failed': 0,
+        'elapsed': 0,
+        'finished_at': _test_progress.get('finished_at'),
+        'error': None,
+        'lines': [],
+        'last_seq': 0,
+        'source': '',
     })
 
 

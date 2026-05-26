@@ -13,6 +13,8 @@ h1{font-size:20px;font-weight:600}
 .header .meta{font-size:12px;color:#6b7280}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
 .dot.green{background:#22c55e}.dot.red{background:#ef4444}.dot.gray{background:#9ca3af}.dot.yellow{background:#f59e0b}
+.dot.pulse{animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* Summary Cards */
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
@@ -209,11 +211,19 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
     <h1>IPTV 测速管理后台</h1>
   </div>
   <div class="meta" id="headerMeta">
+    <span id="headerRunStatus" style="display:none">
+      <span class="dot yellow pulse"></span>
+      <span id="headerRunText">测试运行中...</span>
+    </span>
     {% if latest %}
-      <span class="dot green"></span>最近更新：{{ latest.finished_at }}
-      &nbsp;|&nbsp; 耗时 {{ "%.0f"|format(latest.duration_seconds / 60) }} 分钟
+      <span id="headerLastUpdate">
+        <span class="dot green"></span>最近更新：{{ latest.finished_at }}
+        &nbsp;|&nbsp; 耗时 {{ "%.0f"|format(latest.duration_seconds / 60) }} 分钟
+      </span>
     {% else %}
-      <span class="dot yellow"></span>暂无测速数据，请前往系统配置页发起首次测试
+      <span id="headerLastUpdate">
+        <span class="dot yellow"></span>暂无测速数据，请前往系统配置页发起首次测试
+      </span>
     {% endif %}
   </div>
 </div>
@@ -251,9 +261,8 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 <!-- Tabs -->
 <div class="tabs">
   <div class="tab {% if latest %}active{% endif %}" data-tab="overview">总览</div>
-  <div class="tab" data-tab="details">全部明细</div>
+  <div class="tab" data-tab="history">历史明细</div>
   <div class="tab" data-tab="channels">按频道</div>
-  <div class="tab" data-tab="history">历史趋势</div>
   <div class="tab {% if not latest %}active{% endif %}" data-tab="testing">系统测试</div>
   <div class="tab" data-tab="settings">系统配置</div>
 </div>
@@ -294,57 +303,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
   </div>
 </div>
 
-<!-- Tab 2: Details -->
-<div id="details" class="tab-content">
-  <div class="run-selector">
-    <label>测试轮次：</label>
-    <select id="runSelector" onchange="loadRunDetail(this.value)">
-      {% for run in runs %}
-      <option value="{{ run.run_id }}" {% if loop.first %}selected{% endif %}>{{ run.finished_at }} （{{ run.summary.total_passed }}/{{ run.summary.total_tested }} 通过）</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="toolbar">
-    <input type="text" id="detailSearch" placeholder="搜索频道名或 URL...">
-    <select id="detailFilter">
-      <option value="all">全部</option>
-      <option value="pass">仅通过</option>
-      <option value="fail">仅失败</option>
-      <option value="h265">仅 H.265</option>
-    </select>
-  </div>
-  <div class="table-wrap">
-    <table id="detailTable">
-      <thead>
-        <tr>
-          <th style="min-width:100px">频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th>
-          <th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th>
-        </tr>
-      </thead>
-      <tbody id="detailBody">
-        {% for r in latest.results %}
-        <tr class="{% if r.passed %}pass{% else %}fail{% endif %}" data-channel="{{ r.channel }}" data-passed="{{ '1' if r.passed else '0' }}" data-h265="{{ '1' if r.is_h265 else '0' }}">
-          <td class="ch-name"><strong>{{ r.channel }}</strong></td>
-          <td><div class="url-cell" title="{{ r.url }}">{{ r.url }}</div></td>
-          <td>{{ r.resolution }}</td>
-          <td>{{ r.bandwidth_MBps }}</td>
-          <td>
-            {% if r.is_h265 %}<span class="badge h265">H.265</span>
-            {% elif r.codec %}<span class="badge h264">{{ r.codec|upper }}</span>
-            {% else %}<span style="color:#9ca3af">-</span>{% endif %}
-          </td>
-          <td>{{ r.sample_seconds }}</td>
-          <td>{{ r.cost_seconds }}</td>
-          <td>{% if r.passed %}<span class="badge pass">通过</span>{% else %}<span class="badge fail">失败</span>{% endif %}</td>
-          <td style="font-size:12px;color:#6b7280">{{ r.reason }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<!-- Tab 3: By Channel -->
+<!-- Tab 2: By Channel -->
 <div id="channels" class="tab-content">
   <div class="toolbar">
     <input type="text" id="channelSearch" placeholder="搜索频道名...">
@@ -391,7 +350,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
   </div>
 </div>
 
-<!-- Tab 4: History -->
+<!-- Tab 2: History + Details merged -->
 <div id="history" class="tab-content">
 
   <!-- Date range filter -->
@@ -438,7 +397,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
         </tr>
         <tr class="history-detail-row" id="detail-{{ run.run_id }}">
           <td colspan="8">
-            <div class="no-data" style="padding:12px">点击加载详情...</div>
+            <div class="no-data" style="padding:12px">点击加载详情（含搜索筛选）...</div>
           </td>
         </tr>
         {% endfor %}
@@ -504,11 +463,24 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
       <span style="font-size:12px;color:#6b7280;width:36px">TXT</span>
       <a id="linkTxt" href="/api/download/txt" target="_blank">/api/download/txt</a>
       <button class="copy-btn" onclick="copyLink('txt', this)">复制</button>
+      <button class="btn btn-outline btn-sm" onclick="previewResult('txt')">预览</button>
     </div>
     <div class="download-row">
       <span style="font-size:12px;color:#6b7280;width:36px">M3U</span>
       <a id="linkM3u" href="/api/download/m3u" target="_blank">/api/download/m3u</a>
       <button class="copy-btn" onclick="copyLink('m3u', this)">复制</button>
+      <button class="btn btn-outline btn-sm" onclick="previewResult('m3u')">预览</button>
+    </div>
+    <div id="previewPanel" style="display:none;margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span id="previewTitle" style="font-size:12px;font-weight:600;color:#374151"></span>
+        <div style="display:flex;gap:6px">
+          <button class="copy-btn" onclick="copyPreviewContent(this)">复制全部</button>
+          <button class="btn btn-outline btn-sm" onclick="closePreview()">关闭</button>
+        </div>
+      </div>
+      <pre id="previewContent" style="background:#1e1e2e;color:#cdd6f4;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:12px;line-height:1.6;max-height:400px;overflow:auto;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+      <div id="previewStats" style="font-size:11px;color:#9ca3af;margin-top:6px"></div>
     </div>
   </div>
 </div>
@@ -587,8 +559,9 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
         </div>
         <div class="config-group">
           <label>执行时间列表</label>
-          <div class="hint">run_mode=times 时生效，逗号分隔，如 06:00,12:00,18:00</div>
-          <input type="text" id="cfg_run_times" placeholder="06:00,12:00,18:00">
+          <div class="hint">run_mode=times 时生效，支持多种格式输入（如 9:00、6,12,18、06:00 12:00）</div>
+          <input type="text" id="cfg_run_times" placeholder="06:00,12:00,18:00" onblur="normalizeRunTimesInput()">
+          <div id="cfg_run_times_hint" style="font-size:11px;color:#2563eb;margin-top:3px;min-height:16px"></div>
         </div>
         <div class="config-group">
           <label>执行间隔 (分钟)</label>
@@ -637,28 +610,6 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// ───── Detail table search + filter ─────
-const detailSearch = document.getElementById('detailSearch');
-const detailFilter = document.getElementById('detailFilter');
-function filterDetails() {
-  const q = (detailSearch ? detailSearch.value : '').toLowerCase();
-  const f = detailFilter ? detailFilter.value : 'all';
-  document.querySelectorAll('#detailTable tbody tr').forEach(tr => {
-    const ch = tr.dataset.channel || '';
-    const url = tr.querySelector('.url-cell') ? tr.querySelector('.url-cell').textContent : '';
-    const passed = tr.dataset.passed;
-    const h265 = tr.dataset.h265;
-    let show = true;
-    if (q && !ch.toLowerCase().includes(q) && !url.toLowerCase().includes(q)) show = false;
-    if (f === 'pass' && passed !== '1') show = false;
-    if (f === 'fail' && passed !== '0') show = false;
-    if (f === 'h265' && h265 !== '1') show = false;
-    tr.style.display = show ? '' : 'none';
-  });
-}
-if (detailSearch) detailSearch.addEventListener('input', filterDetails);
-if (detailFilter) detailFilter.addEventListener('change', filterDetails);
-
 // ───── Channel search + filter ─────
 const channelSearch = document.getElementById('channelSearch');
 const channelFilter = document.getElementById('channelFilter');
@@ -705,20 +656,7 @@ const CONFIG_FIELDS = [
 function loadConfig() {
   fetch('/api/config')
     .then(r => r.json())
-    .then(cfg => {
-      CONFIG_FIELDS.forEach(key => {
-        const el = document.getElementById('cfg_' + key);
-        if (!el) return;
-        const val = cfg[key];
-        if (key === 'run_times' && Array.isArray(val)) {
-          el.value = val.join(',');
-        } else if (key === 'show_update_time') {
-          el.value = val ? 'true' : 'false';
-        } else {
-          el.value = val !== undefined ? val : '';
-        }
-      });
-    })
+    .then(cfg => applyConfigToForm(cfg))
     .catch(e => showToast('加载配置失败: ' + e, 'error'));
 }
 
@@ -729,7 +667,7 @@ function saveConfig() {
     if (!el) return;
     let val = el.value;
     if (key === 'run_times') {
-      data[key] = val.split(',').map(s => s.trim()).filter(Boolean);
+      data[key] = val;  // 原始字符串，后端会规范化
     } else if (key === 'show_update_time') {
       data[key] = val === 'true';
     } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'run_interval_minutes'].includes(key)) {
@@ -748,10 +686,78 @@ function saveConfig() {
   })
   .then(r => r.json())
   .then(res => {
-    if (res.ok) showToast('配置已保存', 'success');
-    else showToast('保存失败: ' + (res.error || ''), 'error');
+    if (res.ok) {
+      showToast('配置已保存', 'success');
+      // 用后端返回的规范化配置更新表单
+      if (res.config) {
+        applyConfigToForm(res.config);
+      }
+    } else {
+      showToast('保存失败: ' + (res.error || ''), 'error');
+    }
   })
   .catch(e => showToast('保存失败: ' + e, 'error'));
+}
+
+function applyConfigToForm(cfg) {
+  CONFIG_FIELDS.forEach(key => {
+    const el = document.getElementById('cfg_' + key);
+    if (!el) return;
+    const val = cfg[key];
+    if (key === 'run_times' && Array.isArray(val)) {
+      el.value = val.join(', ');
+      // 显示规范化提示
+      const hint = document.getElementById('cfg_run_times_hint');
+      if (hint) {
+        if (val.length > 0) {
+          hint.textContent = '已规范化为：' + val.join(', ');
+        } else {
+          hint.textContent = '';
+        }
+      }
+    } else if (key === 'show_update_time') {
+      el.value = val ? 'true' : 'false';
+    } else {
+      el.value = val !== undefined ? val : '';
+    }
+  });
+}
+
+function normalizeRunTimesInput() {
+  const el = document.getElementById('cfg_run_times');
+  const hint = document.getElementById('cfg_run_times_hint');
+  if (!el || !hint) return;
+  const raw = el.value.trim();
+  if (!raw) { hint.textContent = ''; return; }
+  // 解析各种格式：逗号、分号、空格、中文逗号分隔
+  const parts = raw.replace(/;/g, ',').replace(/，/g, ',').split(/[\s,]+/).filter(Boolean);
+  const valid = [];
+  for (const t of parts) {
+    const m = t.match(/^(\d{1,2}):(\d{1,2})$/);
+    if (m) {
+      const h = parseInt(m[1]), mi = parseInt(m[2]);
+      if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) {
+        valid.push(String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0'));
+      }
+    }
+    // 纯数字视为小时（如 "6" -> "06:00"）
+    const m2 = t.match(/^(\d{1,2})$/);
+    if (m2) {
+      const h = parseInt(m2[1]);
+      if (h >= 0 && h <= 23) {
+        valid.push(String(h).padStart(2, '0') + ':00');
+      }
+    }
+  }
+  const unique = [...new Set(valid)].sort();
+  if (unique.length > 0) {
+    el.value = unique.join(', ');
+    hint.textContent = '已规范化为：' + unique.join(', ');
+  } else if (raw) {
+    hint.textContent = '未识别到有效时间，请使用 HH:MM 格式';
+    hint.style.color = '#dc2626';
+    setTimeout(() => { hint.style.color = '#2563eb'; }, 2000);
+  }
 }
 
 // ───── Text file editor ─────
@@ -819,11 +825,113 @@ function resetDemo() {
     .catch(e => showToast('恢复失败: ' + e, 'error'));
 }
 
-// ───── Trigger test + Log polling ─────
-let logPollTimer = null;
+// ───── Global progress polling (header + testing tab) ─────
+let globalPollTimer = null;
+let isWebRun = false;  // 是否为 Web 触发的运行（有日志流）
+let testStarted = false; // 是否曾有测试运行（防止初始页面显示"已完成"）
 let lastLogSeq = 0;
 let autoScroll = true;
 
+function updateHeaderStatus(data) {
+  const statusWrap = document.getElementById('headerRunStatus');
+  const lastUpdateWrap = document.getElementById('headerLastUpdate');
+  const statusText = document.getElementById('headerRunText');
+  if (!statusWrap) return;
+
+  if (data.running) {
+    statusWrap.style.display = '';
+    if (lastUpdateWrap) lastUpdateWrap.style.display = 'none';
+    const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
+    statusText.textContent = '测试运行中... ' + data.processed + '/' + (data.total || '?') +
+      ' 已测 | 通过 ' + data.passed + ' | ' + Math.round(data.elapsed || 0) + 's';
+  } else {
+    statusWrap.style.display = 'none';
+    if (lastUpdateWrap) lastUpdateWrap.style.display = '';
+  }
+}
+
+function updateTestingTab(data) {
+  const progressWrap = document.getElementById('progressWrap');
+  const testStatusText = document.getElementById('testStatusText');
+  const btn = document.getElementById('btnTrigger');
+  if (!progressWrap) return;
+
+  if (data.running) {
+    testStarted = true;
+    progressWrap.style.display = '';
+    if (testStatusText) testStatusText.textContent = '运行中...';
+    if (btn) { btn.disabled = true; btn.textContent = '运行中...'; }
+
+    const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
+    const fill = document.getElementById('progressFill');
+    const pctEl = document.getElementById('progressPercent');
+    const labelEl = document.getElementById('progressLabel');
+    if (fill) fill.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+    if (labelEl) labelEl.textContent = data.total > 0 ? ('进度 ' + data.processed + ' / ' + data.total) : '准备中...';
+    const procEl = document.getElementById('progProcessed');
+    const passEl = document.getElementById('progPassed');
+    const failEl = document.getElementById('progFailed');
+    const timeEl = document.getElementById('progElapsed');
+    if (procEl) procEl.textContent = data.processed;
+    if (passEl) passEl.textContent = data.passed;
+    if (failEl) failEl.textContent = data.failed;
+    if (timeEl) timeEl.textContent = Math.round(data.elapsed || 0);
+
+    // Web 触发的运行有日志行
+    if (data.source === 'web' && data.lines && data.lines.length > 0) {
+      isWebRun = true;
+      const panel = document.getElementById('logPanel');
+      if (panel) {
+        data.lines.forEach(line => {
+          const div = document.createElement('div');
+          div.className = 'log-line';
+          let cls = 'log-info';
+          if (line.msg.includes('通过') || line.msg.includes('pass')) cls = 'log-pass';
+          else if (line.msg.includes('拒绝') || line.msg.includes('失败')) cls = 'log-fail';
+          div.innerHTML = '<span class="log-time">[' + line.time + ']</span><span class="' + cls + '">' + escapeHtml(line.msg) + '</span>';
+          panel.appendChild(div);
+          lastLogSeq = line.seq;
+        });
+        if (autoScroll) panel.scrollTop = panel.scrollHeight;
+      }
+    }
+
+  } else if (testStarted) {
+    if (testStatusText) testStatusText.textContent = '已完成';
+    const labelEl = document.getElementById('progressLabel');
+    if (labelEl) labelEl.textContent = '测试完成';
+    resetTestBtn();
+  }
+}
+
+function pollGlobalProgress() {
+  fetch('/api/progress?after=' + lastLogSeq)
+    .then(r => r.json())
+    .then(data => {
+      updateHeaderStatus(data);
+      updateTestingTab(data);
+
+      if (data.running) {
+        // 测试进行中，确保轮询在运行
+        if (!globalPollTimer) {
+          globalPollTimer = setInterval(pollGlobalProgress, 2000);
+        }
+      } else {
+        // 没有运行中的测试，停止轮询
+        if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
+
+        // Web 运行刚结束，延迟刷新
+        if (isWebRun) {
+          if (data.error) showToast('测试异常: ' + data.error, 'error');
+          setTimeout(() => location.reload(), 2000);
+        }
+      }
+    })
+    .catch(() => {});
+}
+
+// ───── Trigger test ─────
 function triggerTest() {
   const btn = document.getElementById('btnTrigger');
   btn.disabled = true;
@@ -835,16 +943,19 @@ function triggerTest() {
     .then(res => {
       if (res.ok) {
         showToast('测试已启动', 'success');
-        // 清空日志面板
         const panel = document.getElementById('logPanel');
-        panel.innerHTML = '';
+        if (panel) panel.innerHTML = '';
         lastLogSeq = 0;
-        // 显示进度区域
+        isWebRun = true;
         document.getElementById('progressWrap').style.display = '';
         document.getElementById('testStatusText').textContent = '运行中...';
         btn.textContent = '运行中...';
-        // 开始轮询日志
-        logPollTimer = setInterval(pollProgress, 2000);
+        // 启动全局轮询（清除可能残留的定时器）
+        if (globalPollTimer) clearInterval(globalPollTimer);
+        lastLogSeq = 0;
+        isWebRun = true;
+        testStarted = true;
+        globalPollTimer = setInterval(pollGlobalProgress, 2000);
       } else {
         showToast(res.error || '启动失败', 'error');
         resetTestBtn();
@@ -853,55 +964,6 @@ function triggerTest() {
     .catch(e => {
       showToast('启动失败: ' + e, 'error');
       resetTestBtn();
-    });
-}
-
-function pollProgress() {
-  fetch('/api/progress?after=' + lastLogSeq)
-    .then(r => r.json())
-    .then(data => {
-      // 更新进度条
-      const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
-      document.getElementById('progressFill').style.width = pct + '%';
-      document.getElementById('progressPercent').textContent = pct + '%';
-      document.getElementById('progressLabel').textContent =
-        data.total > 0 ? ('进度 ' + data.processed + ' / ' + data.total) : '准备中...';
-      document.getElementById('progProcessed').textContent = data.processed;
-      document.getElementById('progPassed').textContent = data.passed;
-      document.getElementById('progFailed').textContent = data.failed;
-      document.getElementById('progElapsed').textContent = data.elapsed;
-
-      // 追加日志行
-      const panel = document.getElementById('logPanel');
-      (data.lines || []).forEach(line => {
-        const div = document.createElement('div');
-        div.className = 'log-line';
-        let cls = 'log-info';
-        if (line.msg.includes('通过') || line.msg.includes('pass')) cls = 'log-pass';
-        else if (line.msg.includes('拒绝') || line.msg.includes('失败')) cls = 'log-fail';
-        div.innerHTML = '<span class="log-time">[' + line.time + ']</span><span class="' + cls + '">' + escapeHtml(line.msg) + '</span>';
-        panel.appendChild(div);
-        lastLogSeq = line.seq;
-      });
-
-      // 自动滚动到底部
-      if (autoScroll) {
-        panel.scrollTop = panel.scrollHeight;
-      }
-
-      // 测试结束
-      if (!data.running) {
-        clearInterval(logPollTimer);
-        logPollTimer = null;
-        document.getElementById('testStatusText').textContent = '已完成';
-        document.getElementById('progressLabel').textContent = '测试完成';
-        if (data.error) {
-          showToast('测试异常: ' + data.error, 'error');
-        }
-        resetTestBtn();
-        // 延迟刷新页面
-        setTimeout(() => location.reload(), 2000);
-      }
     });
 }
 
@@ -927,75 +989,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ───── Check if test is already running on page load ─────
+// ───── Check if test is running on page load ─────
 (function() {
-  fetch('/api/progress').then(r => r.json()).then(data => {
-    if (data.running) {
-      document.getElementById('progressWrap').style.display = '';
-      document.getElementById('testStatusText').textContent = '运行中...';
-      document.getElementById('btnTrigger').disabled = true;
-      document.getElementById('btnTrigger').textContent = '运行中...';
-      // 恢复已有日志
-      const panel = document.getElementById('logPanel');
-      panel.innerHTML = '';
-      (data.lines || []).forEach(line => {
-        const div = document.createElement('div');
-        div.className = 'log-line';
-        div.innerHTML = '<span class="log-time">[' + line.time + ']</span>' + escapeHtml(line.msg);
-        panel.appendChild(div);
-        lastLogSeq = line.seq;
-      });
-      const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
-      document.getElementById('progressFill').style.width = pct + '%';
-      document.getElementById('progressPercent').textContent = pct + '%';
-      document.getElementById('progProcessed').textContent = data.processed;
-      document.getElementById('progPassed').textContent = data.passed;
-      document.getElementById('progFailed').textContent = data.failed;
-      document.getElementById('progElapsed').textContent = data.elapsed;
-      logPollTimer = setInterval(pollProgress, 2000);
-    }
-  }).catch(() => {});
   // 初始化自动滚动按钮样式
-  document.getElementById('btnAutoScroll').classList.add('active');
-})();
+  const scrollBtn = document.getElementById('btnAutoScroll');
+  if (scrollBtn) scrollBtn.classList.add('active');
 
-// ───── Detail tab: run selector ─────
-function loadRunDetail(runId) {
-  if (!runId) return;
-  fetch('/api/run/' + runId)
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) { showToast(data.error, 'error'); return; }
-      const tbody = document.getElementById('detailBody');
-      tbody.innerHTML = '';
-      (data.results || []).forEach(r => {
-        const cls = r.passed ? 'pass' : 'fail';
-        const h265 = r.is_h265 ? '1' : '0';
-        const passed = r.passed ? '1' : '0';
-        let codecHtml = '<span style="color:#9ca3af">-</span>';
-        if (r.is_h265) codecHtml = '<span class="badge h265">H.265</span>';
-        else if (r.codec) codecHtml = '<span class="badge h264">' + r.codec.toUpperCase() + '</span>';
-        const statusHtml = r.passed ? '<span class="badge pass">通过</span>' : '<span class="badge fail">失败</span>';
-        const tr = document.createElement('tr');
-        tr.className = cls;
-        tr.dataset.channel = r.channel;
-        tr.dataset.passed = passed;
-        tr.dataset.h265 = h265;
-        tr.innerHTML =
-          '<td class="ch-name"><strong>' + r.channel + '</strong></td>' +
-          '<td><div class="url-cell" title="' + r.url + '">' + r.url + '</div></td>' +
-          '<td>' + r.resolution + '</td>' +
-          '<td>' + r.bandwidth_MBps + '</td>' +
-          '<td>' + codecHtml + '</td>' +
-          '<td>' + r.sample_seconds + '</td>' +
-          '<td>' + r.cost_seconds + '</td>' +
-          '<td>' + statusHtml + '</td>' +
-          '<td style="font-size:12px;color:#6b7280">' + (r.reason || '') + '</td>';
-        tbody.appendChild(tr);
-      });
-    })
-    .catch(e => showToast('加载失败: ' + e, 'error'));
-}
+  // 立即检查一次运行状态
+  pollGlobalProgress();
+  // 启动全局轮询（2 秒间隔）
+  globalPollTimer = setInterval(pollGlobalProgress, 2000);
+})();
 
 // ───── History: date range query + expandable rows ─────
 (function() {
@@ -1072,7 +1076,7 @@ function renderHistoryTable(runs) {
     const detailTr = document.createElement('tr');
     detailTr.className = 'history-detail-row';
     detailTr.id = 'detail-' + run.run_id;
-    detailTr.innerHTML = '<td colspan="8"><div class="no-data" style="padding:12px">点击加载详情...</div></td>';
+    detailTr.innerHTML = '<td colspan="8"><div class="no-data" style="padding:12px">点击加载详情（含搜索筛选）...</div></td>';
     tbody.appendChild(detailTr);
   });
 }
@@ -1123,32 +1127,64 @@ function toggleHistoryDetail(row, runId) {
   detailRow.classList.add('open');
   // Load detail if not already loaded
   const content = detailRow.querySelector('.no-data');
-  if (content && content.textContent === '点击加载详情...') {
+  if (content && content.textContent.startsWith('点击加载详情')) {
     content.textContent = '加载中...';
     fetch('/api/run/' + runId)
       .then(r => r.json())
       .then(data => {
         if (data.error) { content.textContent = data.error; return; }
-        let html = '<div class="table-wrap" style="margin:0;box-shadow:none"><table style="font-size:12px"><thead><tr>';
-        html += '<th>频道</th><th>URL</th><th>分辨率</th><th>带宽</th><th>编码</th><th>状态</th><th>原因</th></tr></thead><tbody>';
+        // Build search/filter toolbar + table
+        let html = '<div style="padding:12px">';
+        html += '<div class="toolbar" style="margin-bottom:8px">';
+        html += '<input type="text" class="detail-inline-search" placeholder="搜索频道名或 URL..." data-runid="' + runId + '">';
+        html += '<select class="detail-inline-filter" data-runid="' + runId + '">';
+        html += '<option value="all">全部</option><option value="pass">仅通过</option><option value="fail">仅失败</option><option value="h265">仅 H.265</option>';
+        html += '</select></div>';
+        html += '<div class="table-wrap" style="margin:0;box-shadow:none"><table class="detail-inline-table" data-runid="' + runId + '" style="font-size:12px"><thead><tr>';
+        html += '<th>频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th><th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th></tr></thead><tbody>';
         (data.results || []).forEach(r => {
           const cls = r.passed ? 'pass' : 'fail';
+          const h265 = r.is_h265 ? '1' : '0';
+          const passed = r.passed ? '1' : '0';
           let codec = '-';
           if (r.is_h265) codec = '<span class="badge h265">H.265</span>';
           else if (r.codec) codec = '<span class="badge h264">' + r.codec.toUpperCase() + '</span>';
           const status = r.passed ? '<span class="badge pass">通过</span>' : '<span class="badge fail">失败</span>';
-          html += '<tr class="' + cls + '">';
+          html += '<tr class="' + cls + '" data-channel="' + r.channel + '" data-passed="' + passed + '" data-h265="' + h265 + '">';
           html += '<td class="ch-name"><strong>' + r.channel + '</strong></td>';
           html += '<td><div class="url-cell" title="' + r.url + '">' + r.url + '</div></td>';
           html += '<td>' + r.resolution + '</td>';
           html += '<td>' + r.bandwidth_MBps + '</td>';
           html += '<td>' + codec + '</td>';
+          html += '<td>' + r.sample_seconds + '</td>';
+          html += '<td>' + r.cost_seconds + '</td>';
           html += '<td>' + status + '</td>';
           html += '<td style="font-size:11px;color:#6b7280">' + (r.reason || '') + '</td>';
           html += '</tr>';
         });
-        html += '</tbody></table></div>';
+        html += '</tbody></table></div></div>';
         detailRow.querySelector('td').innerHTML = html;
+        // Bind search/filter events
+        const searchInput = detailRow.querySelector('.detail-inline-search');
+        const filterSelect = detailRow.querySelector('.detail-inline-filter');
+        const filterFn = function() {
+          const q = searchInput.value.toLowerCase();
+          const f = filterSelect.value;
+          detailRow.querySelectorAll('.detail-inline-table tbody tr').forEach(tr => {
+            const ch = (tr.dataset.channel || '').toLowerCase();
+            const url = tr.querySelector('.url-cell') ? tr.querySelector('.url-cell').textContent.toLowerCase() : '';
+            const p = tr.dataset.passed;
+            const h = tr.dataset.h265;
+            let show = true;
+            if (q && !ch.includes(q) && !url.includes(q)) show = false;
+            if (f === 'pass' && p !== '1') show = false;
+            if (f === 'fail' && p !== '0') show = false;
+            if (f === 'h265' && h !== '1') show = false;
+            tr.style.display = show ? '' : 'none';
+          });
+        };
+        searchInput.addEventListener('input', filterFn);
+        filterSelect.addEventListener('change', filterFn);
       })
       .catch(e => { content.textContent = '加载失败: ' + e; });
   }
@@ -1172,6 +1208,67 @@ function copyLink(fmt, btn) {
     btn.textContent = '已复制';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// ───── Preview result ─────
+let previewRawContent = '';
+function previewResult(fmt) {
+  const panel = document.getElementById('previewPanel');
+  const content = document.getElementById('previewContent');
+  const title = document.getElementById('previewTitle');
+  const stats = document.getElementById('previewStats');
+  panel.style.display = '';
+  content.textContent = '加载中...';
+  stats.textContent = '';
+  title.textContent = fmt.toUpperCase() + ' 预览';
+
+  fetch('/api/download/' + fmt)
+    .then(r => {
+      if (!r.ok) throw new Error('加载失败');
+      return r.text();
+    })
+    .then(text => {
+      previewRawContent = text;
+      content.textContent = text;
+      // 统计信息
+      const lines = text.split('\n').filter(l => l.trim());
+      const channelLines = lines.filter(l => !l.startsWith('#') && !l.includes('#genre#'));
+      const genres = lines.filter(l => l.includes('#genre#'));
+      if (fmt === 'txt') {
+        stats.textContent = '共 ' + genres.length + ' 个分类，' + channelLines.length + ' 条频道记录，' + text.length + ' 字符';
+      } else {
+        const channels = lines.filter(l => l.startsWith('#EXTINF'));
+        stats.textContent = '共 ' + channels.length + ' 个频道，' + text.length + ' 字符';
+      }
+    })
+    .catch(e => {
+      content.textContent = '加载失败: ' + e.message;
+      previewRawContent = '';
+    });
+}
+
+function closePreview() {
+  document.getElementById('previewPanel').style.display = 'none';
+  previewRawContent = '';
+}
+
+function copyPreviewContent(btn) {
+  if (!previewRawContent) return;
+  navigator.clipboard.writeText(previewRawContent).then(() => {
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制全部'; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = previewRawContent;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制全部'; btn.classList.remove('copied'); }, 2000);
   });
 }
 
