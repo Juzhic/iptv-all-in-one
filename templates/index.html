@@ -330,13 +330,15 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
       </div>
       <div class="ch-body">
         <table style="font-size:12px">
-          <thead><tr><th>URL</th><th>分辨率</th><th>带宽</th><th>编码</th><th>状态</th><th>原因</th></tr></thead>
+          <thead><tr><th>URL</th><th>分辨率</th><th>带宽</th><th>延迟</th><th>评分</th><th>编码</th><th>状态</th><th>原因</th></tr></thead>
           <tbody>
             {% for r in info.urls %}
             <tr class="{% if r.passed %}pass{% else %}fail{% endif %}">
               <td><div class="url-cell" title="{{ r.url }}">{{ r.url }}</div></td>
               <td>{{ r.resolution }}</td>
               <td>{{ r.bandwidth_MBps }} MB/s</td>
+              <td>{% if r.connection_latency_ms is not none %}{{ "%.0f"|format(r.connection_latency_ms) }} ms{% else %}-{% endif %}</td>
+              <td>{% if r.quality_score is not none %}{{ "%.2f"|format(r.quality_score) }}{% else %}-{% endif %}</td>
               <td>{% if r.is_h265 %}<span class="badge h265">H.265</span>{% elif r.codec %}<span class="badge h264">{{ r.codec|upper }}</span>{% else %}-{% endif %}</td>
               <td>{% if r.passed %}<span class="badge pass">通过</span>{% else %}<span class="badge fail">失败</span>{% endif %}</td>
               <td style="font-size:11px;color:#6b7280">{{ r.reason }}</td>
@@ -545,6 +547,11 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
           <input type="number" id="cfg_max_workers" min="1" step="1">
         </div>
         <div class="config-group">
+          <label>每频道输出数量</label>
+          <div class="hint">按带宽和延迟排序后保留的地址数，0 表示不限制</div>
+          <input type="number" id="cfg_max_urls_per_channel" min="0" step="1">
+        </div>
+        <div class="config-group">
           <label>系统下行限速 (MB/s)</label>
           <div class="hint">超过此值暂停启动新测试，设为 0 关闭</div>
           <input type="number" id="cfg_system_bandwidth_limit_MBps" min="0" step="1">
@@ -648,7 +655,7 @@ function showToast(msg, type) {
 // ───── Config management ─────
 const CONFIG_FIELDS = [
   'min_width', 'min_height', 'min_bandwidth_MBps', 'bandwidth_compensation_MBps',
-  'h265_bandwidth_ratio', 'test_duration', 'max_workers',
+  'h265_bandwidth_ratio', 'test_duration', 'max_workers', 'max_urls_per_channel',
   'system_bandwidth_limit_MBps', 'run_mode', 'run_times', 'run_interval_minutes',
   'show_update_time', 'update_time_position'
 ];
@@ -670,7 +677,7 @@ function saveConfig() {
       data[key] = val;  // 原始字符串，后端会规范化
     } else if (key === 'show_update_time') {
       data[key] = val === 'true';
-    } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'run_interval_minutes'].includes(key)) {
+    } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'max_urls_per_channel', 'run_interval_minutes'].includes(key)) {
       data[key] = parseInt(val) || 0;
     } else if (['min_bandwidth_MBps', 'bandwidth_compensation_MBps', 'h265_bandwidth_ratio', 'system_bandwidth_limit_MBps'].includes(key)) {
       data[key] = parseFloat(val) || 0;
@@ -1141,7 +1148,7 @@ function toggleHistoryDetail(row, runId) {
         html += '<option value="all">全部</option><option value="pass">仅通过</option><option value="fail">仅失败</option><option value="h265">仅 H.265</option>';
         html += '</select></div>';
         html += '<div class="table-wrap" style="margin:0;box-shadow:none"><table class="detail-inline-table" data-runid="' + runId + '" style="font-size:12px"><thead><tr>';
-        html += '<th>频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th><th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th></tr></thead><tbody>';
+        html += '<th>频道</th><th>URL</th><th>分辨率</th><th>带宽(MB/s)</th><th>延迟</th><th>评分</th><th>编码</th><th>采样(秒)</th><th>耗时(秒)</th><th>状态</th><th>原因</th></tr></thead><tbody>';
         (data.results || []).forEach(r => {
           const cls = r.passed ? 'pass' : 'fail';
           const h265 = r.is_h265 ? '1' : '0';
@@ -1150,11 +1157,15 @@ function toggleHistoryDetail(row, runId) {
           if (r.is_h265) codec = '<span class="badge h265">H.265</span>';
           else if (r.codec) codec = '<span class="badge h264">' + r.codec.toUpperCase() + '</span>';
           const status = r.passed ? '<span class="badge pass">通过</span>' : '<span class="badge fail">失败</span>';
+          const latency = r.connection_latency_ms == null ? '-' : Math.round(r.connection_latency_ms) + ' ms';
+          const score = r.quality_score == null ? '-' : Number(r.quality_score).toFixed(2);
           html += '<tr class="' + cls + '" data-channel="' + r.channel + '" data-passed="' + passed + '" data-h265="' + h265 + '">';
           html += '<td class="ch-name"><strong>' + r.channel + '</strong></td>';
           html += '<td><div class="url-cell" title="' + r.url + '">' + r.url + '</div></td>';
           html += '<td>' + r.resolution + '</td>';
           html += '<td>' + r.bandwidth_MBps + '</td>';
+          html += '<td>' + latency + '</td>';
+          html += '<td>' + score + '</td>';
           html += '<td>' + codec + '</td>';
           html += '<td>' + r.sample_seconds + '</td>';
           html += '<td>' + r.cost_seconds + '</td>';
@@ -1162,7 +1173,10 @@ function toggleHistoryDetail(row, runId) {
           html += '<td style="font-size:11px;color:#6b7280">' + (r.reason || '') + '</td>';
           html += '</tr>';
         });
-        html += '</tbody></table></div></div>';
+        html += '</tbody></table></div>';
+        html += '<div style="margin-top:10px"><button class="btn btn-sm" onclick="loadRunLogs(\'' + runId + '\', this)">查看运行日志</button>';
+        html += '<div class="run-log-viewer" id="logs-' + runId + '" style="display:none;margin-top:8px"></div></div>';
+        html += '</div>';
         detailRow.querySelector('td').innerHTML = html;
         // Bind search/filter events
         const searchInput = detailRow.querySelector('.detail-inline-search');
@@ -1188,6 +1202,43 @@ function toggleHistoryDetail(row, runId) {
       })
       .catch(e => { content.textContent = '加载失败: ' + e; });
   }
+}
+
+// ───── Run Logs ─────
+function loadRunLogs(runId, btn) {
+  const container = document.getElementById('logs-' + runId);
+  if (!container) return;
+  if (container.style.display !== 'none') {
+    container.style.display = 'none';
+    btn.textContent = '查看运行日志';
+    return;
+  }
+  container.style.display = 'block';
+  container.innerHTML = '<div style="color:#9ca3af;padding:8px">加载日志中...</div>';
+  btn.textContent = '收起日志';
+  fetch('/api/run/' + runId + '/logs?limit=500')
+    .then(r => r.json())
+    .then(logs => {
+      if (!logs || !logs.length) {
+        container.innerHTML = '<div style="color:#9ca3af;padding:8px">暂无日志记录</div>';
+        return;
+      }
+      let html = '<pre style="background:#111827;color:#d1d5db;padding:12px;border-radius:8px;max-height:400px;overflow-y:auto;font-size:12px;line-height:1.6;margin:0">';
+      logs.forEach(l => {
+        const lvl = l.level === 'ERROR' ? '🔴' : l.level === 'WARNING' ? '🟡' : '⚪';
+        html += '<span style="color:#6b7280">' + l.ts + '</span> ' + lvl + ' ' + _escapeHtml(l.message) + '\n';
+      });
+      html += '</pre>';
+      container.innerHTML = html;
+    })
+    .catch(e => {
+      container.innerHTML = '<div style="color:#ef4444;padding:8px">加载失败: ' + e + '</div>';
+    });
+}
+function _escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
 }
 
 // ───── Copy link ─────

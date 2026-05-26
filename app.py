@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     'min_bandwidth_MBps': 1.0,
     'bandwidth_compensation_MBps': 2.0,
     'h265_bandwidth_ratio': 0.6,
+    'max_urls_per_channel': 10,
     'show_update_time': True,
     'update_time_position': 'top',
     'min_width': 1920,
@@ -63,6 +64,92 @@ def get_bandwidth_sample_info(result, duration):
     sample_seconds = result.get('media_seconds') or result.get('measured_seconds', 0)
     min_sample_seconds = min(3, max(duration, 1))
     return sample_seconds, min_sample_seconds, sample_seconds >= min_sample_seconds
+
+
+def calculate_quality_score(bandwidth_MBps, connection_latency_ms):
+    """按平均带宽和连接延迟计算频道内排序分数。"""
+    try:
+        bandwidth = float(bandwidth_MBps or 0)
+    except (TypeError, ValueError):
+        bandwidth = 0.0
+
+    try:
+        latency_ms = float(connection_latency_ms)
+    except (TypeError, ValueError):
+        latency_ms = 3000.0
+
+    latency_seconds = max(latency_ms, 0.0) / 1000
+    return round(bandwidth / (1 + latency_seconds), 4)
+
+
+def _entry_url(entry):
+    if isinstance(entry, dict):
+        return entry.get('url', '')
+    return entry
+
+
+def _entry_sort_key(entry):
+    if not isinstance(entry, dict):
+        return (0, 0, 999999999, _entry_url(entry))
+
+    bandwidth = entry.get('bandwidth_MBps', entry.get('speed_MBps', 0))
+    latency = entry.get('connection_latency_ms')
+    score = entry.get('quality_score')
+    if score is None:
+        score = calculate_quality_score(bandwidth, latency)
+    try:
+        bandwidth = float(bandwidth or 0)
+    except (TypeError, ValueError):
+        bandwidth = 0.0
+    try:
+        latency_sort = float(latency)
+    except (TypeError, ValueError):
+        latency_sort = 999999999.0
+
+    return (-float(score or 0), -bandwidth, latency_sort, entry.get('url', ''))
+
+
+def sort_and_limit_channel_entries(entries, max_count=0):
+    """单个频道内按质量排序，并按配置限制输出地址数量。"""
+    sorted_entries = sorted(entries, key=_entry_sort_key)
+    try:
+        max_count = int(max_count or 0)
+    except (TypeError, ValueError):
+        max_count = 0
+    if max_count > 0:
+        return sorted_entries[:max_count]
+    return sorted_entries
+
+
+def build_output_urls_from_results(test_results, max_urls_per_channel=0):
+    """从完整测速结果生成最终输出用的 {频道: [地址信息]}。"""
+    filtered = {}
+    seen = {}
+    for result in test_results:
+        if not result.get('passed'):
+            continue
+        name = result.get('channel', '')
+        url = result.get('url', '')
+        if not name or not url:
+            continue
+        if name not in filtered:
+            filtered[name] = []
+            seen[name] = set()
+        if url in seen[name]:
+            continue
+        entry = {
+            'url': url,
+            'bandwidth_MBps': result.get('bandwidth_MBps', 0),
+            'connection_latency_ms': result.get('connection_latency_ms'),
+            'quality_score': result.get('quality_score'),
+        }
+        filtered[name].append(entry)
+        seen[name].add(url)
+
+    return {
+        name: sort_and_limit_channel_entries(entries, max_urls_per_channel)
+        for name, entries in filtered.items()
+    }
 
 
 class SystemDownloadLimiter:
@@ -115,48 +202,47 @@ class SystemDownloadLimiter:
 
 
 # --- 日志配置模块 ---
-def setup_logging(keep_logs=50):
-    """配置日志系统，创建 logs 目录并生成时间命名的日志文件。超出 keep_logs 个数的旧日志自动清理。"""
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+class _DBLogHandler(logging.Handler):
+    """将日志写入 SQLite 数据库的 logging handler。"""
+    def __init__(self):
+        super().__init__()
+        self.run_id = ''
 
+    def emit(self, record):
+        if not self.run_id:
+            return
+        try:
+            from db import insert_log
+            insert_log(self.run_id, record.levelname, self.format(record))
+        except Exception:
+            pass
+
+
+_db_handler = _DBLogHandler()
+
+
+def setup_logging(run_id=''):
+    """配置日志系统：控制台输出 + 数据库写入。"""
     root_logger = logging.getLogger()
     if root_logger.handlers:
         for handler in root_logger.handlers[:]:
             handler.close()
             root_logger.removeHandler(handler)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"{timestamp}.log")
+    _db_handler.run_id = run_id
+    _db_handler.setFormatter(logging.Formatter('%(message)s'))
 
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file, encoding='utf-8', mode='w'),
+            _db_handler,
             logging.StreamHandler()
         ]
     )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"日志系统已启动，日志文件: {log_file}")
-
-    # 自动清理旧日志文件，保留最近 keep_logs 个
-    try:
-        log_files = sorted(
-            [f for f in os.listdir(log_dir) if f.endswith('.log')],
-            key=lambda f: os.path.getmtime(os.path.join(log_dir, f))
-        )
-        if len(log_files) > keep_logs:
-            for old_file in log_files[:-keep_logs]:
-                try:
-                    os.remove(os.path.join(log_dir, old_file))
-                except OSError:
-                    pass
-    except OSError:
-        pass
-
+    logger.info(f"日志系统已启动（数据库 + 控制台）")
     return logger
 
 def fetch_m3u_playlist(url):
@@ -218,7 +304,8 @@ def filter_and_save_playlist(
     progress_callback=None,
     bandwidth_limit_mbps=None,
     config=None,
-    on_pass_callback=None
+    on_pass_callback=None,
+    run_id=''
 ):
     """
     过滤并保存符合条件的 IPTV 列表（修改版：增加详细日志和进度计算）
@@ -238,9 +325,7 @@ def filter_and_save_playlist(
     processed = 0
     failed = 0
 
-    # 重新初始化 logger 以确保每次任务都有新文件（可选，取决于你的部署方式）
-    # 如果是 Flask 多次调用，建议在 generate_playlist 里调用 setup_logging
-    logger = setup_logging()
+    logger = setup_logging(run_id)
 
     logger.info(f"开始测试任务")
     logger.info(f"总频道数: {total}")
@@ -282,13 +367,15 @@ def filter_and_save_playlist(
                         'ffmpeg_error': '',
                         'low_resolution_url': True,
                         'low_resolution_hint': low_resolution_hint,
+                        'connection_latency_ms': None,
+                        'quality_score': 0,
                         'resolution_pass': False,
                         'bandwidth_pass': False,
                         'resolution_compensation_pass': False
                     }
                 }
 
-            result = analyze_iptv_with_ffmpeg(url, duration)
+            result = analyze_iptv_with_ffmpeg(url, duration, min_width=min_width, min_height=min_height)
             if not result or not result.get('success'):
                 error_reason = result.get('error', '分析失败') if result else '分析失败'
                 return {'index': idx, 'channel_info': channel_info, 'url': url, 'pass': False, 'reason': error_reason,'duration': time.time() - start_time }
@@ -296,6 +383,8 @@ def filter_and_save_playlist(
             width = result.get('width', 0)
             height = result.get('height', 0)
             bandwidth_MBps = result.get('speed_MBps', 0)
+            connection_latency_ms = result.get('connection_latency_ms')
+            quality_score = calculate_quality_score(bandwidth_MBps, connection_latency_ms)
             ffmpeg_available = result.get('ffmpeg_available', True)
             ffmpeg_resolution_found = result.get('ffmpeg_resolution_found', width > 0 and height > 0)
             sample_seconds, min_sample_seconds, sample_seconds_pass = get_bandwidth_sample_info(result, duration)
@@ -333,6 +422,8 @@ def filter_and_save_playlist(
                                 'download_seconds': result.get('download_seconds', 0),
                                 'download_speed_mbps': result.get('download_speed_mbps', 0),
                                 'bandwidth_basis': result.get('bandwidth_basis', ''),
+                                'connection_latency_ms': connection_latency_ms,
+                                'quality_score': quality_score,
                                 'bandwidth_skipped': result.get('bandwidth_skipped', False),
                                 'bandwidth_skip_reason': result.get('bandwidth_skip_reason', ''),
                                 'sample_seconds': sample_seconds,
@@ -366,6 +457,15 @@ def filter_and_save_playlist(
         test_result = result.get('test_result') or {}
         resolution = test_result.get('resolution', 'N/A')
         bandwidth = test_result.get('bandwidth_MBps', test_result.get('speed_MBps', 0))
+        connection_latency_ms = test_result.get('connection_latency_ms')
+        quality_score = test_result.get('quality_score')
+        if quality_score is None:
+            quality_score = calculate_quality_score(bandwidth, connection_latency_ms)
+        else:
+            try:
+                quality_score = float(quality_score)
+            except (TypeError, ValueError):
+                quality_score = calculate_quality_score(bandwidth, connection_latency_ms)
         codec = test_result.get('codec', '')
         is_h265 = test_result.get('is_h265', False)
         eff_min_bw = test_result.get('effective_min_bw', min_bw)
@@ -389,7 +489,12 @@ def filter_and_save_playlist(
             # 实时回调，立即写入结果文件
             if on_pass_callback:
                 try:
-                    on_pass_callback(name, url)
+                    on_pass_callback(name, {
+                        'url': url,
+                        'bandwidth_MBps': round(bandwidth, 2),
+                        'connection_latency_ms': round(connection_latency_ms, 2) if connection_latency_ms is not None else None,
+                        'quality_score': round(quality_score, 4),
+                    })
                 except Exception as e:
                     logger.warning(f"实时写入回调失败: {e}")
 
@@ -435,6 +540,8 @@ def filter_and_save_playlist(
             'url': url,
             'resolution': resolution,
             'bandwidth_MBps': round(bandwidth, 2),
+            'connection_latency_ms': round(connection_latency_ms, 2) if connection_latency_ms is not None else None,
+            'quality_score': round(quality_score, 4),
             'codec': codec,
             'is_h265': is_h265,
             'sample_seconds': round(sample_seconds, 2),
@@ -445,7 +552,7 @@ def filter_and_save_playlist(
 
         status = f"{verdict} | 原因: {reason}"
         logger.info(
-            "[%s/%s] %s | 频道: %s | 分辨率: %s | 带宽: %.2fMB/s%s | 采样: %.2fs | 耗时: %.2fs | 原因: %s | URL: %s",
+            "[%s/%s] %s | 频道: %s | 分辨率: %s | 带宽: %.2fMB/s%s | 延迟: %s | 评分: %.2f | 采样: %.2fs | 耗时: %.2fs | 原因: %s | URL: %s",
             processed,
             total,
             verdict,
@@ -453,6 +560,8 @@ def filter_and_save_playlist(
             resolution,
             bandwidth,
             codec_tag,
+            f"{connection_latency_ms:.0f}ms" if connection_latency_ms is not None else "-",
+            quality_score,
             sample_seconds,
             cost_time,
             reason,
@@ -706,7 +815,7 @@ def _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases=None):
         canonical = match_channel_name(ch, name_to_canonical, regex_aliases)
         if canonical and canonical != ch:
             urls = filtered_urls.get(canonical, [])
-    return urls
+    return [_entry_url(item) for item in urls]
 
 
 def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.txt', show_update_time=True, update_time_position='top'):
@@ -779,11 +888,18 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     from db import clear_run_progress, update_run_progress
     _clear_timeouts()
     run_start_time = time.time()
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # 清空旧进度，标记新运行开始
     clear_run_progress()
 
     def _log(msg):
+        # 始终写入数据库
+        try:
+            from db import insert_log as _db_insert_log
+            _db_insert_log(run_id, 'INFO', msg)
+        except Exception:
+            pass
         if log_callback:
             try:
                 log_callback(msg)
@@ -801,6 +917,10 @@ def run_test_cycle(progress_callback=None, log_callback=None):
 
     TEST_DURATION = cfg['test_duration']
     MAX_WORKERS = cfg['max_workers']
+    try:
+        MAX_URLS_PER_CHANNEL = max(0, int(cfg.get('max_urls_per_channel', 0) or 0))
+    except (TypeError, ValueError):
+        MAX_URLS_PER_CHANNEL = 0
 
     # 获取订阅源
     m3u_urls = load_subscribe_urls()
@@ -815,6 +935,7 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS}")
     print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
     print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
+    print(f"每频道输出数量：{MAX_URLS_PER_CHANNEL if MAX_URLS_PER_CHANNEL > 0 else '不限制'}")
     print("=" * 60)
 
     # 获取并解析所有 M3U 数据源
@@ -863,13 +984,15 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     filtered_urls = {}
     _write_lock = threading.Lock()
 
-    def _on_channel_pass(name, url):
+    def _on_channel_pass(name, entry):
         """频道通过测速时立即追加并重写结果文件。"""
+        url = _entry_url(entry)
         with _write_lock:
             if name not in filtered_urls:
                 filtered_urls[name] = []
-            if url not in filtered_urls[name]:
-                filtered_urls[name].append(url)
+            if url and url not in {_entry_url(item) for item in filtered_urls[name]}:
+                filtered_urls[name].append(entry)
+            filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
             show_time = cfg.get('show_update_time', True)
             time_pos = cfg.get('update_time_position', 'top')
             save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
@@ -901,22 +1024,30 @@ def run_test_cycle(progress_callback=None, log_callback=None):
         max_workers=MAX_WORKERS,
         config=cfg,
         progress_callback=_combined_progress,
-        on_pass_callback=_on_channel_pass
+        on_pass_callback=_on_channel_pass,
+        run_id=run_id
     )
+
+    filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
+    show_time = cfg.get('show_update_time', True)
+    time_pos = cfg.get('update_time_position', 'top')
+    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
 
     # 运行结束，清空进度
     clear_run_progress()
 
     # 汇总并保存结构化结果
     run_elapsed = time.time() - run_start_time
-    passed_count = len(filtered_urls)
-    passed_urls = sum(len(v) for v in filtered_urls.values())
+    passed_urls = sum(1 for r in test_results if r['passed'])
+    output_urls = sum(len(v) for v in filtered_urls.values())
     total_tested = len(test_results)
     all_channels = {r['channel'] for r in test_results}
     passed_channels = {r['channel'] for r in test_results if r['passed']}
+    passed_count = len(passed_channels)
 
     run_data = {
-        'run_id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+        'run_id': run_id,
         'started_at': datetime.fromtimestamp(run_start_time).strftime('%Y-%m-%d %H:%M:%S'),
         'finished_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'duration_seconds': round(run_elapsed, 1),
@@ -934,11 +1065,11 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     save_run_result(run_data, history_path)
 
     print(f"\n{'=' * 60}")
-    print(f"完成！通过 {passed_count} 个频道（{passed_urls} 个地址）")
+    print(f"完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址")
     print(f"结果已保存到 {cfg['output_txt']} 和 {cfg['output_m3u']}")
     print(f"历史记录已保存到 {history_path}")
     print(f"{'=' * 60}")
-    _log(f"测试完成！通过 {passed_count} 个频道（{passed_urls} 个地址），耗时 {run_elapsed:.0f} 秒")
+    _log(f"测试完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址，耗时 {run_elapsed:.0f} 秒")
 
 
 def _next_run_datetime(run_mode, run_times, run_interval_minutes):

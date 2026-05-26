@@ -197,19 +197,72 @@ def api_delete_run(run_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/run/<run_id>/logs', methods=['GET'])
+def api_get_run_logs(run_id):
+    """获取指定轮次的运行日志。"""
+    limit = request.args.get('limit', 500, type=int)
+    from db import get_run_logs
+    logs = get_run_logs(run_id, limit=limit)
+    return jsonify(logs)
+
+
 # ─────────────── 结果下载 API ───────────────
+
+def _result_sort_key(result):
+    score = result.get('quality_score')
+    if score is None:
+        bandwidth = result.get('bandwidth_MBps') or 0
+        latency = result.get('connection_latency_ms')
+        try:
+            latency_seconds = max(float(latency), 0) / 1000
+        except (TypeError, ValueError):
+            latency_seconds = 3
+        score = float(bandwidth or 0) / (1 + latency_seconds)
+    try:
+        bandwidth = float(result.get('bandwidth_MBps') or 0)
+    except (TypeError, ValueError):
+        bandwidth = 0
+    try:
+        latency_sort = float(result.get('connection_latency_ms'))
+    except (TypeError, ValueError):
+        latency_sort = 999999999
+    return (-float(score or 0), -bandwidth, latency_sort, result.get('url', ''))
+
+
+def _get_max_urls_per_channel():
+    cfg = load_config()
+    try:
+        return max(0, int(cfg.get('max_urls_per_channel', 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _group_passed_results(passed_results):
+    channels = collections.OrderedDict()
+    for r in sorted(passed_results, key=_result_sort_key):
+        ch = r['channel']
+        if ch not in channels:
+            channels[ch] = []
+        channels[ch].append(r)
+    return channels
+
+
+def _results_for_channel(ch, channels, name_to_canonical=None, regex_aliases=None):
+    results = channels.get(ch, [])
+    if not results and name_to_canonical:
+        from app import match_channel_name
+        canonical = match_channel_name(ch, name_to_canonical, regex_aliases)
+        if canonical and canonical != ch:
+            results = channels.get(canonical, [])
+    max_urls = _get_max_urls_per_channel()
+    if max_urls > 0:
+        return results[:max_urls]
+    return results
 
 def _generate_result_txt(passed_results):
     """从通过的结果动态生成 result.txt 格式内容。"""
     # 按频道分组，保持顺序
-    from collections import OrderedDict
-    channels = OrderedDict()
-    for r in passed_results:
-        ch = r['channel']
-        url = r['url']
-        if ch not in channels:
-            channels[ch] = []
-        channels[ch].append(url)
+    channels = _group_passed_results(passed_results)
 
     lines = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -219,37 +272,33 @@ def _generate_result_txt(passed_results):
 
     # 按 demo.txt 的分类结构输出
     try:
-        from app import parse_demo_file
+        from app import parse_demo_file, load_aliases
+        _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
             genre_lines = []
             for ch in ch_list:
-                if ch in channels:
-                    for url in channels[ch]:
-                        genre_lines.append(f'{ch},{url}')
+                for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
+                    genre_lines.append(f'{ch},{result["url"]}')
             if genre_lines:
                 lines.append(f'{genre},#genre#')
                 lines.extend(genre_lines)
                 lines.append('')
     except Exception:
         # fallback: 简单列表
-        for ch, urls in channels.items():
-            for url in urls:
-                lines.append(f'{ch},{url}')
+        max_urls = _get_max_urls_per_channel()
+        for ch, results in channels.items():
+            if max_urls > 0:
+                results = results[:max_urls]
+            for result in results:
+                lines.append(f'{ch},{result["url"]}')
 
     return '\n'.join(lines)
 
 
 def _generate_result_m3u(passed_results):
     """从通过的结果动态生成 result.m3u 格式内容。"""
-    from collections import OrderedDict
-    channels = OrderedDict()
-    for r in passed_results:
-        ch = r['channel']
-        url = r['url']
-        if ch not in channels:
-            channels[ch] = []
-        channels[ch].append(url)
+    channels = _group_passed_results(passed_results)
 
     logo_base = 'https://www.xn--rgv465a.top/tvlogo'
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -263,27 +312,30 @@ def _generate_result_m3u(passed_results):
     lines.append('http://localhost/update_time')
 
     try:
-        from app import parse_demo_file
+        from app import parse_demo_file, load_aliases
+        _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
             for ch in ch_list:
-                if ch in channels:
-                    for url in channels[ch]:
-                        lines.append(
-                            f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
-                            f'tvg-logo="{logo_base}/{ch}.png" '
-                            f'group-title="{genre}",{ch}'
-                        )
-                        lines.append(url)
+                for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
+                    lines.append(
+                        f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
+                        f'tvg-logo="{logo_base}/{ch}.png" '
+                        f'group-title="{genre}",{ch}'
+                    )
+                    lines.append(result['url'])
     except Exception:
-        for ch, urls in channels.items():
-            for url in urls:
+        max_urls = _get_max_urls_per_channel()
+        for ch, results in channels.items():
+            if max_urls > 0:
+                results = results[:max_urls]
+            for result in results:
                 lines.append(
                     f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
                     f'tvg-logo="{logo_base}/{ch}.png" '
                     f'group-title="默认",{ch}'
                 )
-                lines.append(url)
+                lines.append(result['url'])
 
     return '\n'.join(lines)
 
@@ -335,6 +387,7 @@ def api_trigger():
     _test_log_lines.clear()
     _test_log_seq = 0
     _start_time = time.time()
+    _run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     def _on_progress(info):
         """由 filter_and_save_playlist 的 progress_callback 调用。"""
@@ -356,6 +409,12 @@ def api_trigger():
             'time': now,
             'msg': msg,
         })
+        # 同时写入数据库，供历史查看
+        try:
+            from db import insert_log
+            insert_log(_run_id, 'INFO', msg)
+        except Exception:
+            pass
 
     def _run():
         global _test_running

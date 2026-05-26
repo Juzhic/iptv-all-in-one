@@ -316,6 +316,8 @@ def init_db():
             url TEXT NOT NULL,
             resolution TEXT,
             bandwidth_MBps REAL,
+            connection_latency_ms REAL,
+            quality_score REAL,
             codec TEXT,
             is_h265 BOOLEAN DEFAULT 0,
             sample_seconds REAL,
@@ -334,6 +336,15 @@ def init_db():
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS run_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            level TEXT DEFAULT 'INFO',
+            message TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_logs_run_id ON run_logs(run_id);
+
         CREATE TABLE IF NOT EXISTS run_progress (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             running BOOLEAN DEFAULT 0,
@@ -348,8 +359,22 @@ def init_db():
         );
         INSERT OR IGNORE INTO run_progress (id) VALUES (1);
     """)
+    _ensure_run_results_columns(conn)
     conn.commit()
     _init_default_data()
+
+
+def _ensure_run_results_columns(conn):
+    """为旧数据库补齐新增结果字段。"""
+    rows = conn.execute("PRAGMA table_info(run_results)").fetchall()
+    existing = {row['name'] for row in rows}
+    columns = {
+        'connection_latency_ms': 'REAL',
+        'quality_score': 'REAL',
+    }
+    for name, col_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE run_results ADD COLUMN {name} {col_type}")
 
 
 def insert_run(run_data):
@@ -382,8 +407,9 @@ def insert_run(run_data):
         conn.executemany(
             """INSERT INTO run_results
                (run_id, channel, url, resolution, bandwidth_MBps,
+                connection_latency_ms, quality_score,
                 codec, is_h265, sample_seconds, passed, reason, cost_seconds)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     run_data['run_id'],
@@ -391,6 +417,8 @@ def insert_run(run_data):
                     r.get('url', ''),
                     r.get('resolution', ''),
                     r.get('bandwidth_MBps', 0),
+                    r.get('connection_latency_ms'),
+                    r.get('quality_score', 0),
                     r.get('codec', ''),
                     r.get('is_h265', False),
                     r.get('sample_seconds', 0),
@@ -455,7 +483,14 @@ def get_latest_passed_results():
     if not run:
         return []
     results = conn.execute(
-        "SELECT channel, url FROM run_results WHERE run_id = ? AND passed = 1 ORDER BY id",
+        """SELECT channel, url, bandwidth_MBps, connection_latency_ms, quality_score
+           FROM run_results
+           WHERE run_id = ? AND passed = 1
+           ORDER BY channel,
+                    COALESCE(quality_score, 0) DESC,
+                    COALESCE(bandwidth_MBps, 0) DESC,
+                    COALESCE(connection_latency_ms, 999999999) ASC,
+                    id""",
         (run['run_id'],)
     ).fetchall()
     return [dict(r) for r in results]
@@ -510,7 +545,13 @@ def get_run_detail(run_id):
     if not run:
         return None
     results = conn.execute(
-        "SELECT * FROM run_results WHERE run_id = ? ORDER BY id",
+        """SELECT * FROM run_results WHERE run_id = ?
+           ORDER BY channel,
+                    passed DESC,
+                    COALESCE(quality_score, 0) DESC,
+                    COALESCE(bandwidth_MBps, 0) DESC,
+                    COALESCE(connection_latency_ms, 999999999) ASC,
+                    id""",
         (run_id,)
     ).fetchall()
     return {
@@ -543,7 +584,13 @@ def get_channel_summary(run_id):
     ).fetchall()
 
     detail_rows = conn.execute(
-        "SELECT * FROM run_results WHERE run_id = ? ORDER BY channel, id",
+        """SELECT * FROM run_results WHERE run_id = ?
+           ORDER BY channel,
+                    passed DESC,
+                    COALESCE(quality_score, 0) DESC,
+                    COALESCE(bandwidth_MBps, 0) DESC,
+                    COALESCE(connection_latency_ms, 999999999) ASC,
+                    id""",
         (run_id,)
     ).fetchall()
 
@@ -724,6 +771,27 @@ def get_run_progress():
         'elapsed': row['elapsed'],
         'source': row['source'],
     }
+
+
+def insert_log(run_id, level, message):
+    """写入一条日志到数据库。线程安全，每个线程独立连接。"""
+    conn = _get_conn()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute(
+        "INSERT INTO run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)",
+        (run_id, now, level, message)
+    )
+    conn.commit()
+
+
+def get_run_logs(run_id, limit=500):
+    """获取指定轮次的日志列表。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT ts, level, message FROM run_logs WHERE run_id = ? ORDER BY id LIMIT ?",
+        (run_id, limit)
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def migrate_from_json(json_path='output/history.json'):

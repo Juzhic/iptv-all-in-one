@@ -48,7 +48,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 FFMPEG_BIN = os.environ.get('FFMPEG_BIN', 'ffmpeg')
 
 
-def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='wall_clock_after_connect'):
+def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='wall_clock_after_connect', connection_latency_ms=None):
     """根据连接成功后的读取耗时计算带宽，单位以 Mb/s 为准。"""
     if total_bytes <= 0:
         elapsed_seconds = max(elapsed_seconds, 0.001)
@@ -71,6 +71,7 @@ def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='w
         'measured_seconds': round(elapsed_seconds, 2),
         'total_bytes': total_bytes,
         'bandwidth_basis': basis,
+        'connection_latency_ms': round(connection_latency_ms, 2) if connection_latency_ms is not None else None,
         'success': True
     }
 
@@ -323,6 +324,8 @@ def test_direct_bandwidth(url, width, height, duration):
     try:
         deadline = time.monotonic() + max(duration, 1) + 5
         total_bytes = 0
+        request_start = time.monotonic()
+        connection_latency_ms = None
 
         with http_get(url, stream=True, timeout=request_timeout(deadline, 3, 2)) as response:
             response.raise_for_status()
@@ -332,10 +335,14 @@ def test_direct_bandwidth(url, width, height, duration):
                 first_chunk = next(chunk_iter)
             except StopIteration:
                 first_chunk = b''
+            connection_latency_ms = (time.monotonic() - request_start) * 1000
             text_probe = first_chunk.decode('utf-8', errors='ignore') if first_chunk else ''
 
             if is_hls_response(response, text_probe):
-                return test_hls_bandwidth(response.url, width, height, duration)
+                hls_result = test_hls_bandwidth(response.url, width, height, duration)
+                if isinstance(hls_result, dict) and hls_result.get('connection_latency_ms') is None:
+                    hls_result['connection_latency_ms'] = round(connection_latency_ms, 2)
+                return hls_result
 
             # 从第一个 chunk 到达后开始计时，排除连接建立耗时
             data_start = time.monotonic()
@@ -361,7 +368,7 @@ def test_direct_bandwidth(url, width, height, duration):
                     break
 
         elapsed_time = time.monotonic() - data_start
-        return build_bandwidth_result(width, height, total_bytes, elapsed_time)
+        return build_bandwidth_result(width, height, total_bytes, elapsed_time, connection_latency_ms=connection_latency_ms)
     except Exception as e:
         return {'success': False, 'error': f"直链 测试失败: {str(e)}"}
 
@@ -392,6 +399,7 @@ def test_hls_bandwidth(url, width, height, duration):
         total_bytes = 0
         media_seconds = 0
         download_seconds = 0
+        connection_latency_ms = None
         max_retries = len(segments) * 3 if segments else 10
 
         for i in range(max_retries):
@@ -409,6 +417,7 @@ def test_hls_bandwidth(url, width, height, duration):
             ts_url = segment['url']
             segment_duration = segment.get('duration') or 0
             try:
+                segment_request_start = time.monotonic()
                 with http_get(ts_url, stream=True, timeout=request_timeout(deadline, 2, 2)) as ts_resp:
                     if ts_resp.status_code != 200:
                         continue
@@ -419,6 +428,8 @@ def test_hls_bandwidth(url, width, height, duration):
                     try:
                         for chunk in ts_resp.iter_content(chunk_size=131072):
                             if chunk:
+                                if connection_latency_ms is None:
+                                    connection_latency_ms = (time.monotonic() - segment_request_start) * 1000
                                 segment_bytes += len(chunk)
 
                             if _is_timed_out(url):
@@ -453,7 +464,14 @@ def test_hls_bandwidth(url, width, height, duration):
         if media_seconds <= 0:
             media_seconds = download_seconds
 
-        result = build_bandwidth_result(width, height, total_bytes, download_seconds, basis='hls_download_elapsed')
+        result = build_bandwidth_result(
+            width,
+            height,
+            total_bytes,
+            download_seconds,
+            basis='hls_download_elapsed',
+            connection_latency_ms=connection_latency_ms
+        )
         result['media_seconds'] = round(media_seconds, 2)
         result['download_seconds'] = round(download_seconds, 2)
         if download_seconds > 0:
