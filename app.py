@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from FFmpegTest import analyze_iptv_with_ffmpeg, register_timeout as _reg_timeout, clear_timeouts as _clear_timeouts, http_get
-from db import init_db, insert_run, migrate_from_json
+from db import init_db, insert_run, migrate_from_json, now_str, timestamp_str
 
 try:
     import psutil
@@ -888,7 +888,7 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     from db import clear_run_progress, update_run_progress
     _clear_timeouts()
     run_start_time = time.time()
-    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
 
     # 清空旧进度，标记新运行开始
     clear_run_progress()
@@ -983,6 +983,11 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     # 实时写入的频道通过记录
     filtered_urls = {}
     _write_lock = threading.Lock()
+    show_time = cfg.get('show_update_time', True)
+    time_pos = cfg.get('update_time_position', 'top')
+    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+    _log("已清空旧输出文件，开始写入本轮实时结果")
 
     def _on_channel_pass(name, entry):
         """频道通过测速时立即追加并重写结果文件。"""
@@ -993,8 +998,6 @@ def run_test_cycle(progress_callback=None, log_callback=None):
             if url and url not in {_entry_url(item) for item in filtered_urls[name]}:
                 filtered_urls[name].append(entry)
             filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
-            show_time = cfg.get('show_update_time', True)
-            time_pos = cfg.get('update_time_position', 'top')
             save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
             save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
 
@@ -1029,8 +1032,6 @@ def run_test_cycle(progress_callback=None, log_callback=None):
     )
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
-    show_time = cfg.get('show_update_time', True)
-    time_pos = cfg.get('update_time_position', 'top')
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
     save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
 
@@ -1048,8 +1049,8 @@ def run_test_cycle(progress_callback=None, log_callback=None):
 
     run_data = {
         'run_id': run_id,
-        'started_at': datetime.fromtimestamp(run_start_time).strftime('%Y-%m-%d %H:%M:%S'),
-        'finished_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'started_at': timestamp_str(run_start_time),
+        'finished_at': now_str(),
         'duration_seconds': round(run_elapsed, 1),
         'summary': {
             'total_tested': total_tested,

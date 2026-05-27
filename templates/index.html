@@ -12,7 +12,7 @@ h1{font-size:20px;font-weight:600}
 .header{display:flex;align-items:center;justify-content:space-between;padding:12px 0;margin-bottom:16px;border-bottom:1px solid #e5e7eb}
 .header .meta{font-size:12px;color:#6b7280}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-.dot.green{background:#22c55e}.dot.red{background:#ef4444}.dot.gray{background:#9ca3af}.dot.yellow{background:#f59e0b}
+.dot.green{background:#22c55e}.dot.red{background:#ef4444}.dot.gray{background:#9ca3af}.dot.yellow{background:#f59e0b}.dot.blue{background:#3b82f6}
 .dot.pulse{animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
@@ -214,6 +214,10 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
     <span id="headerRunStatus" style="display:none">
       <span class="dot yellow pulse"></span>
       <span id="headerRunText">测试运行中...</span>
+    </span>
+    <span id="headerSchedulerStatus" style="display:none">
+      <span class="dot blue"></span>
+      <span id="headerSchedulerText">定时调度中...</span>
     </span>
     {% if latest %}
       <span id="headerLastUpdate">
@@ -843,6 +847,8 @@ function updateHeaderStatus(data) {
   const statusWrap = document.getElementById('headerRunStatus');
   const lastUpdateWrap = document.getElementById('headerLastUpdate');
   const statusText = document.getElementById('headerRunText');
+  const schedWrap = document.getElementById('headerSchedulerStatus');
+  const schedText = document.getElementById('headerSchedulerText');
   if (!statusWrap) return;
 
   if (data.running) {
@@ -854,6 +860,16 @@ function updateHeaderStatus(data) {
   } else {
     statusWrap.style.display = 'none';
     if (lastUpdateWrap) lastUpdateWrap.style.display = '';
+  }
+
+  // 调度器状态
+  if (schedWrap && schedText) {
+    if (data.scheduler_running && data.next_scheduled_run) {
+      schedWrap.style.display = '';
+      schedText.textContent = '下次执行：' + data.next_scheduled_run;
+    } else {
+      schedWrap.style.display = 'none';
+    }
   }
 }
 
@@ -925,8 +941,13 @@ function pollGlobalProgress() {
           globalPollTimer = setInterval(pollGlobalProgress, 2000);
         }
       } else {
-        // 没有运行中的测试，停止轮询
+        // 没有运行中的测试
         if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
+
+        // 调度器运行中，低频轮询更新下次执行时间
+        if (data.scheduler_running) {
+          globalPollTimer = setInterval(pollGlobalProgress, 30000);
+        }
 
         // Web 运行刚结束，延迟刷新
         if (isWebRun) {

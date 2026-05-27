@@ -2,6 +2,7 @@
 import collections
 import json
 import os
+import socket
 import threading
 import time
 from datetime import datetime, timedelta
@@ -14,6 +15,7 @@ from db import (
     get_codec_stats, delete_run,
     get_config_data, set_config_data, DEFAULT_DEMO,
     get_config, save_config as db_save_config,
+    now_str,
 )
 from app import load_config, DEFAULT_CONFIG
 
@@ -55,6 +57,26 @@ _test_progress = {
 }
 _test_log_lines = collections.deque(maxlen=200)  # 环形缓冲，最多 200 行日志
 _test_log_seq = 0  # 日志序号，用于增量拉取
+
+# 调度器状态
+_next_scheduled_run = None  # 下次定时执行时间（datetime 或 None）
+_scheduler_running = False  # 调度线程是否存活
+
+
+def _can_bind_port(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _find_available_port(host, preferred_port, attempts=20):
+    for port in range(preferred_port, preferred_port + attempts + 1):
+        if _can_bind_port(host, port):
+            return port
+    return preferred_port
 
 
 # ─────────────── 页面路由 ───────────────
@@ -98,7 +120,6 @@ def api_save_config():
 
     # 合法配置项白名单
     valid_keys = set(DEFAULT_CONFIG.keys())
-    valid_keys.add('web_port')
 
     # 读取当前配置，只更新合法 key
     cfg = get_config(DEFAULT_CONFIG)
@@ -368,29 +389,27 @@ def api_download(fmt):
 
 # ─────────────── 触发测试 API ───────────────
 
-@app.route('/api/trigger', methods=['POST'])
-def api_trigger():
-    """触发一次测试运行。"""
+def _start_test_background(trigger_source='web'):
+    """启动一次后台测试。返回 True 成功，False 已有测试在运行。"""
     global _test_running, _test_log_seq
     with _test_lock:
         if _test_running:
-            return jsonify({'error': '测试正在运行中，请等待完成'}), 409
+            return False
         _test_running = True
 
     # 重置进度
     _test_progress.update({
         'running': True,
-        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'started_at': now_str(),
         'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
         'elapsed': 0, 'finished_at': None, 'error': None,
     })
     _test_log_lines.clear()
     _test_log_seq = 0
     _start_time = time.time()
-    _run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    _run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
 
     def _on_progress(info):
-        """由 filter_and_save_playlist 的 progress_callback 调用。"""
         _test_progress.update({
             'total': info.get('total', 0),
             'processed': info.get('processed', 0),
@@ -400,7 +419,6 @@ def api_trigger():
         })
 
     def _on_log(msg):
-        """由 run_test_cycle 的 log_callback 调用。"""
         global _test_log_seq
         _test_log_seq += 1
         now = datetime.now().strftime('%H:%M:%S')
@@ -409,7 +427,6 @@ def api_trigger():
             'time': now,
             'msg': msg,
         })
-        # 同时写入数据库，供历史查看
         try:
             from db import insert_log
             insert_log(_run_id, 'INFO', msg)
@@ -423,30 +440,102 @@ def api_trigger():
             run_test_cycle(progress_callback=_on_progress, log_callback=_on_log)
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Web 触发测试失败: {e}")
+            logging.getLogger(__name__).error(f"测试失败: {e}")
             _on_log(f"测试异常终止: {e}")
             _test_progress['error'] = str(e)
         finally:
             _test_progress['running'] = False
-            _test_progress['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _test_progress['finished_at'] = now_str()
             _test_progress['elapsed'] = round(time.time() - _start_time, 1)
             with _test_lock:
                 _test_running = False
-            # 确保 SQLite 进度也被清空
             try:
                 from db import clear_run_progress
                 clear_run_progress()
             except Exception:
                 pass
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target=_run, daemon=True, name=f'test-{trigger_source}')
     t.start()
-    return jsonify({'ok': True, 'message': '测试已启动'})
+    return True
+
+
+def _scheduler_loop():
+    """后台调度循环：按配置的 run_mode 定时触发测试。"""
+    global _next_scheduled_run, _scheduler_running
+    _scheduler_running = True
+    # 导入 app 模块的调度函数
+    from app import _next_run_datetime
+
+    try:
+        while True:
+            cfg = load_config()
+            run_mode = cfg.get('run_mode', 'once')
+            if run_mode == 'once':
+                _next_scheduled_run = None
+                break  # 一次性模式，调度线程退出
+
+            next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
+            if next_run is None:
+                _next_scheduled_run = None
+                time.sleep(60)  # 配置无效，等 1 分钟后重试
+                continue
+
+            _next_scheduled_run = next_run
+            wait_sec = (next_run - datetime.now()).total_seconds()
+            if wait_sec > 0:
+                # 分段 sleep，每 30 秒检查一次配置是否变更
+                while wait_sec > 0:
+                    time.sleep(min(wait_sec, 30))
+                    wait_sec = (next_run - datetime.now()).total_seconds()
+                    # 如果配置变更导致下次时间不同，重新计算
+                    current_cfg = load_config()
+                    current_mode = current_cfg.get('run_mode', 'once')
+                    if current_mode != run_mode:
+                        break  # 模式变了，跳出内层循环重新计算
+                else:
+                    # wait_sec <= 0，到达执行时间
+                    pass
+
+                # 检查是否因配置变更跳出
+                current_cfg = load_config()
+                if current_cfg.get('run_mode', 'once') != run_mode:
+                    continue  # 模式变了，重新开始循环
+
+            print(f"\n{'#' * 60}")
+            print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'#' * 60}")
+            _start_test_background(trigger_source='scheduler')
+
+            # interval 模式：等测试完成，再等间隔
+            if run_mode == 'interval':
+                while _test_progress.get('running'):
+                    time.sleep(5)
+                cfg = load_config()
+                interval = cfg.get('run_interval_minutes', 60)
+                _next_scheduled_run = datetime.now() + timedelta(minutes=interval)
+                time.sleep(interval * 60)
+            # times 模式：循环顶部会自动计算下一个时间点
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"调度器异常退出: {e}")
+    finally:
+        _scheduler_running = False
+        _next_scheduled_run = None
+
+
+@app.route('/api/trigger', methods=['POST'])
+def api_trigger():
+    """触发一次测试运行。"""
+    if _start_test_background(trigger_source='web'):
+        return jsonify({'ok': True, 'message': '测试已启动'})
+    return jsonify({'error': '测试正在运行中，请等待完成'}), 409
 
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
+    next_run_str = _next_scheduled_run.strftime('%Y-%m-%d %H:%M:%S') if _next_scheduled_run else None
     if _test_progress['running']:
         return jsonify({
             'running': True,
@@ -454,6 +543,8 @@ def api_status():
             'total': _test_progress['total'],
             'elapsed': _test_progress['elapsed'],
             'source': 'web',
+            'next_scheduled_run': next_run_str,
+            'scheduler_running': _scheduler_running,
         })
     from db import get_run_progress
     db_progress = get_run_progress()
@@ -464,6 +555,8 @@ def api_status():
             'total': db_progress.get('total', 0),
             'elapsed': db_progress.get('elapsed', 0),
             'source': db_progress.get('source', 'scheduler'),
+            'next_scheduled_run': next_run_str,
+            'scheduler_running': _scheduler_running,
         })
     return jsonify({
         'running': False,
@@ -471,6 +564,8 @@ def api_status():
         'total': 0,
         'elapsed': 0,
         'source': '',
+        'next_scheduled_run': next_run_str,
+        'scheduler_running': _scheduler_running,
     })
 
 
@@ -481,6 +576,11 @@ def api_progress():
     优先返回 Web 触发的内存数据（含日志），否则查 SQLite（定时任务）。
     """
     after = request.args.get('after', 0, type=int)
+    next_run_str = _next_scheduled_run.strftime('%Y-%m-%d %H:%M:%S') if _next_scheduled_run else None
+    sched_info = {
+        'next_scheduled_run': next_run_str,
+        'scheduler_running': _scheduler_running,
+    }
 
     # 优先检查 Web 触发的内存进度
     if _test_progress['running']:
@@ -498,6 +598,7 @@ def api_progress():
             'lines': new_lines,
             'last_seq': _test_log_seq,
             'source': 'web',
+            **sched_info,
         })
 
     # 检查 SQLite 中的定时任务进度
@@ -517,6 +618,7 @@ def api_progress():
             'lines': [],
             'last_seq': 0,
             'source': db_progress.get('source', 'scheduler'),
+            **sched_info,
         })
 
     # 没有运行中的测试
@@ -533,6 +635,7 @@ def api_progress():
         'lines': [],
         'last_seq': 0,
         'source': '',
+        **sched_info,
     })
 
 
@@ -540,18 +643,33 @@ def api_progress():
 
 if __name__ == '__main__':
     try:
+        host = '0.0.0.0'
         port = 58080
         try:
             cfg = load_config()
-            port = int(cfg.get('web_port', 58080))
+            port = int(os.environ.get('WEB_PORT') or 58080)
         except Exception:
+            cfg = DEFAULT_CONFIG
             pass
+        bind_port = _find_available_port(host, port)
 
-        print(f"Web 管理后台已启动: http://localhost:{port}")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        # 启动定时调度线程
+        run_mode = cfg.get('run_mode', 'once') if cfg else 'once'
+        if run_mode != 'once':
+            sched_thread = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
+            sched_thread.start()
+            label = f"指定时间 {cfg.get('run_times', [])}" if run_mode == 'times' else f"每 {cfg.get('run_interval_minutes', 60)} 分钟"
+            print(f"定时调度已启动：{label}")
+        else:
+            print("运行模式：once（仅手动触发）")
+
+        if bind_port != port:
+            print(f"端口 {port} 不可用，已自动改用 {bind_port}")
+        print(f"Web 管理后台已启动: http://localhost:{bind_port}")
+        app.run(host=host, port=bind_port, debug=False)
     except OSError as e:
-        print(f"\n端口 {port} 被占用，请关闭占用该端口的程序，或在 config.json 中修改 web_port")
-        print(f"错误详情: {e}")
+        print(f"\n端口 {bind_port} 启动失败: {e}")
+        print("可以关闭占用端口的程序，或设置环境变量 WEB_PORT 后重新启动。")
         input("\n按回车键退出...")
     except Exception as e:
         import traceback

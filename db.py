@@ -3,11 +3,20 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 DB_PATH = 'iptv.db'
 MAX_RUNS = 50
 CONFIG_DATA = 'config'  # config_data 表中存储系统配置的 key
+LOCAL_TZ = timezone(timedelta(hours=8))
+
+
+def now_str():
+    return datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def timestamp_str(ts):
+    return datetime.fromtimestamp(ts, LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
 # ─── 内置默认 demo 模板 ───
 DEFAULT_DEMO = """📢公告,#genre#
@@ -652,7 +661,7 @@ def get_config_data(key):
 def set_config_data(key, content):
     """保存配置数据内容。"""
     conn = _get_conn()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = now_str()
     conn.execute(
         "INSERT OR REPLACE INTO config_data (key, content, updated_at) VALUES (?, ?, ?)",
         (key, content, now)
@@ -716,7 +725,7 @@ def _init_default_data():
         'alias': DEFAULT_ALIAS,
         'subscribe': '',
     }
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = now_str()
     for key, content in defaults.items():
         existing = conn.execute("SELECT 1 FROM config_data WHERE key = ?", (key,)).fetchone()
         if not existing:
@@ -730,7 +739,7 @@ def _init_default_data():
 def clear_run_progress():
     """清空运行进度（运行结束或新运行开始时调用）。"""
     conn = _get_conn()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = now_str()
     conn.execute(
         """UPDATE run_progress SET
            running=0, started_at=NULL, total=0, processed=0,
@@ -744,7 +753,7 @@ def clear_run_progress():
 def update_run_progress(total, processed, passed, failed, elapsed, source=''):
     """更新运行进度（测试进行中由进度回调调用）。"""
     conn = _get_conn()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = now_str()
     conn.execute(
         """UPDATE run_progress SET
            running=1, total=?, processed=?, passed=?, failed=?,
@@ -776,7 +785,7 @@ def get_run_progress():
 def insert_log(run_id, level, message):
     """写入一条日志到数据库。线程安全，每个线程独立连接。"""
     conn = _get_conn()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = now_str()
     conn.execute(
         "INSERT INTO run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)",
         (run_id, now, level, message)
