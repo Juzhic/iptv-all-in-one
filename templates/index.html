@@ -430,6 +430,7 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
     <h3>测试控制</h3>
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <button class="btn btn-success" id="btnTrigger" onclick="triggerTest()">立即测试</button>
+      <button class="btn btn-danger" id="btnStop" onclick="stopTest()" style="display:none">终止测试</button>
       <span id="testStatusText" style="font-size:13px;color:#6b7280">空闲</span>
     </div>
     <div id="progressWrap" style="display:none;margin-top:12px">
@@ -838,10 +839,11 @@ function resetDemo() {
 
 // ───── Global progress polling (header + testing tab) ─────
 let globalPollTimer = null;
-let isWebRun = false;  // 是否为 Web 触发的运行（有日志流）
-let testStarted = false; // 是否曾有测试运行（防止初始页面显示"已完成"）
+let isWebRun = false;
+let testStarted = false;
 let lastLogSeq = 0;
 let autoScroll = true;
+let completionConfirmCount = 0;
 
 function updateHeaderStatus(data) {
   const statusWrap = document.getElementById('headerRunStatus');
@@ -877,6 +879,7 @@ function updateTestingTab(data) {
   const progressWrap = document.getElementById('progressWrap');
   const testStatusText = document.getElementById('testStatusText');
   const btn = document.getElementById('btnTrigger');
+  const stopBtn = document.getElementById('btnStop');
   if (!progressWrap) return;
 
   if (data.running) {
@@ -884,6 +887,7 @@ function updateTestingTab(data) {
     progressWrap.style.display = '';
     if (testStatusText) testStatusText.textContent = '运行中...';
     if (btn) { btn.disabled = true; btn.textContent = '运行中...'; }
+    if (stopBtn) stopBtn.style.display = '';
 
     const pct = data.total > 0 ? Math.round(data.processed / data.total * 100) : 0;
     const fill = document.getElementById('progressFill');
@@ -921,6 +925,9 @@ function updateTestingTab(data) {
     }
 
   } else if (testStarted) {
+    if (isWebRun && completionConfirmCount < 1) {
+      return;
+    }
     if (testStatusText) testStatusText.textContent = '已完成';
     const labelEl = document.getElementById('progressLabel');
     if (labelEl) labelEl.textContent = '测试完成';
@@ -936,6 +943,7 @@ function pollGlobalProgress() {
       updateTestingTab(data);
 
       if (data.running) {
+        completionConfirmCount = 0;
         // 测试进行中，确保轮询在运行
         if (!globalPollTimer) {
           globalPollTimer = setInterval(pollGlobalProgress, 2000);
@@ -949,10 +957,17 @@ function pollGlobalProgress() {
           globalPollTimer = setInterval(pollGlobalProgress, 30000);
         }
 
-        // Web 运行刚结束，延迟刷新
         if (isWebRun) {
+          completionConfirmCount += 1;
+          if (completionConfirmCount < 2) {
+            setTimeout(pollGlobalProgress, 2000);
+            return;
+          }
           if (data.error) showToast('测试异常: ' + data.error, 'error');
-          setTimeout(() => location.reload(), 2000);
+          else showToast('测试已完成', 'success');
+          isWebRun = false;
+          testStarted = false;
+          completionConfirmCount = 0;
         }
       }
     })
@@ -978,11 +993,14 @@ function triggerTest() {
         document.getElementById('progressWrap').style.display = '';
         document.getElementById('testStatusText').textContent = '运行中...';
         btn.textContent = '运行中...';
+        const stopBtn = document.getElementById('btnStop');
+        if (stopBtn) stopBtn.style.display = '';
         // 启动全局轮询（清除可能残留的定时器）
         if (globalPollTimer) clearInterval(globalPollTimer);
         lastLogSeq = 0;
         isWebRun = true;
         testStarted = true;
+        completionConfirmCount = 0;
         globalPollTimer = setInterval(pollGlobalProgress, 2000);
       } else {
         showToast(res.error || '启动失败', 'error');
@@ -997,8 +1015,41 @@ function triggerTest() {
 
 function resetTestBtn() {
   const btn = document.getElementById('btnTrigger');
+  const stopBtn = document.getElementById('btnStop');
   btn.disabled = false;
   btn.textContent = '立即测试';
+  if (stopBtn) {
+    stopBtn.disabled = false;
+    stopBtn.style.display = 'none';
+    stopBtn.textContent = '终止测试';
+  }
+}
+
+function stopTest() {
+  const stopBtn = document.getElementById('btnStop');
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.textContent = '终止中...';
+  }
+  fetch('/api/stop', {method: 'POST'})
+    .then(r => r.json())
+    .then(res => {
+      if (res.ok) {
+        showToast(res.message || '已请求终止', 'success');
+        isWebRun = false;
+        testStarted = false;
+        completionConfirmCount = 0;
+        resetTestBtn();
+        if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
+      } else {
+        showToast(res.error || '终止失败', 'error');
+        resetTestBtn();
+      }
+    })
+    .catch(e => {
+      showToast('终止失败: ' + e, 'error');
+      resetTestBtn();
+    });
 }
 
 function toggleAutoScroll() {

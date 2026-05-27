@@ -305,7 +305,8 @@ def filter_and_save_playlist(
     bandwidth_limit_mbps=None,
     config=None,
     on_pass_callback=None,
-    run_id=''
+    run_id='',
+    stop_event=None
 ):
     """
     过滤并保存符合条件的 IPTV 列表（修改版：增加详细日志和进度计算）
@@ -347,6 +348,8 @@ def filter_and_save_playlist(
         start_time = time.time()  # 记录开始时间
 
         try:
+            if stop_event and stop_event.is_set():
+                return {'index': idx, 'channel_info': channel_info, 'url': url, 'pass': False, 'reason': '任务已终止','duration': time.time() - start_time }
             low_resolution_hint = detect_low_resolution_url(url)
             if low_resolution_hint:
                 return {
@@ -588,6 +591,9 @@ def filter_and_save_playlist(
     no_more_items = False
 
     def submit_next():
+        if stop_event and stop_event.is_set():
+            return None
+
         try:
             item = next(item_iter)
         except StopIteration:
@@ -612,7 +618,7 @@ def filter_and_save_playlist(
     def fill_pending_slots(pending):
         nonlocal no_more_items
 
-        if no_more_items:
+        if no_more_items or (stop_event and stop_event.is_set()):
             return pending
 
         while len(pending) < max_workers:
@@ -638,6 +644,17 @@ def filter_and_save_playlist(
         pending = fill_pending_slots(pending)
 
         while pending or not no_more_items:
+            if stop_event and stop_event.is_set():
+                logger.info("收到终止请求，正在停止未完成任务")
+                no_more_items = True
+                for future in list(pending):
+                    info = future_info.pop(future, None)
+                    if info:
+                        _reg_timeout(info['url'])
+                    future.cancel()
+                pending.clear()
+                break
+
             if pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             else:
@@ -883,7 +900,7 @@ def save_run_result(run_data, filepath='output/history.json'):
     insert_run(run_data)
 
 
-def run_test_cycle(progress_callback=None, log_callback=None):
+def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     from db import clear_run_progress, update_run_progress
     _clear_timeouts()
@@ -1028,7 +1045,8 @@ def run_test_cycle(progress_callback=None, log_callback=None):
         config=cfg,
         progress_callback=_combined_progress,
         on_pass_callback=_on_channel_pass,
-        run_id=run_id
+        run_id=run_id,
+        stop_event=stop_event
     )
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)

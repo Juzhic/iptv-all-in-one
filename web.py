@@ -25,6 +25,11 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 # 初始化数据库（模块加载时执行，兼容 uWSGI / gunicorn 等 WSGI 服务器）
 init_db()
 migrate_from_json()
+try:
+    from db import clear_run_progress
+    clear_run_progress()
+except Exception:
+    pass
 
 
 @app.after_request
@@ -42,6 +47,7 @@ ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe'}
 # 测试运行状态锁
 _test_running = False
 _test_lock = threading.Lock()
+_test_stop_event = threading.Event()
 
 # 测试进度追踪（模块级）
 _test_progress = {
@@ -391,11 +397,12 @@ def api_download(fmt):
 
 def _start_test_background(trigger_source='web'):
     """启动一次后台测试。返回 True 成功，False 已有测试在运行。"""
-    global _test_running, _test_log_seq
+    global _test_running, _test_log_seq, _test_stop_event
     with _test_lock:
         if _test_running:
             return False
         _test_running = True
+        _test_stop_event = threading.Event()
 
     # 重置进度
     _test_progress.update({
@@ -437,7 +444,7 @@ def _start_test_background(trigger_source='web'):
         global _test_running
         try:
             from app import run_test_cycle
-            run_test_cycle(progress_callback=_on_progress, log_callback=_on_log)
+            run_test_cycle(progress_callback=_on_progress, log_callback=_on_log, stop_event=_test_stop_event)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"测试失败: {e}")
@@ -458,6 +465,25 @@ def _start_test_background(trigger_source='web'):
     t = threading.Thread(target=_run, daemon=True, name=f'test-{trigger_source}')
     t.start()
     return True
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop():
+    """请求终止当前测试，并清理持久化运行状态。"""
+    global _test_running
+    _test_stop_event.set()
+    try:
+        from db import clear_run_progress
+        clear_run_progress()
+    except Exception:
+        pass
+    msg = '已请求终止当前测试'
+    _test_progress['error'] = msg
+    _test_progress['running'] = False
+    _test_progress['finished_at'] = now_str()
+    with _test_lock:
+        _test_running = False
+    return jsonify({'ok': True, 'message': msg})
 
 
 def _scheduler_loop():
