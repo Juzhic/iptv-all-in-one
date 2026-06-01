@@ -5,7 +5,7 @@ import os
 import socket
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify, send_file
 from db import (
@@ -15,12 +15,30 @@ from db import (
     get_codec_stats, delete_run,
     get_config_data, set_config_data, DEFAULT_DEMO,
     get_config, save_config as db_save_config,
+    get_scheduler_state, update_scheduler_state, clear_scheduler_state,
     now_str,
 )
 from app import load_config, DEFAULT_CONFIG
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.jinja_env.auto_reload = True
+app.jinja_env.cache = None
+
+
+def _asset_version(filename):
+    """用静态文件修改时间生成版本号，避免部署后浏览器继续使用旧资源。"""
+    path = os.path.join(app.static_folder, filename.replace('/', os.sep))
+    try:
+        return str(int(os.path.getmtime(path)))
+    except OSError:
+        return str(int(time.time()))
+
+
+@app.context_processor
+def inject_asset_version():
+    return {'asset_version': _asset_version('js/index.js')}
 
 # 初始化数据库（模块加载时执行，兼容 uWSGI / gunicorn 等 WSGI 服务器）
 init_db()
@@ -34,11 +52,20 @@ except Exception:
 
 @app.after_request
 def add_no_cache_headers(response):
-    """禁止浏览器缓存页面，确保每次刷新都获取最新内容。"""
-    if 'text/html' in response.content_type:
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    """禁止浏览器和反向代理缓存动态页面/API，避免部署后看到旧页面。"""
+    dynamic_response = (
+        'text/html' in response.content_type
+        or response.content_type.startswith('application/json')
+        or request.path.startswith('/api/')
+        or request.path.startswith('/static/')
+    )
+    if dynamic_response:
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0, private'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
+        response.headers['Surrogate-Control'] = 'no-store'
+        response.headers['X-Accel-Expires'] = '0'
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
     return response
 
 # 允许通过 Web 编辑的数据 key
@@ -48,6 +75,7 @@ ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe'}
 _test_running = False
 _test_lock = threading.Lock()
 _test_stop_event = threading.Event()
+_test_active_token = None
 
 # 测试进度追踪（模块级）
 _test_progress = {
@@ -60,6 +88,7 @@ _test_progress = {
     'elapsed': 0,
     'finished_at': None,
     'error': None,
+    'source': '',
 }
 _test_log_lines = collections.deque(maxlen=200)  # 环形缓冲，最多 200 行日志
 _test_log_seq = 0  # 日志序号，用于增量拉取
@@ -67,6 +96,117 @@ _test_log_seq = 0  # 日志序号，用于增量拉取
 # 调度器状态
 _next_scheduled_run = None  # 下次定时执行时间（datetime 或 None）
 _scheduler_running = False  # 调度线程是否存活
+_scheduler_thread = None
+_scheduler_thread_lock = threading.Lock()
+_scheduler_lock_handle = None
+_scheduler_owner = f'pid:{os.getpid()}'
+
+
+def _format_schedule_time(value):
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    return value or None
+
+
+def _write_scheduler_state(running, next_run=None):
+    try:
+        update_scheduler_state(
+            running=running,
+            next_run=_format_schedule_time(next_run),
+            owner=_scheduler_owner if running else '',
+        )
+    except Exception:
+        pass
+
+
+def _acquire_scheduler_lock():
+    """跨进程抢占调度器锁，避免 gunicorn/uWSGI 多 worker 重复定时执行。"""
+    global _scheduler_lock_handle
+    if _scheduler_lock_handle is not None:
+        return True
+
+    os.makedirs('output', exist_ok=True)
+    lock_handle = open(os.path.join('output', 'scheduler.lock'), 'a+', encoding='utf-8')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            lock_handle.seek(0)
+            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_handle.close()
+        return False
+
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f'{_scheduler_owner} {now_str()}\n')
+    lock_handle.flush()
+    _scheduler_lock_handle = lock_handle
+    return True
+
+
+def _release_scheduler_lock():
+    global _scheduler_lock_handle
+    if _scheduler_lock_handle is None:
+        return
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            _scheduler_lock_handle.seek(0)
+            msvcrt.locking(_scheduler_lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_scheduler_lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        _scheduler_lock_handle.close()
+    finally:
+        _scheduler_lock_handle = None
+
+
+def _ensure_scheduler_started(cfg=None):
+    """在当前配置需要定时时启动调度线程；WSGI 导入模式也会生效。"""
+    global _scheduler_running, _scheduler_thread
+    try:
+        cfg = cfg or load_config()
+    except Exception:
+        return False
+
+    if cfg.get('run_mode', 'once') == 'once':
+        return False
+
+    with _scheduler_thread_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return True
+        if not _acquire_scheduler_lock():
+            return False
+        _scheduler_running = True
+        _write_scheduler_state(True, _next_scheduled_run)
+        _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
+        _scheduler_thread.start()
+        return True
+
+
+def _scheduler_status():
+    """返回页面展示用的调度状态，兼容多进程请求落到非调度 worker。"""
+    if not _scheduler_running:
+        _ensure_scheduler_started()
+
+    next_run_str = _format_schedule_time(_next_scheduled_run)
+    scheduler_running = _scheduler_running
+    if next_run_str and scheduler_running:
+        return scheduler_running, next_run_str
+
+    try:
+        state = get_scheduler_state()
+    except Exception:
+        state = None
+    if state and state.get('running'):
+        return True, state.get('next_run') or next_run_str
+    return scheduler_running, next_run_str
 
 
 def _can_bind_port(host, port):
@@ -140,6 +280,13 @@ def api_save_config():
         cfg['run_times'] = _normalize_run_times(cfg['run_times'])
 
     db_save_config(cfg)
+    if cfg.get('run_mode', 'once') == 'once':
+        try:
+            clear_scheduler_state()
+        except Exception:
+            pass
+    else:
+        _ensure_scheduler_started(cfg)
     return jsonify({'ok': True, 'updated': updated_keys, 'config': cfg})
 
 
@@ -395,14 +542,23 @@ def api_download(fmt):
 
 # ─────────────── 触发测试 API ───────────────
 
+def _is_run_token_active(run_token):
+    """判断指定后台任务是否仍是当前活跃任务。"""
+    with _test_lock:
+        return _test_running and _test_active_token is run_token
+
+
 def _start_test_background(trigger_source='web'):
-    """启动一次后台测试。返回 True 成功，False 已有测试在运行。"""
-    global _test_running, _test_log_seq, _test_stop_event
+    """启动一次后台测试。返回本次任务 token；已有测试在运行时返回 None。"""
+    global _test_running, _test_log_seq, _test_stop_event, _test_active_token
     with _test_lock:
         if _test_running:
-            return False
+            return None
+        run_token = object()
+        stop_event = threading.Event()
         _test_running = True
-        _test_stop_event = threading.Event()
+        _test_stop_event = stop_event
+        _test_active_token = run_token
 
     # 重置进度
     _test_progress.update({
@@ -410,6 +566,7 @@ def _start_test_background(trigger_source='web'):
         'started_at': now_str(),
         'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
         'elapsed': 0, 'finished_at': None, 'error': None,
+        'source': trigger_source,
     })
     _test_log_lines.clear()
     _test_log_seq = 0
@@ -441,55 +598,58 @@ def _start_test_background(trigger_source='web'):
             pass
 
     def _run():
-        global _test_running
+        global _test_running, _test_active_token
         try:
             from app import run_test_cycle
-            run_test_cycle(progress_callback=_on_progress, log_callback=_on_log, stop_event=_test_stop_event)
+            run_test_cycle(
+                progress_callback=_on_progress,
+                log_callback=_on_log,
+                stop_event=stop_event,
+                progress_source=trigger_source,
+            )
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"测试失败: {e}")
             _on_log(f"测试异常终止: {e}")
             _test_progress['error'] = str(e)
         finally:
-            _test_progress['running'] = False
-            _test_progress['finished_at'] = now_str()
-            _test_progress['elapsed'] = round(time.time() - _start_time, 1)
             with _test_lock:
-                _test_running = False
-            try:
-                from db import clear_run_progress
-                clear_run_progress()
-            except Exception:
-                pass
+                is_current_run = _test_active_token is run_token
+                if is_current_run:
+                    _test_progress['running'] = False
+                    _test_progress['finished_at'] = now_str()
+                    _test_progress['elapsed'] = round(time.time() - _start_time, 1)
+                    _test_running = False
+                    _test_active_token = None
+            if is_current_run:
+                try:
+                    from db import clear_run_progress
+                    clear_run_progress()
+                except Exception:
+                    pass
 
     t = threading.Thread(target=_run, daemon=True, name=f'test-{trigger_source}')
     t.start()
-    return True
+    return run_token
 
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
-    """请求终止当前测试，并清理持久化运行状态。"""
-    global _test_running
-    _test_stop_event.set()
-    try:
-        from db import clear_run_progress
-        clear_run_progress()
-    except Exception:
-        pass
+    """请求终止当前测试，实际清理由后台线程退出时完成。"""
     msg = '已请求终止当前测试'
-    _test_progress['error'] = msg
-    _test_progress['running'] = False
-    _test_progress['finished_at'] = now_str()
     with _test_lock:
-        _test_running = False
+        if not _test_running:
+            return jsonify({'error': '当前没有正在运行的测试'}), 409
+        _test_stop_event.set()
+        _test_progress['error'] = msg
     return jsonify({'ok': True, 'message': msg})
 
 
 def _scheduler_loop():
     """后台调度循环：按配置的 run_mode 定时触发测试。"""
-    global _next_scheduled_run, _scheduler_running
+    global _next_scheduled_run, _scheduler_running, _scheduler_thread
     _scheduler_running = True
+    _write_scheduler_state(True, _next_scheduled_run)
     # 导入 app 模块的调度函数
     from app import _next_run_datetime
 
@@ -499,15 +659,18 @@ def _scheduler_loop():
             run_mode = cfg.get('run_mode', 'once')
             if run_mode == 'once':
                 _next_scheduled_run = None
+                _write_scheduler_state(False, None)
                 break  # 一次性模式，调度线程退出
 
             next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
             if next_run is None:
                 _next_scheduled_run = None
+                _write_scheduler_state(True, None)
                 time.sleep(60)  # 配置无效，等 1 分钟后重试
                 continue
 
             _next_scheduled_run = next_run
+            _write_scheduler_state(True, next_run)
             wait_sec = (next_run - datetime.now()).total_seconds()
             if wait_sec > 0:
                 # 分段 sleep，每 30 秒检查一次配置是否变更
@@ -531,16 +694,16 @@ def _scheduler_loop():
             print(f"\n{'#' * 60}")
             print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"{'#' * 60}")
-            _start_test_background(trigger_source='scheduler')
+            run_token = _start_test_background(trigger_source='scheduler')
+            if run_token is None:
+                print("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
+                continue
 
-            # interval 模式：等测试完成，再等间隔
+            # interval 模式：只等待本次由调度器启动的任务结束；手动任务不参与重新计时
             if run_mode == 'interval':
-                while _test_progress.get('running'):
+                while _is_run_token_active(run_token):
                     time.sleep(5)
-                cfg = load_config()
-                interval = cfg.get('run_interval_minutes', 60)
-                _next_scheduled_run = datetime.now() + timedelta(minutes=interval)
-                time.sleep(interval * 60)
+                continue
             # times 模式：循环顶部会自动计算下一个时间点
     except Exception as e:
         import logging
@@ -548,12 +711,18 @@ def _scheduler_loop():
     finally:
         _scheduler_running = False
         _next_scheduled_run = None
+        _scheduler_thread = None
+        try:
+            clear_scheduler_state()
+        except Exception:
+            pass
+        _release_scheduler_lock()
 
 
 @app.route('/api/trigger', methods=['POST'])
 def api_trigger():
     """触发一次测试运行。"""
-    if _start_test_background(trigger_source='web'):
+    if _start_test_background(trigger_source='web') is not None:
         return jsonify({'ok': True, 'message': '测试已启动'})
     return jsonify({'error': '测试正在运行中，请等待完成'}), 409
 
@@ -561,16 +730,16 @@ def api_trigger():
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
-    next_run_str = _next_scheduled_run.strftime('%Y-%m-%d %H:%M:%S') if _next_scheduled_run else None
+    scheduler_running, next_run_str = _scheduler_status()
     if _test_progress['running']:
         return jsonify({
             'running': True,
             'processed': _test_progress['processed'],
             'total': _test_progress['total'],
             'elapsed': _test_progress['elapsed'],
-            'source': 'web',
+            'source': _test_progress.get('source', 'web'),
             'next_scheduled_run': next_run_str,
-            'scheduler_running': _scheduler_running,
+            'scheduler_running': scheduler_running,
         })
     from db import get_run_progress
     db_progress = get_run_progress()
@@ -582,7 +751,7 @@ def api_status():
             'elapsed': db_progress.get('elapsed', 0),
             'source': db_progress.get('source', 'scheduler'),
             'next_scheduled_run': next_run_str,
-            'scheduler_running': _scheduler_running,
+            'scheduler_running': scheduler_running,
         })
     return jsonify({
         'running': False,
@@ -591,7 +760,7 @@ def api_status():
         'elapsed': 0,
         'source': '',
         'next_scheduled_run': next_run_str,
-        'scheduler_running': _scheduler_running,
+        'scheduler_running': scheduler_running,
     })
 
 
@@ -602,10 +771,10 @@ def api_progress():
     优先返回 Web 触发的内存数据（含日志），否则查 SQLite（定时任务）。
     """
     after = request.args.get('after', 0, type=int)
-    next_run_str = _next_scheduled_run.strftime('%Y-%m-%d %H:%M:%S') if _next_scheduled_run else None
+    scheduler_running, next_run_str = _scheduler_status()
     sched_info = {
         'next_scheduled_run': next_run_str,
-        'scheduler_running': _scheduler_running,
+        'scheduler_running': scheduler_running,
     }
 
     # 优先检查 Web 触发的内存进度
@@ -623,7 +792,7 @@ def api_progress():
             'error': _test_progress['error'],
             'lines': new_lines,
             'last_seq': _test_log_seq,
-            'source': 'web',
+            'source': _test_progress.get('source', 'web'),
             **sched_info,
         })
 
@@ -665,6 +834,19 @@ def api_progress():
     })
 
 
+def _start_scheduler_from_config():
+    """模块导入时也按配置启动调度器，兼容 WSGI/宝塔部署。"""
+    try:
+        cfg = load_config()
+    except Exception:
+        return
+    if cfg.get('run_mode', 'once') != 'once':
+        _ensure_scheduler_started(cfg)
+
+
+_start_scheduler_from_config()
+
+
 # ─────────────── 启动 ───────────────
 
 if __name__ == '__main__':
@@ -682,8 +864,7 @@ if __name__ == '__main__':
         # 启动定时调度线程
         run_mode = cfg.get('run_mode', 'once') if cfg else 'once'
         if run_mode != 'once':
-            sched_thread = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
-            sched_thread.start()
+            _ensure_scheduler_started(cfg)
             label = f"指定时间 {cfg.get('run_times', [])}" if run_mode == 'times' else f"每 {cfg.get('run_interval_minutes', 60)} 分钟"
             print(f"定时调度已启动：{label}")
         else:

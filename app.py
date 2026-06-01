@@ -6,7 +6,13 @@ import logging
 import os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from FFmpegTest import analyze_iptv_with_ffmpeg, register_timeout as _reg_timeout, clear_timeouts as _clear_timeouts, http_get
+from FFmpegTest import (
+    analyze_iptv_with_ffmpeg,
+    register_timeout as _reg_timeout,
+    clear_timeouts as _clear_timeouts,
+    set_ffmpeg_max_workers,
+    http_get,
+)
 from db import init_db, insert_run, migrate_from_json, now_str, timestamp_str
 
 try:
@@ -19,6 +25,7 @@ except ImportError:
 DEFAULT_CONFIG = {
     'test_duration': 15,
     'max_workers': 30,
+    'max_ffmpeg_workers': 6,
     'system_bandwidth_limit_MBps': 50,
     'min_bandwidth_MBps': 1.0,
     'bandwidth_compensation_MBps': 2.0,
@@ -900,7 +907,7 @@ def save_run_result(run_data, filepath='output/history.json'):
     insert_run(run_data)
 
 
-def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None):
+def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None, progress_source=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     from db import clear_run_progress, update_run_progress
     _clear_timeouts()
@@ -934,6 +941,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None):
 
     TEST_DURATION = cfg['test_duration']
     MAX_WORKERS = cfg['max_workers']
+    MAX_FFMPEG_WORKERS = set_ffmpeg_max_workers(cfg.get('max_ffmpeg_workers', 6))
     try:
         MAX_URLS_PER_CHANNEL = max(0, int(cfg.get('max_urls_per_channel', 0) or 0))
     except (TypeError, ValueError):
@@ -949,11 +957,12 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None):
 
     _log(f"开始测试任务，共 {len(m3u_urls)} 个数据源")
     print(f"数据源数量：{len(m3u_urls)}")
-    print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS}")
+    print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS} | FFmpeg并发：{MAX_FFMPEG_WORKERS}")
     print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
     print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
     print(f"每频道输出数量：{MAX_URLS_PER_CHANNEL if MAX_URLS_PER_CHANNEL > 0 else '不限制'}")
     print("=" * 60)
+    _log(f"并发设置：测试线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
 
     # 获取并解析所有 M3U 数据源
     all_iptv_list = []
@@ -1027,7 +1036,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None):
             passed=info.get('success', 0),
             failed=info.get('failed', 0),
             elapsed=round(time.time() - run_start_time, 1),
-            source='web' if progress_callback else 'scheduler',
+            source=progress_source or ('web' if progress_callback else 'scheduler'),
         )
 
     def _combined_progress(info):

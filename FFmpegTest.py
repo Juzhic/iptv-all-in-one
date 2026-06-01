@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from urllib.parse import urljoin
 
@@ -46,6 +47,25 @@ DEFAULT_HEADERS = {
 }
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 FFMPEG_BIN = os.environ.get('FFMPEG_BIN', 'ffmpeg')
+_DEFAULT_FFMPEG_WORKERS = int(os.environ.get('MAX_FFMPEG_WORKERS', '6') or 6)
+_ffmpeg_limit = max(1, _DEFAULT_FFMPEG_WORKERS)
+_ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
+_ffmpeg_lock = threading.Lock()
+
+
+def set_ffmpeg_max_workers(limit):
+    """限制同时运行的 FFmpeg 子进程数量，避免服务器瞬时进程/连接压力过高。"""
+    global _ffmpeg_limit, _ffmpeg_semaphore
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = _DEFAULT_FFMPEG_WORKERS
+
+    with _ffmpeg_lock:
+        if limit != _ffmpeg_limit:
+            _ffmpeg_limit = limit
+            _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
+    return _ffmpeg_limit
 
 
 def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='wall_clock_after_connect', connection_latency_ms=None):
@@ -144,16 +164,17 @@ def ffmpeg_test(url):
     ]
 
     try:
-        completed = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            timeout=5
-        )
-        stderr_output = completed.stderr
+        with _ffmpeg_semaphore:
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                timeout=5
+            )
+            stderr_output = completed.stderr
     except subprocess.TimeoutExpired as e:
         stderr_output = e.stderr or ''
     except Exception as e:

@@ -367,6 +367,15 @@ def init_db():
             updated_at TEXT
         );
         INSERT OR IGNORE INTO run_progress (id) VALUES (1);
+
+        CREATE TABLE IF NOT EXISTS scheduler_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            running BOOLEAN DEFAULT 0,
+            next_run TEXT,
+            owner TEXT DEFAULT '',
+            updated_at TEXT
+        );
+        INSERT OR IGNORE INTO scheduler_state (id) VALUES (1);
     """)
     _ensure_run_results_columns(conn)
     conn.commit()
@@ -651,11 +660,52 @@ def delete_run(run_id):
     conn.commit()
 
 
+def _looks_corrupt_text(text):
+    """判断配置文本是否明显混入了二进制/损坏字节。"""
+    return '\x00' in text or text.count('\ufffd') >= 3
+
+
+def _default_config_data(key):
+    if key == 'alias':
+        return DEFAULT_ALIAS
+    if key == 'demo':
+        return DEFAULT_DEMO
+    return None
+
+
+def _decode_config_content(key, raw):
+    """兼容读取历史库中非 UTF-8 或已损坏的配置文本。"""
+    if raw is None:
+        return ''
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    if not isinstance(raw, (bytes, bytearray)):
+        return str(raw)
+
+    data = bytes(raw)
+    for encoding in ('utf-8-sig', 'utf-8', 'gb18030', 'cp936'):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    decoded = data.decode('utf-8', errors='replace')
+    default_content = _default_config_data(key)
+    if default_content is not None and _looks_corrupt_text(decoded):
+        return default_content
+    return decoded
+
+
 def get_config_data(key):
     """获取配置数据内容（alias / demo / subscribe）。"""
     conn = _get_conn()
-    row = conn.execute("SELECT content FROM config_data WHERE key = ?", (key,)).fetchone()
-    return row['content'] if row else ''
+    row = conn.execute(
+        "SELECT CAST(content AS BLOB) AS content FROM config_data WHERE key = ?",
+        (key,)
+    ).fetchone()
+    return _decode_config_content(key, row['content']) if row else ''
 
 
 def set_config_data(key, content):
@@ -693,7 +743,8 @@ def save_config(cfg):
 def migrate_config_from_file(filepath='config.json', defaults=None):
     """将 config.json 迁移到数据库（仅在数据库中无配置时执行）。"""
     defaults = defaults or {}
-    existing = get_config_data(CONFIG_DATA)
+    conn = _get_conn()
+    existing = conn.execute("SELECT 1 FROM config_data WHERE key = ?", (CONFIG_DATA,)).fetchone()
     if existing:
         return False  # 数据库已有配置，跳过
     if not os.path.exists(filepath):
@@ -779,6 +830,38 @@ def get_run_progress():
         'failed': row['failed'],
         'elapsed': row['elapsed'],
         'source': row['source'],
+    }
+
+
+def update_scheduler_state(running, next_run=None, owner=''):
+    """更新后台调度器状态，供多进程 Web 请求读取。"""
+    conn = _get_conn()
+    now = now_str()
+    conn.execute(
+        """UPDATE scheduler_state SET
+           running=?, next_run=?, owner=?, updated_at=?
+           WHERE id=1""",
+        (1 if running else 0, next_run or None, owner or '', now)
+    )
+    conn.commit()
+
+
+def clear_scheduler_state():
+    """清空后台调度器状态。"""
+    update_scheduler_state(False, None, '')
+
+
+def get_scheduler_state():
+    """读取后台调度器状态。返回 dict 或 None。"""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM scheduler_state WHERE id=1").fetchone()
+    if not row:
+        return None
+    return {
+        'running': bool(row['running']),
+        'next_run': row['next_run'],
+        'owner': row['owner'],
+        'updated_at': row['updated_at'],
     }
 
 
