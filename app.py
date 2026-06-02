@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     'max_workers': 30,
     'max_ffmpeg_workers': 6,
     'system_bandwidth_limit_MBps': 50,
+    'system_memory_limit_percent': 85,
     'min_bandwidth_MBps': 1.0,
     'bandwidth_compensation_MBps': 2.0,
     'h265_bandwidth_ratio': 0.6,
@@ -208,6 +209,44 @@ class SystemDownloadLimiter:
             self._last_log_time = now
 
 
+class SystemMemoryLimiter:
+    """Pause starting new channel tests when system memory is under pressure."""
+
+    def __init__(self, limit_percent=85, sample_interval=1.0, log_interval=10):
+        self.limit_percent = float(limit_percent or 0)
+        self.sample_interval = sample_interval
+        self.log_interval = log_interval
+        self.enabled = self.limit_percent > 0 and psutil is not None
+        self.current_percent = 0.0
+        self._last_sample_time = 0
+        self._last_log_time = 0
+
+    def refresh(self):
+        if not self.enabled:
+            return 0.0
+
+        now = time.monotonic()
+        if now - self._last_sample_time < self.sample_interval:
+            return self.current_percent
+
+        self.current_percent = psutil.virtual_memory().percent
+        self._last_sample_time = now
+        return self.current_percent
+
+    def should_pause(self):
+        return self.enabled and self.refresh() >= self.limit_percent
+
+    def log_pause_if_needed(self, logger):
+        now = time.monotonic()
+        if now - self._last_log_time >= self.log_interval:
+            logger.info(
+                "内存使用 %.1f%% >= %.1f%%，暂停启动新频道",
+                self.current_percent,
+                self.limit_percent
+            )
+            self._last_log_time = now
+
+
 # --- 日志配置模块 ---
 class _DBLogHandler(logging.Handler):
     """将日志写入 SQLite 数据库的 logging handler。"""
@@ -254,10 +293,21 @@ def setup_logging(run_id=''):
 
 def fetch_m3u_playlist(url):
     """从指定 URL 获取 M3U 播放列表数据。"""
+    max_bytes = 20 * 1024 * 1024
     try:
-        response = http_get(url, timeout=10, stream=False)
-        response.raise_for_status()
-        return response.text
+        with http_get(url, timeout=10, stream=True) as response:
+            response.raise_for_status()
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"M3U 内容超过 {max_bytes // 1024 // 1024}MB，已跳过")
+                chunks.append(chunk)
+            encoding = response.encoding or response.apparent_encoding or 'utf-8'
+            return b''.join(chunks).decode(encoding, errors='ignore')
     except Exception as e:
         print(f"获取 M3U 数据失败：{e}")
         return None
@@ -321,6 +371,7 @@ def filter_and_save_playlist(
     cfg = config or DEFAULT_CONFIG
     if bandwidth_limit_mbps is None:
         bandwidth_limit_mbps = cfg.get('system_bandwidth_limit_MBps', 50)
+    memory_limit_percent = cfg.get('system_memory_limit_percent', 85)
     min_width = cfg.get('min_width', 1920)
     min_height = cfg.get('min_height', 1080)
     min_bw = cfg.get('min_bandwidth_MBps', 1.0)
@@ -342,12 +393,33 @@ def filter_and_save_playlist(
     channel_timeout = max(duration + 15, int(duration * 1.5))
     logger.info(f"单频道最大等待时间: {channel_timeout}秒")
     download_limiter = SystemDownloadLimiter(bandwidth_limit_mbps)
+    memory_limiter = SystemMemoryLimiter(memory_limit_percent)
     if download_limiter.enabled:
         logger.info(f"总下行启动限速: {download_limiter.limit_mbps:.2f}MB/s")
     elif bandwidth_limit_mbps and psutil is None:
         logger.info("总下行启动限速: 未安装 psutil，已关闭")
     else:
         logger.info("总下行启动限速: 已关闭")
+    if memory_limiter.enabled:
+        logger.info(f"内存启动保护: {memory_limiter.limit_percent:.1f}%")
+    elif memory_limit_percent and psutil is None:
+        logger.info("内存启动保护: 未安装 psutil，已关闭")
+    else:
+        logger.info("内存启动保护: 已关闭")
+
+    if progress_callback:
+        try:
+            progress_callback({
+                'processed': 0,
+                'total': total,
+                'remaining': total,
+                'success': 0,
+                'failed': 0,
+                'last_result': None,
+                'last_status': '',
+            })
+        except Exception as e:
+            logger.warning(f"更新任务进度失败: {e}")
 
     def test_single_channel(args):
         """单个频道测试函数"""
@@ -622,16 +694,28 @@ def filter_and_save_playlist(
         future_info[future] = info
         return future
 
-    def fill_pending_slots(pending):
+    def fill_pending_slots(pending, allow_idle_start=False):
         nonlocal no_more_items
 
         if no_more_items or (stop_event and stop_event.is_set()):
             return pending
 
         while len(pending) < max_workers:
+            bypass_limiter = False
+
+            if memory_limiter.should_pause():
+                memory_limiter.log_pause_if_needed(logger)
+                if not allow_idle_start:
+                    break
+                logger.info("当前没有活跃频道测试，忽略内存启动保护并串行启动 1 个频道，避免进度空转")
+                bypass_limiter = True
+
             if download_limiter.should_pause():
                 download_limiter.log_pause_if_needed(logger)
-                break
+                if not allow_idle_start:
+                    break
+                logger.info("当前没有活跃频道测试，忽略总下行启动限速并串行启动 1 个频道，避免进度空转")
+                bypass_limiter = True
 
             future = submit_next()
             if not future:
@@ -639,6 +723,9 @@ def filter_and_save_playlist(
                 break
 
             pending.add(future)
+
+            if bypass_limiter:
+                break
 
             # 限流开启时按节奏补任务，让系统带宽采样有时间反映新增下载。
             if download_limiter.enabled:
@@ -648,7 +735,7 @@ def filter_and_save_playlist(
 
     try:
         pending = set()
-        pending = fill_pending_slots(pending)
+        pending = fill_pending_slots(pending, allow_idle_start=True)
 
         while pending or not no_more_items:
             if stop_event and stop_event.is_set():
@@ -712,7 +799,7 @@ def filter_and_save_playlist(
                 }
                 handle_channel_result(timeout_result)
 
-            pending = fill_pending_slots(pending)
+            pending = fill_pending_slots(pending, allow_idle_start=not pending)
     finally:
         # 不等待残留线程：主循环已通过 channel_timeout 标记并收集了所有结果，
         # 残留线程仅剩网络/FFmpeg 清理，无需阻塞主线程。

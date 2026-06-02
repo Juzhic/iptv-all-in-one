@@ -47,7 +47,7 @@ function showToast(msg, type) {
 const CONFIG_FIELDS = [
   'min_width', 'min_height', 'min_bandwidth_MBps', 'bandwidth_compensation_MBps',
   'h265_bandwidth_ratio', 'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel',
-  'system_bandwidth_limit_MBps', 'run_mode', 'run_times', 'run_interval_minutes',
+  'system_bandwidth_limit_MBps', 'system_memory_limit_percent', 'run_mode', 'run_times', 'run_interval_minutes',
   'show_update_time', 'update_time_position'
 ];
 
@@ -68,7 +68,7 @@ function saveConfig() {
       data[key] = val;  // 原始字符串，后端会规范化
     } else if (key === 'show_update_time') {
       data[key] = val === 'true';
-    } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel', 'run_interval_minutes'].includes(key)) {
+    } else if (['min_width', 'min_height', 'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel', 'run_interval_minutes', 'system_memory_limit_percent'].includes(key)) {
       data[key] = parseInt(val) || 0;
     } else if (['min_bandwidth_MBps', 'bandwidth_compensation_MBps', 'h265_bandwidth_ratio', 'system_bandwidth_limit_MBps'].includes(key)) {
       data[key] = parseFloat(val) || 0;
@@ -229,7 +229,48 @@ let isWebRun = false;
 let testStarted = false;
 let lastLogSeq = 0;
 let autoScroll = true;
-let completionConfirmCount = 0;
+
+function appendProgressLogs(data) {
+  if (data.source !== 'web' || !data.lines || data.lines.length === 0) return;
+
+  isWebRun = true;
+  const panel = document.getElementById('logPanel');
+  if (!panel) return;
+
+  data.lines.forEach(line => {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    let cls = 'log-info';
+    if (line.msg.includes('通过') || line.msg.includes('pass')) cls = 'log-pass';
+    else if (line.msg.includes('拒绝') || line.msg.includes('失败')) cls = 'log-fail';
+    div.innerHTML = '<span class="log-time">[' + line.time + ']</span><span class="' + cls + '">' + escapeHtml(line.msg) + '</span>';
+    panel.appendChild(div);
+    lastLogSeq = line.seq;
+  });
+
+  if (autoScroll) panel.scrollTop = panel.scrollHeight;
+}
+
+function renderProgressNumbers(data) {
+  const total = Number(data.total) || 0;
+  const processed = Number(data.processed) || 0;
+  const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(processed / total * 100))) : 0;
+  const fill = document.getElementById('progressFill');
+  const pctEl = document.getElementById('progressPercent');
+  const labelEl = document.getElementById('progressLabel');
+  const procEl = document.getElementById('progProcessed');
+  const passEl = document.getElementById('progPassed');
+  const failEl = document.getElementById('progFailed');
+  const timeEl = document.getElementById('progElapsed');
+
+  if (fill) fill.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (labelEl) labelEl.textContent = total > 0 ? ('进度 ' + processed + ' / ' + total) : '准备中...';
+  if (procEl) procEl.textContent = processed;
+  if (passEl) passEl.textContent = data.passed || 0;
+  if (failEl) failEl.textContent = data.failed || 0;
+  if (timeEl) timeEl.textContent = Math.round(data.elapsed || 0);
+}
 
 function updateHeaderStatus(data) {
   const statusWrap = document.getElementById('headerRunStatus');
@@ -275,47 +316,12 @@ function updateTestingTab(data) {
     if (btn) { btn.disabled = true; btn.textContent = '运行中...'; }
     if (stopBtn) stopBtn.style.display = '';
 
-    const total = Number(data.total) || 0;
-    const processed = Number(data.processed) || 0;
-    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(processed / total * 100))) : 0;
-    const fill = document.getElementById('progressFill');
-    const pctEl = document.getElementById('progressPercent');
-    const labelEl = document.getElementById('progressLabel');
-    if (fill) fill.style.width = pct + '%';
-    if (pctEl) pctEl.textContent = pct + '%';
-    if (labelEl) labelEl.textContent = total > 0 ? ('进度 ' + processed + ' / ' + total) : '准备中...';
-    const procEl = document.getElementById('progProcessed');
-    const passEl = document.getElementById('progPassed');
-    const failEl = document.getElementById('progFailed');
-    const timeEl = document.getElementById('progElapsed');
-    if (procEl) procEl.textContent = processed;
-    if (passEl) passEl.textContent = data.passed;
-    if (failEl) failEl.textContent = data.failed;
-    if (timeEl) timeEl.textContent = Math.round(data.elapsed || 0);
-
-    // Web 触发的运行有日志行
-    if (data.source === 'web' && data.lines && data.lines.length > 0) {
-      isWebRun = true;
-      const panel = document.getElementById('logPanel');
-      if (panel) {
-        data.lines.forEach(line => {
-          const div = document.createElement('div');
-          div.className = 'log-line';
-          let cls = 'log-info';
-          if (line.msg.includes('通过') || line.msg.includes('pass')) cls = 'log-pass';
-          else if (line.msg.includes('拒绝') || line.msg.includes('失败')) cls = 'log-fail';
-          div.innerHTML = '<span class="log-time">[' + line.time + ']</span><span class="' + cls + '">' + escapeHtml(line.msg) + '</span>';
-          panel.appendChild(div);
-          lastLogSeq = line.seq;
-        });
-        if (autoScroll) panel.scrollTop = panel.scrollHeight;
-      }
-    }
+    renderProgressNumbers(data);
+    appendProgressLogs(data);
 
   } else if (testStarted) {
-    if (isWebRun && completionConfirmCount < 1) {
-      return;
-    }
+    renderProgressNumbers(data);
+    appendProgressLogs(data);
     if (testStatusText) testStatusText.textContent = '已完成';
     const labelEl = document.getElementById('progressLabel');
     if (labelEl) labelEl.textContent = '测试完成';
@@ -331,7 +337,6 @@ function pollGlobalProgress() {
       updateTestingTab(data);
 
       if (data.running) {
-        completionConfirmCount = 0;
         // 测试进行中，确保轮询在运行
         if (!globalPollTimer) {
           globalPollTimer = setInterval(pollGlobalProgress, 2000);
@@ -346,20 +351,18 @@ function pollGlobalProgress() {
         }
 
         if (isWebRun) {
-          completionConfirmCount += 1;
-          if (completionConfirmCount < 2) {
-            setTimeout(pollGlobalProgress, 2000);
-            return;
-          }
           if (data.error) showToast('测试异常: ' + data.error, 'error');
           else showToast('测试已完成', 'success');
           isWebRun = false;
           testStarted = false;
-          completionConfirmCount = 0;
         }
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      if (!globalPollTimer) {
+        globalPollTimer = setInterval(pollGlobalProgress, 5000);
+      }
+    });
 }
 
 // ───── Trigger test ─────
@@ -388,7 +391,6 @@ function triggerTest() {
         lastLogSeq = 0;
         isWebRun = true;
         testStarted = true;
-        completionConfirmCount = 0;
         globalPollTimer = setInterval(pollGlobalProgress, 2000);
       } else {
         showToast(res.error || '启动失败', 'error');
@@ -426,7 +428,6 @@ function stopTest() {
         showToast(res.message || '已请求终止', 'success');
         isWebRun = false;
         testStarted = false;
-        completionConfirmCount = 0;
         resetTestBtn();
         if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
       } else {

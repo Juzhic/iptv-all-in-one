@@ -567,6 +567,11 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
           <input type="number" id="cfg_system_bandwidth_limit_MBps" min="0" step="1">
         </div>
         <div class="config-group">
+          <label>内存保护阈值 (%)</label>
+          <div class="hint">内存使用率超过该值时暂停启动新频道，0 关闭</div>
+          <input type="number" id="cfg_system_memory_limit_percent" min="0" max="100" step="1">
+        </div>
+        <div class="config-group">
           <label>运行模式</label>
           <select id="cfg_run_mode">
             <option value="once">once - 只运行一次</option>

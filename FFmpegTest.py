@@ -111,6 +111,20 @@ def http_get(url, timeout, stream=False):
         )
 
 
+def read_response_text_limited(response, max_bytes=2 * 1024 * 1024):
+    chunks = []
+    total = 0
+    encoding = response.encoding or requests.utils.get_encoding_from_headers(response.headers) or 'utf-8'
+    for chunk in response.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"响应内容超过 {max_bytes // 1024 // 1024}MB")
+        chunks.append(chunk)
+    return b''.join(chunks).decode(encoding, errors='ignore')
+
+
 def is_hls_response(response, text_probe=''):
     """根据响应头、最终 URL 和内容片段判断是否为 HLS 播放列表。"""
     content_type = (response.headers.get('content-type') or '').lower()
@@ -126,9 +140,14 @@ def is_hls_response(response, text_probe=''):
 def probe_hls_url(url, deadline):
     """对无后缀或中转地址做一次轻量探测，识别是否实际返回 HLS 播放列表。"""
     try:
-        with http_get(url, timeout=request_timeout(deadline, 3, 3), stream=False) as response:
+        with http_get(url, timeout=request_timeout(deadline, 3, 3), stream=True) as response:
             response.raise_for_status()
-            text_probe = response.text[:4096]
+            probe_bytes = b''
+            for chunk in response.iter_content(chunk_size=4096):
+                if chunk:
+                    probe_bytes = chunk[:4096]
+                    break
+            text_probe = probe_bytes.decode('utf-8', errors='ignore')
             if is_hls_response(response, text_probe):
                 return response.url
     except Exception:
@@ -152,6 +171,8 @@ def ffmpeg_test(url):
         FFMPEG_BIN,
         '-hide_banner',
         '-rw_timeout', '5000000',
+        '-allowed_segment_extensions', 'ALL',
+        '-extension_picky', '0',
         '-probesize', '512000',
         '-analyzeduration', '2000000',
         '-fflags', '+nobuffer',
@@ -399,17 +420,17 @@ def test_hls_bandwidth(url, width, height, duration):
     try:
         deadline = time.monotonic() + max(duration, 1) + 8
         playlist_url = url
-        with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3)) as m3u8_resp:
+        with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3), stream=True) as m3u8_resp:
             m3u8_resp.raise_for_status()
-            m3u8_content = m3u8_resp.text
+            m3u8_content = read_response_text_limited(m3u8_resp)
             playlist_url = m3u8_resp.url
 
         variant = pick_hls_variant(m3u8_content, playlist_url)
         if variant:
             playlist_url = variant['url']
-            with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3)) as m3u8_resp:
+            with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3), stream=True) as m3u8_resp:
                 m3u8_resp.raise_for_status()
-                m3u8_content = m3u8_resp.text
+                m3u8_content = read_response_text_limited(m3u8_resp)
                 playlist_url = m3u8_resp.url
 
         segments = parse_hls_segments(m3u8_content, playlist_url)

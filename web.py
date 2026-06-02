@@ -1,8 +1,7 @@
-"""IPTV 测速管理后台 — Web 服务。"""
+﻿"""IPTV 测速管理后台 — Web 服务。"""
 import collections
 import json
 import os
-import socket
 import threading
 import time
 from datetime import datetime
@@ -89,6 +88,7 @@ _test_progress = {
     'finished_at': None,
     'error': None,
     'source': '',
+    'last_seq': 0,
 }
 _test_log_lines = collections.deque(maxlen=200)  # 环形缓冲，最多 200 行日志
 _test_log_seq = 0  # 日志序号，用于增量拉取
@@ -207,22 +207,6 @@ def _scheduler_status():
     if state and state.get('running'):
         return True, state.get('next_run') or next_run_str
     return scheduler_running, next_run_str
-
-
-def _can_bind_port(host, port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind((host, port))
-            return True
-        except OSError:
-            return False
-
-
-def _find_available_port(host, preferred_port, attempts=20):
-    for port in range(preferred_port, preferred_port + attempts + 1):
-        if _can_bind_port(host, port):
-            return port
-    return preferred_port
 
 
 # ─────────────── 页面路由 ───────────────
@@ -567,6 +551,7 @@ def _start_test_background(trigger_source='web'):
         'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
         'elapsed': 0, 'finished_at': None, 'error': None,
         'source': trigger_source,
+        'last_seq': 0,
     })
     _test_log_lines.clear()
     _test_log_seq = 0
@@ -580,6 +565,7 @@ def _start_test_background(trigger_source='web'):
             'passed': info.get('success', 0),
             'failed': info.get('failed', 0),
             'elapsed': round(time.time() - _start_time, 1),
+            'last_seq': _test_log_seq,
         })
 
     def _on_log(msg):
@@ -615,10 +601,18 @@ def _start_test_background(trigger_source='web'):
         finally:
             with _test_lock:
                 is_current_run = _test_active_token is run_token
-                if is_current_run:
+            if is_current_run:
+                _on_log("后台测试任务已结束")
+                with _test_lock:
+                    total = _test_progress.get('total', 0)
+                    processed = _test_progress.get('processed', 0)
+                    if total and processed < total and not _test_progress.get('error'):
+                        _test_progress['processed'] = total
+                        _test_progress['failed'] = max(0, total - _test_progress.get('passed', 0))
                     _test_progress['running'] = False
                     _test_progress['finished_at'] = now_str()
                     _test_progress['elapsed'] = round(time.time() - _start_time, 1)
+                    _test_progress['last_seq'] = _test_log_seq
                     _test_running = False
                     _test_active_token = None
             if is_current_run:
@@ -816,6 +810,24 @@ def api_progress():
             **sched_info,
         })
 
+    if _test_progress.get('finished_at'):
+        new_lines = [l for l in _test_log_lines if l['seq'] > after]
+        return jsonify({
+            'running': False,
+            'started_at': _test_progress.get('started_at'),
+            'total': _test_progress.get('total', 0),
+            'processed': _test_progress.get('processed', 0),
+            'passed': _test_progress.get('passed', 0),
+            'failed': _test_progress.get('failed', 0),
+            'elapsed': _test_progress.get('elapsed', 0),
+            'finished_at': _test_progress.get('finished_at'),
+            'error': _test_progress.get('error'),
+            'lines': new_lines,
+            'last_seq': _test_log_seq,
+            'source': _test_progress.get('source', ''),
+            **sched_info,
+        })
+
     # 没有运行中的测试
     return jsonify({
         'running': False,
@@ -855,11 +867,9 @@ if __name__ == '__main__':
         port = 58080
         try:
             cfg = load_config()
-            port = int(os.environ.get('WEB_PORT') or 58080)
         except Exception:
             cfg = DEFAULT_CONFIG
             pass
-        bind_port = _find_available_port(host, port)
 
         # 启动定时调度线程
         run_mode = cfg.get('run_mode', 'once') if cfg else 'once'
@@ -870,13 +880,11 @@ if __name__ == '__main__':
         else:
             print("运行模式：once（仅手动触发）")
 
-        if bind_port != port:
-            print(f"端口 {port} 不可用，已自动改用 {bind_port}")
-        print(f"Web 管理后台已启动: http://localhost:{bind_port}")
-        app.run(host=host, port=bind_port, debug=False)
+        print(f"Web 管理后台已启动: http://localhost:{port}")
+        app.run(host=host, port=port, debug=False)
     except OSError as e:
-        print(f"\n端口 {bind_port} 启动失败: {e}")
-        print("可以关闭占用端口的程序，或设置环境变量 WEB_PORT 后重新启动。")
+        print(f"\n端口 {port} 启动失败: {e}")
+        print("Web 服务只允许绑定 58080，请先结束占用 58080 的旧进程后再重启。")
         input("\n按回车键退出...")
     except Exception as e:
         import traceback
