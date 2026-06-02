@@ -53,6 +53,21 @@ python web.py
 http://localhost:58080
 ```
 
+BasicAuth protects the Web backend and APIs by default. Credentials are read
+from `basic_auth.json` in the program directory:
+
+```json
+{
+  "username": "admin",
+  "password": "admin",
+  "realm": "IPTV Test"
+}
+```
+
+If the file is missing or invalid, the fallback account is `admin` / `admin`.
+Result subscription downloads stay public: `/api/download/txt` and
+`/api/download/m3u`.
+
 Web 服务固定使用 `58080` 端口。如果端口已被旧进程占用，启动会失败并提示先结束占用进程。
 
 启动后进入“系统配置”页，依次填写或调整：

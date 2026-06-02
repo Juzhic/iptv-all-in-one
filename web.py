@@ -1,12 +1,13 @@
 ﻿"""IPTV 测速管理后台 — Web 服务。"""
 import collections
+import hmac
 import json
 import os
 import threading
 import time
 from datetime import datetime
 
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from db import (
     init_db, migrate_from_json,
     get_latest_run, get_latest_passed_results,
@@ -24,6 +25,70 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.jinja_env.auto_reload = True
 app.jinja_env.cache = None
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASIC_AUTH_CONFIG_FILE = os.path.join(BASE_DIR, 'basic_auth.json')
+BASIC_AUTH_DEFAULT_CONFIG = {
+    'username': 'admin',
+    'password': 'admin',
+    'realm': 'IPTV Test',
+}
+BASIC_AUTH_EXEMPT_PATHS = {'/api/download/txt', '/api/download/m3u'}
+
+
+def _load_basic_auth_config():
+    config = dict(BASIC_AUTH_DEFAULT_CONFIG)
+    try:
+        with open(BASIC_AUTH_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+    except FileNotFoundError:
+        return config
+    except (OSError, ValueError):
+        return config
+
+    if not isinstance(loaded, dict):
+        return config
+
+    for key in config:
+        value = loaded.get(key)
+        if value is not None:
+            value = str(value)
+            if value:
+                config[key] = value
+    return config
+
+
+BASIC_AUTH_CONFIG = _load_basic_auth_config()
+BASIC_AUTH_USER = BASIC_AUTH_CONFIG['username']
+BASIC_AUTH_PASSWORD = BASIC_AUTH_CONFIG['password']
+BASIC_AUTH_REALM = BASIC_AUTH_CONFIG['realm']
+
+
+def _basic_auth_challenge():
+    response = Response('Authentication required', 401)
+    response.headers['WWW-Authenticate'] = f'Basic realm="{BASIC_AUTH_REALM}"'
+    return response
+
+
+def _basic_auth_valid(auth):
+    if not auth or (auth.type or '').lower() != 'basic':
+        return False
+    username = auth.username or ''
+    password = auth.password or ''
+    return (
+        hmac.compare_digest(username.encode('utf-8'), BASIC_AUTH_USER.encode('utf-8'))
+        and hmac.compare_digest(password.encode('utf-8'), BASIC_AUTH_PASSWORD.encode('utf-8'))
+    )
+
+
+@app.before_request
+def require_basic_auth():
+    """保护后台页面和 API；TXT/M3U 下载接口保持免登录，便于订阅客户端拉取。"""
+    if request.path in BASIC_AUTH_EXEMPT_PATHS:
+        return None
+    if _basic_auth_valid(request.authorization):
+        return None
+    return _basic_auth_challenge()
 
 
 def _asset_version(filename):

@@ -703,24 +703,53 @@ function _escapeHtml(s) {
 }
 
 // ───── Copy link ─────
+function setCopyButtonState(btn, copiedText, resetText) {
+  if (!btn) return;
+  btn.textContent = copiedText;
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.textContent = resetText;
+    btn.classList.remove('copied');
+  }, 2000);
+}
+
+function fallbackCopyText(text) {
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+
+    try {
+      const copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (copied) resolve();
+      else reject(new Error('execCommand copy returned false'));
+    } catch (e) {
+      document.body.removeChild(ta);
+      reject(e);
+    }
+  });
+}
+
+function copyText(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text);
+  }
+  return fallbackCopyText(text);
+}
+
 function copyLink(fmt, btn) {
   const url = location.origin + '/api/download/' + fmt;
-  navigator.clipboard.writeText(url).then(() => {
-    btn.textContent = '已复制';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
-  }).catch(() => {
-    // fallback
-    const ta = document.createElement('textarea');
-    ta.value = url;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    btn.textContent = '已复制';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
-  });
+  copyText(url)
+    .then(() => setCopyButtonState(btn, '已复制', '复制'))
+    .catch(() => showToast('复制失败，请手动复制链接', 'error'));
 }
 
 // ───── Preview result ─────
@@ -767,21 +796,9 @@ function closePreview() {
 
 function copyPreviewContent(btn) {
   if (!previewRawContent) return;
-  navigator.clipboard.writeText(previewRawContent).then(() => {
-    btn.textContent = '已复制';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '复制全部'; btn.classList.remove('copied'); }, 2000);
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = previewRawContent;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    btn.textContent = '已复制';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '复制全部'; btn.classList.remove('copied'); }, 2000);
-  });
+  copyText(previewRawContent)
+    .then(() => setCopyButtonState(btn, '已复制', '复制全部'))
+    .catch(() => showToast('复制失败，请手动复制内容', 'error'));
 }
 
 // ───── Init download links ─────
