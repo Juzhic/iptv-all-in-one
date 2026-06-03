@@ -292,7 +292,7 @@ def setup_logging(run_id=''):
     return logger
 
 def fetch_m3u_playlist(url):
-    """从指定 URL 获取 M3U 播放列表数据。"""
+    """从指定 URL 获取订阅源内容。"""
     max_bytes = 20 * 1024 * 1024
     try:
         with http_get(url, timeout=10, stream=True) as response:
@@ -306,8 +306,14 @@ def fetch_m3u_playlist(url):
                 if total > max_bytes:
                     raise ValueError(f"M3U 内容超过 {max_bytes // 1024 // 1024}MB，已跳过")
                 chunks.append(chunk)
-            encoding = response.encoding or response.apparent_encoding or 'utf-8'
-            return b''.join(chunks).decode(encoding, errors='ignore')
+            content = b''.join(chunks)
+            encodings = [response.encoding, 'utf-8-sig', 'utf-8', 'gb18030']
+            for encoding in dict.fromkeys(filter(None, encodings)):
+                try:
+                    return content.decode(encoding)
+                except UnicodeDecodeError:
+                    continue
+            return content.decode('utf-8', errors='ignore')
     except Exception as e:
         print(f"获取 M3U 数据失败：{e}")
         return None
@@ -315,42 +321,66 @@ def fetch_m3u_playlist(url):
 
 def parse_iptv_addresses(m3u_content):
     """
-    解析 M3U 内容，提取 IPTV 组播地址
-    :param m3u_content: M3U 格式的内容
-    :return: list 包含 (频道信息，URL 地址) 的元组列表
+    解析订阅源内容，提取 IPTV 地址。
+    支持标准 M3U（#EXTINF + URL）和 DIYP/TXT（频道名,URL）两种常见订阅格式。
     """
     iptv_list = []
-    lines = m3u_content.split('\n')
-    
+    lines = m3u_content.splitlines()
+
     current_channel = {}
-    
+    current_group = ''
+    url_pattern = re.compile(r'^[a-z][a-z0-9+.-]*://', re.IGNORECASE)
+
+    def is_url(value):
+        return bool(url_pattern.match((value or '').strip()))
+
     for line in lines:
-        line = line.strip()
-        
-        # 跳过空行和注释（除了 EXTINF）
-        if not line or (line.startswith('#') and not line.startswith('#EXTINF')):
+        line = line.strip().lstrip('\ufeff')
+
+        if not line:
             continue
-        
-        # 解析 EXTINF 行
+
+        if ',#genre#' in line:
+            current_group = line.split(',', 1)[0].strip()
+            current_channel = {}
+            continue
+
         if line.startswith('#EXTINF'):
-            # 提取频道名称和分组信息
             match = re.search(r'group-title="([^"]*)".*?,(.+)$', line)
             if match:
-                current_channel['group'] = match.group(1)
+                current_channel['group'] = match.group(1).strip()
                 current_channel['name'] = match.group(2).strip()
             else:
-                # 尝试简单的匹配
-                parts = line.split(',')
+                parts = line.rsplit(',', 1)
                 if len(parts) > 1:
                     current_channel['name'] = parts[-1].strip()
-        
-        # 解析 URL 行（以 http 开头）
-        elif line.startswith('http://') or line.startswith('https://'):
-            # 保留 EXTINF 后面的任意 HTTP/HTTPS 播放地址。
-            # 有些源是短链、php 入口或带查询参数的中转地址，不能只靠 .m3u8/live/rtp 关键字判断。
-            iptv_list.append((current_channel.copy(), line))
-            current_channel = {}  # 重置频道信息
-    
+                if current_group:
+                    current_channel.setdefault('group', current_group)
+            continue
+
+        # 跳过 M3U 里的其它注释/扩展指令，如 #EXTM3U、#EXTVLCOPT。
+        if line.startswith('#'):
+            continue
+
+        if is_url(line):
+            channel_info = current_channel.copy()
+            if current_group:
+                channel_info.setdefault('group', current_group)
+            iptv_list.append((channel_info, line))
+            current_channel = {}
+            continue
+
+        # DIYP/TXT 订阅格式：分类行是 “分类,#genre#”，频道行是 “频道名,播放地址”。
+        if ',' in line:
+            name, url = line.split(',', 1)
+            name = name.strip()
+            url = url.strip()
+            if name and is_url(url):
+                channel_info = {'name': name}
+                if current_group:
+                    channel_info['group'] = current_group
+                iptv_list.append((channel_info, url))
+
     return iptv_list
 
 
