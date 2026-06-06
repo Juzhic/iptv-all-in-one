@@ -1,4 +1,98 @@
 // ───── Tab switching ─────
+const THEME_STORAGE_KEY = 'iptv-theme';
+let latestHistoryRuns = [];
+let initialHistoryRuns = [];
+let currentRunLogEntries = [];
+let currentRunLogText = '';
+let currentRunLogRunId = '';
+
+function getCurrentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+
+function getThemePalette() {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    chartText: styles.getPropertyValue('--chart-text').trim() || '#374151',
+    chartMuted: styles.getPropertyValue('--chart-muted').trim() || '#9ca3af',
+    chartGrid: styles.getPropertyValue('--chart-grid').trim() || '#f3f4f6',
+    chartGridStrong: styles.getPropertyValue('--chart-grid-strong').trim() || '#e5e7eb'
+  };
+}
+
+function updateThemeToggle(theme) {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+
+  const icon = document.getElementById('themeToggleIcon');
+  const text = document.getElementById('themeToggleText');
+  const isDark = theme === 'dark';
+
+  btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+  btn.title = isDark ? '切换到浅色模式' : '切换到深色模式';
+  if (icon) icon.textContent = isDark ? '☀' : '☾';
+  if (text) text.textContent = isDark ? '浅色模式' : '深色模式';
+}
+
+function rerenderThemeSensitiveViews() {
+  const runs = latestHistoryRuns.length ? latestHistoryRuns : initialHistoryRuns;
+  if (runs.length) {
+    renderOverview(runs);
+  }
+}
+
+function setTheme(theme) {
+  const nextTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', nextTheme);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  } catch (e) {}
+  updateThemeToggle(nextTheme);
+  rerenderThemeSensitiveViews();
+}
+
+function toggleTheme() {
+  setTheme(getCurrentTheme() === 'dark' ? 'light' : 'dark');
+}
+
+function ensureThemeToggle() {
+  const header = document.querySelector('.header');
+  const meta = document.getElementById('headerMeta');
+  if (!header || !meta) return;
+
+  let actions = header.querySelector('.header-actions');
+  if (!actions) {
+    actions = document.createElement('div');
+    actions.className = 'header-actions';
+    header.appendChild(actions);
+  }
+
+  let btn = document.getElementById('themeToggle');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'themeToggle';
+    btn.type = 'button';
+    btn.className = 'theme-toggle';
+    btn.setAttribute('aria-label', 'Toggle theme');
+    btn.innerHTML =
+      '<span class="theme-toggle-icon" id="themeToggleIcon">☾</span>' +
+      '<span class="theme-toggle-text" id="themeToggleText">深色模式</span>';
+  }
+
+  if (!actions.contains(btn)) {
+    actions.insertBefore(btn, actions.firstChild);
+  }
+  if (!actions.contains(meta)) {
+    actions.appendChild(meta);
+  }
+  if (!btn.dataset.bound) {
+    btn.addEventListener('click', toggleTheme);
+    btn.dataset.bound = '1';
+  }
+
+  updateThemeToggle(getCurrentTheme());
+}
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -7,6 +101,17 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(tab.dataset.tab).classList.add('active');
   });
 });
+
+function loadInitialRunsData() {
+  const el = document.getElementById('initialRunsData');
+  if (!el) return [];
+  try {
+    const runs = JSON.parse(el.textContent || '[]');
+    return Array.isArray(runs) ? runs : [];
+  } catch (e) {
+    return [];
+  }
+}
 
 // ───── Channel search + filter ─────
 const channelSearch = document.getElementById('channelSearch');
@@ -492,7 +597,7 @@ function queryHistory() {
     .then(r => r.json())
     .then(runs => {
       renderHistoryTable(runs);
-      renderHistoryChart(runs);
+      renderOverview(runs);
     })
     .catch(e => showToast('查询失败: ' + e, 'error'));
 }
@@ -513,6 +618,7 @@ function resetHistoryAll() {
 }
 
 function renderHistoryTable(runs) {
+  latestHistoryRuns = Array.isArray(runs) ? runs : [];
   const tbody = document.getElementById('historyBody');
   const noData = document.getElementById('historyNoData');
   tbody.innerHTML = '';
@@ -539,6 +645,14 @@ function renderHistoryTable(runs) {
       '<td>' + s.unique_channels_passed + '/' + s.unique_channels_total + '</td>' +
       '<td>' + mins + ' 分钟</td>' +
       '<td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun(\'' + run.run_id + '\')">删除</button></td>';
+    const actionCell = tr.lastElementChild;
+    if (actionCell) {
+      actionCell.innerHTML =
+        '<div class="history-actions">' +
+        '<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openRunLogModal(\'' + run.run_id + '\')">日志</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun(\'' + run.run_id + '\')">删除</button>' +
+        '</div>';
+    }
     tbody.appendChild(tr);
     // Detail row
     const detailTr = document.createElement('tr');
@@ -550,9 +664,11 @@ function renderHistoryTable(runs) {
 }
 
 function renderHistoryChart(runs) {
+  latestHistoryRuns = Array.isArray(runs) ? runs : [];
   const wrap = document.getElementById('historyChartWrap');
   const svg = document.getElementById('historyChart');
   const title = document.getElementById('historyChartTitle');
+  const palette = getThemePalette();
   if (!runs || runs.length < 2) {
     wrap.style.display = 'none';
     return;
@@ -569,13 +685,13 @@ function renderHistoryChart(runs) {
     points.push(x + ',' + y);
     const color = run.summary.pass_rate >= 50 ? '#22c55e' : '#ef4444';
     svg.innerHTML += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '"/>';
-    svg.innerHTML += '<text x="' + x + '" y="200" text-anchor="middle" font-size="9" fill="#9ca3af">' + run.finished_at.substring(5, 16) + '</text>';
-    svg.innerHTML += '<text x="' + x + '" text-anchor="middle" font-size="10" fill="#374151" y="' + (y - 8) + '">' + run.summary.pass_rate + '%</text>';
+    svg.innerHTML += '<text x="' + x + '" y="200" text-anchor="middle" font-size="9" fill="' + palette.chartMuted + '">' + run.finished_at.substring(5, 16) + '</text>';
+    svg.innerHTML += '<text x="' + x + '" text-anchor="middle" font-size="10" fill="' + palette.chartText + '" y="' + (y - 8) + '">' + run.summary.pass_rate + '%</text>';
   });
   svg.innerHTML += '<polyline points="' + points.join(' ') + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round"/>';
-  svg.innerHTML += '<line x1="20" y1="20" x2="780" y2="20" stroke="#f3f4f6" stroke-width="1"/>';
-  svg.innerHTML += '<line x1="20" y1="105" x2="780" y2="105" stroke="#f3f4f6" stroke-width="1"/>';
-  svg.innerHTML += '<line x1="20" y1="190" x2="780" y2="190" stroke="#e5e7eb" stroke-width="1"/>';
+  svg.innerHTML += '<line x1="20" y1="20" x2="780" y2="20" stroke="' + palette.chartGrid + '" stroke-width="1"/>';
+  svg.innerHTML += '<line x1="20" y1="105" x2="780" y2="105" stroke="' + palette.chartGrid + '" stroke-width="1"/>';
+  svg.innerHTML += '<line x1="20" y1="190" x2="780" y2="190" stroke="' + palette.chartGridStrong + '" stroke-width="1"/>';
 }
 
 function toggleHistoryDetail(row, runId) {
@@ -639,6 +755,10 @@ function toggleHistoryDetail(row, runId) {
         html += '<div class="run-log-viewer" id="logs-' + runId + '" style="display:none;margin-top:8px"></div></div>';
         html += '</div>';
         detailRow.querySelector('td').innerHTML = html;
+        const legacyLogWrap = detailRow.querySelector('.run-log-viewer');
+        if (legacyLogWrap && legacyLogWrap.parentElement) {
+          legacyLogWrap.parentElement.remove();
+        }
         // Bind search/filter events
         const searchInput = detailRow.querySelector('.detail-inline-search');
         const filterSelect = detailRow.querySelector('.detail-inline-filter');
@@ -677,17 +797,18 @@ function loadRunLogs(runId, btn) {
   container.style.display = 'block';
   container.innerHTML = '<div style="color:#9ca3af;padding:8px">加载日志中...</div>';
   btn.textContent = '收起日志';
-  fetch('/api/run/' + runId + '/logs?limit=500')
+  fetch('/api/run/' + runId + '/logs')
     .then(r => r.json())
     .then(logs => {
+      logs = Array.isArray(logs) ? logs : ((logs && logs.logs) || []);
       if (!logs || !logs.length) {
         container.innerHTML = '<div style="color:#9ca3af;padding:8px">暂无日志记录</div>';
         return;
       }
-      let html = '<pre style="background:#111827;color:#d1d5db;padding:12px;border-radius:8px;max-height:400px;overflow-y:auto;font-size:12px;line-height:1.6;margin:0">';
+      let html = '<pre class="run-log-pre">';
       logs.forEach(l => {
-        const lvl = l.level === 'ERROR' ? '🔴' : l.level === 'WARNING' ? '🟡' : '⚪';
-        html += '<span style="color:#6b7280">' + l.ts + '</span> ' + lvl + ' ' + _escapeHtml(l.message) + '\n';
+        const lvl = l.level === 'ERROR' ? '[ERROR]' : l.level === 'WARNING' ? '[WARN]' : '[INFO]';
+        html += '<span class="run-log-time">' + l.ts + '</span> ' + lvl + ' ' + _escapeHtml(l.message) + '\n';
       });
       html += '</pre>';
       container.innerHTML = html;
@@ -696,6 +817,385 @@ function loadRunLogs(runId, btn) {
       container.innerHTML = '<div style="color:#ef4444;padding:8px">加载失败: ' + e + '</div>';
     });
 }
+function formatRunDateLabel(run) {
+  if (!run || !run.finished_at) return '-';
+  return run.finished_at.substring(5, 16);
+}
+
+function formatDurationMinutes(seconds) {
+  const mins = Number(seconds || 0) / 60;
+  return mins.toFixed(mins >= 10 ? 0 : 1) + ' min';
+}
+
+function getCoverageRate(summary) {
+  if (!summary || !summary.unique_channels_total) return 0;
+  return (summary.unique_channels_passed / summary.unique_channels_total) * 100;
+}
+
+function renderOverview(runs) {
+  latestHistoryRuns = Array.isArray(runs) ? runs : [];
+  renderOverviewStats(latestHistoryRuns);
+  renderOverviewPassRateChart(latestHistoryRuns);
+  renderOverviewVolumeChart(latestHistoryRuns);
+  renderOverviewInsights(latestHistoryRuns);
+}
+
+function renderOverviewStats(runs) {
+  const root = document.getElementById('overviewStats');
+  if (!root) return;
+  if (!runs || !runs.length) {
+    root.innerHTML = '';
+    return;
+  }
+
+  const totalRuns = runs.length;
+  const avgPassRate = runs.reduce((sum, run) => sum + Number(run.summary.pass_rate || 0), 0) / totalRuns;
+  const avgCoverage = runs.reduce((sum, run) => sum + getCoverageRate(run.summary), 0) / totalRuns;
+  const avgDurationMins = runs.reduce((sum, run) => sum + Number(run.duration_seconds || 0), 0) / totalRuns / 60;
+  const latest = runs[0];
+  const latestDelta = Number(latest.summary.pass_rate || 0) - avgPassRate;
+  const bestRun = runs.reduce((best, run) => {
+    if (!best) return run;
+    return Number(run.summary.pass_rate || 0) > Number(best.summary.pass_rate || 0) ? run : best;
+  }, null);
+
+  const cards = [
+    {
+      label: '历史轮次',
+      value: totalRuns,
+      sub: '当前数据集中共 ' + totalRuns + ' 轮',
+      klass: ''
+    },
+    {
+      label: '平均通过率',
+      value: avgPassRate.toFixed(1) + '%',
+      sub: '最近一次 ' + latest.summary.pass_rate + '%',
+      klass: avgPassRate >= 50 ? 'green' : 'red'
+    },
+    {
+      label: '相对均值',
+      value: (latestDelta >= 0 ? '+' : '') + latestDelta.toFixed(1) + ' pt',
+      sub: '对比历史平均通过率',
+      klass: latestDelta >= 0 ? 'green' : 'red'
+    },
+    {
+      label: '平均频道覆盖',
+      value: avgCoverage.toFixed(1) + '%',
+      sub: '通过频道 / 总频道',
+      klass: 'blue'
+    },
+    {
+      label: '平均耗时',
+      value: avgDurationMins.toFixed(avgDurationMins >= 10 ? 0 : 1),
+      sub: '分钟 / 轮',
+      klass: 'purple'
+    },
+    {
+      label: '最佳一轮',
+      value: bestRun ? (bestRun.summary.pass_rate + '%') : '-',
+      sub: bestRun ? bestRun.finished_at : '暂无',
+      klass: 'green'
+    }
+  ];
+
+  root.innerHTML = cards.map(card =>
+    '<div class="card">' +
+    '<div class="label">' + card.label + '</div>' +
+    '<div class="value ' + card.klass + '">' + card.value + '</div>' +
+    '<div class="sub">' + card.sub + '</div>' +
+    '</div>'
+  ).join('');
+}
+
+function renderOverviewPassRateChart(runs) {
+  const svg = document.getElementById('overviewPassRateChart');
+  const empty = document.getElementById('overviewPassRateEmpty');
+  const subtitle = document.getElementById('overviewPassRateSubtitle');
+  if (!svg || !empty || !subtitle) return;
+
+  if (!runs || runs.length < 2) {
+    svg.innerHTML = '';
+    empty.style.display = '';
+    subtitle.textContent = runs && runs.length ? '仅有 1 轮记录' : '暂无历史记录';
+    return;
+  }
+
+  empty.style.display = 'none';
+  subtitle.textContent = '最近 ' + runs.length + ' 轮，最新一轮在最右侧';
+
+  const palette = getThemePalette();
+  const ordered = [...runs].reverse();
+  const maxX = 860;
+  const minX = 40;
+  const maxY = 24;
+  const minY = 214;
+  const step = ordered.length > 1 ? (maxX - minX) / (ordered.length - 1) : 0;
+  const avgPassRate = ordered.reduce((sum, run) => sum + Number(run.summary.pass_rate || 0), 0) / ordered.length;
+  const labelEvery = Math.max(1, Math.ceil(ordered.length / 8));
+
+  const points = ordered.map((run, index) => {
+    const rate = Number(run.summary.pass_rate || 0);
+    const x = minX + step * index;
+    const y = minY - (rate / 100) * (minY - maxY);
+    return { x, y, rate, label: formatRunDateLabel(run) };
+  });
+
+  let html = '';
+  [0, 25, 50, 75, 100].forEach(level => {
+    const y = minY - (level / 100) * (minY - maxY);
+    html += '<line x1="' + minX + '" y1="' + y + '" x2="' + maxX + '" y2="' + y + '" stroke="' + (level === 0 ? palette.chartGridStrong : palette.chartGrid) + '" stroke-width="1"/>';
+    html += '<text x="8" y="' + (y + 4) + '" font-size="10" fill="' + palette.chartMuted + '">' + level + '%</text>';
+  });
+
+  const avgY = minY - (avgPassRate / 100) * (minY - maxY);
+  html += '<line x1="' + minX + '" y1="' + avgY + '" x2="' + maxX + '" y2="' + avgY + '" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  html += '<text x="' + maxX + '" y="' + (avgY - 6) + '" text-anchor="end" font-size="10" fill="#a855f7">平均 ' + avgPassRate.toFixed(1) + '%</text>';
+
+  html += '<polyline points="' + points.map(point => point.x + ',' + point.y).join(' ') + '" fill="none" stroke="#2563eb" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>';
+
+  points.forEach((point, index) => {
+    const color = point.rate >= 50 ? '#22c55e' : '#ef4444';
+    html += '<circle cx="' + point.x + '" cy="' + point.y + '" r="4" fill="' + color + '"/>';
+    if (index % labelEvery === 0 || index === points.length - 1) {
+      html += '<text x="' + point.x + '" y="234" text-anchor="middle" font-size="10" fill="' + palette.chartMuted + '">' + point.label + '</text>';
+      html += '<text x="' + point.x + '" y="' + (point.y - 10) + '" text-anchor="middle" font-size="10" fill="' + palette.chartText + '">' + point.rate + '%</text>';
+    }
+  });
+
+  svg.innerHTML = html;
+}
+
+function renderOverviewVolumeChart(runs) {
+  const svg = document.getElementById('overviewVolumeChart');
+  const empty = document.getElementById('overviewVolumeEmpty');
+  const subtitle = document.getElementById('overviewVolumeSubtitle');
+  if (!svg || !empty || !subtitle) return;
+
+  if (!runs || !runs.length) {
+    svg.innerHTML = '';
+    empty.style.display = '';
+    subtitle.textContent = '暂无历史记录';
+    return;
+  }
+
+  empty.style.display = 'none';
+  subtitle.textContent = '绿色为通过地址，红色为失败地址';
+
+  const palette = getThemePalette();
+  const ordered = [...runs].reverse();
+  const maxTotal = Math.max(...ordered.map(run => Number(run.summary.total_tested || 0)), 1);
+  const chartHeight = 170;
+  const baseY = 210;
+  const left = 24;
+  const right = 500;
+  const slotWidth = (right - left) / Math.max(ordered.length, 1);
+  const barWidth = Math.max(8, Math.min(28, slotWidth * 0.58));
+  const labelEvery = Math.max(1, Math.ceil(ordered.length / 8));
+
+  let html = '';
+  [0, maxTotal / 2, maxTotal].forEach(value => {
+    const y = baseY - (value / maxTotal) * chartHeight;
+    html += '<line x1="' + left + '" y1="' + y + '" x2="' + right + '" y2="' + y + '" stroke="' + (value === 0 ? palette.chartGridStrong : palette.chartGrid) + '" stroke-width="1"/>';
+    html += '<text x="0" y="' + (y + 4) + '" font-size="10" fill="' + palette.chartMuted + '">' + Math.round(value) + '</text>';
+  });
+
+  ordered.forEach((run, index) => {
+    const total = Number(run.summary.total_tested || 0);
+    const passed = Number(run.summary.total_passed || 0);
+    const x = left + slotWidth * index + (slotWidth - barWidth) / 2;
+    const totalHeight = (total / maxTotal) * chartHeight;
+    const passedHeight = total > 0 ? totalHeight * (passed / total) : 0;
+    const failedHeight = Math.max(0, totalHeight - passedHeight);
+    const y = baseY - totalHeight;
+
+    html += '<rect x="' + x + '" y="' + y + '" width="' + barWidth + '" height="' + failedHeight + '" rx="4" fill="#ef4444"/>';
+    html += '<rect x="' + x + '" y="' + (baseY - passedHeight) + '" width="' + barWidth + '" height="' + passedHeight + '" rx="4" fill="#22c55e"/>';
+
+    if (index % labelEvery === 0 || index === ordered.length - 1) {
+      html += '<text x="' + (x + barWidth / 2) + '" y="234" text-anchor="middle" font-size="10" fill="' + palette.chartMuted + '">' + formatRunDateLabel(run) + '</text>';
+    }
+  });
+
+  svg.innerHTML = html;
+}
+
+function renderOverviewInsights(runs) {
+  const highlights = document.getElementById('overviewHighlights');
+  const watchlist = document.getElementById('overviewWatchlist');
+  if (!highlights || !watchlist) return;
+
+  if (!runs || !runs.length) {
+    highlights.innerHTML = '<div class="insight-item"><div class="meta"><div class="desc">暂无历史记录</div></div></div>';
+    watchlist.innerHTML = '<div class="insight-item"><div class="meta"><div class="desc">暂无历史记录</div></div></div>';
+    return;
+  }
+
+  const latest = runs[0];
+  const previous = runs[1] || null;
+  const bestRun = runs.reduce((best, run) => !best || Number(run.summary.pass_rate || 0) > Number(best.summary.pass_rate || 0) ? run : best, null);
+  const worstRuns = [...runs]
+    .sort((a, b) => Number(a.summary.pass_rate || 0) - Number(b.summary.pass_rate || 0))
+    .slice(0, Math.min(4, runs.length));
+
+  let stableStreak = 0;
+  for (const run of runs) {
+    if (Number(run.summary.pass_rate || 0) >= 50) stableStreak += 1;
+    else break;
+  }
+
+  const highlightItems = [
+    {
+      name: '最近一次测试',
+      desc: latest.finished_at + '，覆盖 ' + latest.summary.unique_channels_passed + '/' + latest.summary.unique_channels_total + ' 个频道',
+      value: latest.summary.pass_rate + '%',
+      klass: Number(latest.summary.pass_rate || 0) >= 50 ? 'good' : 'warn'
+    },
+    {
+      name: '与上一轮对比',
+      desc: previous ? (previous.finished_at + ' 作为参考') : '暂无上一轮数据',
+      value: previous ? ((Number(latest.summary.pass_rate || 0) - Number(previous.summary.pass_rate || 0) >= 0 ? '+' : '') + (Number(latest.summary.pass_rate || 0) - Number(previous.summary.pass_rate || 0)).toFixed(1) + ' pt') : '-',
+      klass: !previous || Number(latest.summary.pass_rate || 0) >= Number(previous.summary.pass_rate || 0) ? 'good' : 'warn'
+    },
+    {
+      name: '最好的一轮',
+      desc: bestRun ? bestRun.finished_at : '暂无',
+      value: bestRun ? bestRun.summary.pass_rate + '%' : '-',
+      klass: 'good'
+    },
+    {
+      name: '稳定连续轮次',
+      desc: '通过率 >= 50% 的连续轮次',
+      value: stableStreak + ' 轮',
+      klass: stableStreak >= 3 ? 'good' : ''
+    }
+  ];
+
+  highlights.innerHTML = highlightItems.map(item =>
+    '<div class="insight-item">' +
+    '<div class="meta"><div class="name">' + item.name + '</div><div class="desc">' + item.desc + '</div></div>' +
+    '<div class="value ' + (item.klass || '') + '">' + item.value + '</div>' +
+    '</div>'
+  ).join('');
+
+  watchlist.innerHTML = worstRuns.map(run => {
+    const coverage = getCoverageRate(run.summary).toFixed(1);
+    return (
+      '<div class="insight-item">' +
+      '<div class="meta"><div class="name">' + run.finished_at + '</div>' +
+      '<div class="desc">通过 ' + run.summary.total_passed + '/' + run.summary.total_tested + '，频道覆盖 ' + coverage + '%</div></div>' +
+      '<div class="value warn">' + run.summary.pass_rate + '%</div>' +
+      '</div>'
+    );
+  }).join('');
+}
+
+function findRunById(runId) {
+  return (latestHistoryRuns || []).find(run => run.run_id === runId)
+    || (initialHistoryRuns || []).find(run => run.run_id === runId)
+    || null;
+}
+
+function openRunLogModal(runId) {
+  const modal = document.getElementById('runLogModal');
+  const meta = document.getElementById('runLogModalMeta');
+  const body = document.getElementById('runLogBody');
+  const search = document.getElementById('runLogSearch');
+  if (!modal || !meta || !body || !search) return;
+
+  currentRunLogRunId = runId;
+  currentRunLogEntries = [];
+  currentRunLogText = '';
+  search.value = '';
+  updateRunLogCount(0, 0, false);
+
+  const run = findRunById(runId);
+  if (run) {
+    meta.textContent = run.finished_at + ' | 通过率 ' + run.summary.pass_rate + '% | ' + run.summary.total_passed + '/' + run.summary.total_tested + ' 地址';
+  } else {
+    meta.textContent = '加载日志中...';
+  }
+
+  body.innerHTML = '<div class="log-line" style="color:#6b7280">加载日志中...</div>';
+  modal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  fetch('/api/run/' + runId + '/logs')
+    .then(r => r.json())
+    .then(payload => {
+      const logs = Array.isArray(payload) ? payload : (payload.logs || []);
+      currentRunLogEntries = logs;
+      currentRunLogText = logs.map(log => {
+        const lvl = log.level === 'ERROR' ? '[ERROR]' : log.level === 'WARNING' ? '[WARN]' : '[INFO]';
+        return (log.ts || '-') + ' ' + lvl + ' ' + (log.message || '');
+      }).join('\n');
+      renderRunLogEntries(logs);
+      updateRunLogCount(logs.length, payload.total || logs.length, Boolean(payload.truncated));
+    })
+    .catch(e => {
+      body.innerHTML = '<div class="log-line" style="color:#ef4444">加载失败: ' + _escapeHtml(String(e)) + '</div>';
+      updateRunLogCount(0, 0, false);
+    });
+}
+
+function closeRunLogModal() {
+  const modal = document.getElementById('runLogModal');
+  if (!modal) return;
+  modal.classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function updateRunLogCount(visibleCount, totalCount, truncated) {
+  const el = document.getElementById('runLogCount');
+  if (!el) return;
+  let text = '显示 ' + visibleCount + ' / ' + totalCount + ' 条';
+  if (truncated) text += '（已截断）';
+  el.textContent = text;
+}
+
+function renderRunLogEntries(entries) {
+  const body = document.getElementById('runLogBody');
+  if (!body) return;
+
+  const keyword = ((document.getElementById('runLogSearch') || {}).value || '').toLowerCase();
+  const filtered = (entries || []).filter(log => {
+    if (!keyword) return true;
+    return ((log.ts || '') + ' ' + (log.level || '') + ' ' + (log.message || '')).toLowerCase().includes(keyword);
+  });
+
+  if (!filtered.length) {
+    body.innerHTML = '<div class="log-line" style="color:#6b7280">没有匹配的日志内容</div>';
+    updateRunLogCount(0, entries.length, false);
+    return;
+  }
+
+  body.innerHTML = filtered.map(log => {
+    const level = log.level === 'ERROR' ? '[ERROR]' : log.level === 'WARNING' ? '[WARN]' : '[INFO]';
+    let cls = 'log-info';
+    if (log.level === 'ERROR' || /失败|异常|error/i.test(log.message || '')) cls = 'log-fail';
+    else if (/通过|完成|pass/i.test(log.message || '')) cls = 'log-pass';
+
+    return (
+      '<div class="run-log-line">' +
+      '<span class="run-log-time">' + _escapeHtml(log.ts || '-') + '</span> ' +
+      '<span class="run-log-level">' + level + '</span> ' +
+      '<span class="' + cls + '">' + _escapeHtml(log.message || '') + '</span>' +
+      '</div>'
+    );
+  }).join('');
+  updateRunLogCount(filtered.length, entries.length, false);
+}
+
+function filterRunLogLines() {
+  renderRunLogEntries(currentRunLogEntries);
+}
+
+function copyRunLogContent(btn) {
+  if (!currentRunLogText) return;
+  copyText(currentRunLogText)
+    .then(() => setCopyButtonState(btn, '已复制', '复制日志'))
+    .catch(() => showToast('复制日志失败，请手动复制', 'error'));
+}
+
 function _escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
@@ -819,6 +1319,16 @@ function deleteRun(runId) {
         const detail = document.getElementById('detail-' + runId);
         if (row) row.remove();
         if (detail) detail.remove();
+        latestHistoryRuns = (latestHistoryRuns || []).filter(run => run.run_id !== runId);
+        initialHistoryRuns = (initialHistoryRuns || []).filter(run => run.run_id !== runId);
+        renderOverview(latestHistoryRuns);
+        const noData = document.getElementById('historyNoData');
+        if (noData && !document.querySelector('#historyBody tr.history-row')) {
+          noData.style.display = '';
+        }
+        if (currentRunLogRunId === runId) {
+          closeRunLogModal();
+        }
         showToast('已删除', 'success');
       }
     })
@@ -826,5 +1336,12 @@ function deleteRun(runId) {
 }
 
 // ───── Init ─────
+ensureThemeToggle();
+initialHistoryRuns = loadInitialRunsData();
+latestHistoryRuns = initialHistoryRuns.slice();
+renderOverview(initialHistoryRuns);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeRunLogModal();
+});
 loadConfig();
 loadTextFile();

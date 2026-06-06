@@ -181,6 +181,48 @@ tr:hover{background:#f8f9fb}
 .history-row{cursor:pointer}
 .history-row:hover{background:#f0f4ff}
 .history-row.expanded{background:#eff3ff}
+.history-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* Overview */
+.overview-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:12px;margin-bottom:12px}
+.overview-card{min-height:320px}
+.overview-card .sub{margin-top:0}
+.chart-card svg{width:100%;height:260px;display:block}
+.overview-stats{margin-bottom:12px}
+.overview-insights{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.insight-list{display:flex;flex-direction:column;gap:10px}
+.insight-item{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--border-light)}
+.insight-item:first-child{border-top:none;padding-top:0}
+.insight-item .meta{min-width:0}
+.insight-item .name{font-size:13px;font-weight:600;color:var(--text-secondary)}
+.insight-item .desc{font-size:12px;color:var(--text-muted);margin-top:2px}
+.insight-item .value{font-size:14px;font-weight:700;color:var(--text-primary);white-space:nowrap}
+.insight-item .value.good{color:#16a34a}
+.insight-item .value.warn{color:#dc2626}
+.overview-empty{display:flex;align-items:center;justify-content:center;height:260px;color:var(--text-subtle);font-size:13px}
+
+/* Modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.55);display:none;align-items:center;justify-content:center;padding:24px;z-index:1000}
+.modal-backdrop.open{display:flex}
+.modal-card{width:min(1120px,100%);max-height:90vh;background:var(--surface);border-radius:10px;box-shadow:0 18px 50px rgba(0,0,0,.28);display:flex;flex-direction:column;overflow:hidden}
+.modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:16px;margin:0;color:var(--text-primary)}
+.modal-meta{font-size:12px;color:var(--text-muted);margin-top:4px}
+.modal-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.modal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid var(--border-light);flex-wrap:wrap}
+.modal-toolbar input{flex:1;min-width:220px;padding:8px 12px;border:1px solid var(--input-border);border-radius:6px;background:var(--input-bg);color:var(--text-primary);outline:none}
+.modal-toolbar input:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.modal-count{font-size:12px;color:var(--text-muted)}
+.modal-body{padding:0 18px 18px}
+.modal-log-panel{height:min(64vh,720px);margin-top:12px}
+.run-log-pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:12px;line-height:1.7}
+.run-log-line{white-space:pre-wrap;word-break:break-word}
+.run-log-level{display:inline-block;min-width:54px;color:var(--text-subtle)}
+
+@media(max-width:900px){
+  .overview-grid,.overview-insights{grid-template-columns:1fr}
+  .overview-card{min-height:0}
+}
 
 /* Channel name nowrap */
 td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
@@ -201,6 +243,133 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 .run-selector select{padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none;min-width:280px}
 .run-selector select:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
 </style>
+<style>
+:root{
+  color-scheme:light;
+  --bg-body:#f0f2f5;
+  --text-primary:#1a1a2e;
+  --text-secondary:#374151;
+  --text-muted:#6b7280;
+  --text-subtle:#9ca3af;
+  --surface:#ffffff;
+  --surface-subtle:#f8f9fb;
+  --surface-soft:#f3f4f6;
+  --surface-hover:#f8f9fb;
+  --surface-selected:#f0f4ff;
+  --surface-selected-strong:#eff3ff;
+  --border:#e5e7eb;
+  --border-light:#f3f4f6;
+  --border-strong:#9ca3af;
+  --input-bg:#ffffff;
+  --input-border:#d1d5db;
+  --shadow:0 1px 3px rgba(0,0,0,.08);
+  --log-surface:#1e1e2e;
+  --log-text:#cdd6f4;
+  --log-time:#89b4fa;
+  --log-pass:#a6e3a1;
+  --log-fail:#f38ba8;
+  --log-info:#cba6f7;
+  --preview-bg:#1e1e2e;
+  --preview-text:#cdd6f4;
+  --chart-text:#374151;
+  --chart-muted:#9ca3af;
+  --chart-grid:#f3f4f6;
+  --chart-grid-strong:#e5e7eb;
+  --theme-toggle-bg:#ffffff;
+  --theme-toggle-border:#d1d5db;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg-body:#111827;
+  --text-primary:#e5e7eb;
+  --text-secondary:#d1d5db;
+  --text-muted:#9ca3af;
+  --text-subtle:#94a3b8;
+  --surface:#0f172a;
+  --surface-subtle:#111827;
+  --surface-soft:#1f2937;
+  --surface-hover:#172033;
+  --surface-selected:#182235;
+  --surface-selected-strong:#1d2a3f;
+  --border:#334155;
+  --border-light:#1f2937;
+  --border-strong:#64748b;
+  --input-bg:#111827;
+  --input-border:#475569;
+  --shadow:0 10px 30px rgba(0,0,0,.25);
+  --log-surface:#020617;
+  --log-text:#dbe4ff;
+  --log-time:#93c5fd;
+  --log-pass:#86efac;
+  --log-fail:#fda4af;
+  --log-info:#c4b5fd;
+  --preview-bg:#020617;
+  --preview-text:#dbe4ff;
+  --chart-text:#d1d5db;
+  --chart-muted:#94a3b8;
+  --chart-grid:#1f2937;
+  --chart-grid-strong:#334155;
+  --theme-toggle-bg:#0f172a;
+  --theme-toggle-border:#475569;
+}
+body{background:var(--bg-body)!important;color:var(--text-primary)!important;transition:background-color .2s ease,color .2s ease}
+.header{border-bottom-color:var(--border)!important}
+.header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+.theme-toggle{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--theme-toggle-border);border-radius:999px;background:var(--theme-toggle-bg);color:var(--text-secondary);font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap}
+.theme-toggle:hover{background:var(--surface-hover);color:var(--text-primary)}
+.theme-toggle-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:rgba(37,99,235,.12);color:#2563eb;font-size:12px;line-height:1}
+.theme-toggle-text{line-height:1}
+.header .meta,.card .label,.ch-header .stats,.url-cell,.tab,.config-group .hint,.no-data,.empty,.card .sub{color:var(--text-muted)!important}
+.config-group label,.run-selector label,.bar-label,th,.btn-outline,.copy-btn,.log-controls .btn-scroll,#previewTitle{color:var(--text-secondary)!important}
+.tab:hover,.file-tab:hover{color:var(--text-primary)!important}
+.card,.table-wrap,.ch-card,.config-section{background:var(--surface)!important;box-shadow:var(--shadow)!important}
+.tabs{border-bottom-color:var(--border)!important}
+th{background:var(--surface-subtle)!important}
+td{border-top-color:var(--border-light)!important}
+tr:hover,.ch-header:hover{background:var(--surface-hover)!important}
+.toolbar input,.toolbar select,.config-group input,.config-group select,.run-selector select,.text-editor,.btn-outline,.copy-btn,.log-controls .btn-scroll{background:var(--input-bg)!important;color:var(--text-primary)!important;border-color:var(--input-border)!important}
+.config-section h3{border-bottom-color:var(--border-light)!important}
+.progress,.history-rate .mini-bar,.progress-lg{background:var(--border)!important}
+.bar-track,.file-tab{background:var(--surface-soft)!important}
+.file-tab{color:var(--text-muted)!important;border-color:var(--border)!important}
+.file-tab.active{background:var(--surface)!important;color:#2563eb!important;border-color:#2563eb!important}
+.text-editor::placeholder{color:var(--text-subtle)}
+.log-panel{background:var(--log-surface)!important;color:var(--log-text)!important}
+.log-panel .log-line .log-time{color:var(--log-time)!important}
+.log-panel .log-line .log-pass{color:var(--log-pass)!important}
+.log-panel .log-line .log-fail{color:var(--log-fail)!important}
+.log-panel .log-line .log-info{color:var(--log-info)!important}
+.history-detail-row td{background:var(--surface-subtle)!important}
+.history-row:hover{background:var(--surface-selected)!important}
+.history-row.expanded{background:var(--surface-selected-strong)!important}
+#previewContent,.run-log-pre{background:var(--preview-bg)!important;color:var(--preview-text)!important}
+.run-log-time{color:var(--text-subtle)!important}
+:root[data-theme="dark"] body [style*="color:#374151"]{color:var(--text-secondary)!important}
+:root[data-theme="dark"] body [style*="color:#6b7280"]{color:var(--text-muted)!important}
+:root[data-theme="dark"] body [style*="color:#9ca3af"]{color:var(--text-subtle)!important}
+:root[data-theme="dark"] body [style*="background:#1e1e2e"]{background:var(--preview-bg)!important;color:var(--preview-text)!important}
+:root[data-theme="dark"] body [style*="background:#111827"]{background:var(--preview-bg)!important;color:var(--preview-text)!important}
+:root[data-theme="dark"] body [style*="background:#f8f9fb"]{background:var(--surface-subtle)!important}
+:root[data-theme="dark"] body [style*="background:#f0f4ff"]{background:var(--surface-selected)!important}
+:root[data-theme="dark"] body [style*="background:#eff3ff"]{background:var(--surface-selected-strong)!important}
+:root[data-theme="dark"] body input[style*="border:1px solid #d1d5db"],
+:root[data-theme="dark"] body select[style*="border:1px solid #d1d5db"]{border-color:var(--input-border)!important;background:var(--input-bg)!important;color:var(--text-primary)!important}
+@media(max-width:768px){
+  .header-actions{width:100%;justify-content:space-between}
+  .theme-toggle{padding:7px 10px}
+}
+</style>
+<script>
+try {
+  var theme = localStorage.getItem('iptv-theme');
+  if (!theme) {
+    theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  if (theme === 'light' || theme === 'dark') {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+} catch (e) {}
+</script>
 </head>
 <body>
 <div class="container">
@@ -275,7 +444,32 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 
 <!-- Tab 1: Overview -->
 <div id="overview" class="tab-content active">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+  <div class="overview-grid">
+    <div class="card chart-card overview-card">
+      <div class="label">历史通过率趋势</div>
+      <div class="sub" id="overviewPassRateSubtitle">最近历史记录</div>
+      <svg id="overviewPassRateChart" viewBox="0 0 900 260" aria-label="历史通过率趋势图"></svg>
+      <div id="overviewPassRateEmpty" class="overview-empty" style="display:none">至少需要 2 轮历史记录才会显示趋势</div>
+    </div>
+    <div class="card chart-card overview-card">
+      <div class="label">测试规模趋势</div>
+      <div class="sub" id="overviewVolumeSubtitle">通过与失败地址变化</div>
+      <svg id="overviewVolumeChart" viewBox="0 0 520 260" aria-label="测试规模趋势图"></svg>
+      <div id="overviewVolumeEmpty" class="overview-empty" style="display:none">暂无可展示的趋势数据</div>
+    </div>
+  </div>
+  <div id="overviewStats" class="cards overview-stats"></div>
+  <div class="overview-insights">
+    <div class="card">
+      <div class="label">运行摘要</div>
+      <div id="overviewHighlights" class="insight-list"></div>
+    </div>
+    <div class="card">
+      <div class="label">值得关注</div>
+      <div id="overviewWatchlist" class="insight-list"></div>
+    </div>
+  </div>
+  <div style="display:none">
     <div class="card" style="grid-column:{% if channel_summary|length > 8 %}1 / -1{% endif %}">
       <div class="label" style="margin-bottom:8px">频道通过率</div>
       <div class="bar-chart">
@@ -399,7 +593,12 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
           </td>
           <td>{{ run.summary.unique_channels_passed }}/{{ run.summary.unique_channels_total }}</td>
           <td>{{ "%.0f"|format(run.duration_seconds / 60) }} 分钟</td>
-          <td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun('{{ run.run_id }}')">删除</button></td>
+          <td>
+            <div class="history-actions">
+              <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openRunLogModal('{{ run.run_id }}')">日志</button>
+              <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteRun('{{ run.run_id }}')">删除</button>
+            </div>
+          </td>
         </tr>
         <tr class="history-detail-row" id="detail-{{ run.run_id }}">
           <td colspan="8">
@@ -618,9 +817,34 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 
 </div><!-- /container -->
 
+<div id="runLogModal" class="modal-backdrop" onclick="closeRunLogModal()">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="runLogModalTitle" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div>
+        <h3 id="runLogModalTitle">运行日志</h3>
+        <div id="runLogModalMeta" class="modal-meta">选择一轮测试后查看完整日志</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline btn-sm" id="runLogCopyBtn" onclick="copyRunLogContent(this)">复制日志</button>
+        <button class="btn btn-outline btn-sm" onclick="closeRunLogModal()">关闭</button>
+      </div>
+    </div>
+    <div class="modal-toolbar">
+      <input type="text" id="runLogSearch" placeholder="搜索日志内容..." oninput="filterRunLogLines()">
+      <div id="runLogCount" class="modal-count">0 条</div>
+    </div>
+    <div class="modal-body">
+      <div id="runLogBody" class="log-panel modal-log-panel">
+        <div class="log-line" style="color:#6b7280">暂无日志</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div id="toast" class="toast"></div>
 
+<script id="initialRunsData" type="application/json">{{ runs|tojson }}</script>
 <script src="{{ url_for('static', filename='js/index.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

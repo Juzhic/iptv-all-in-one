@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import threading
 import time
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 import urllib3
@@ -51,6 +51,44 @@ _DEFAULT_FFMPEG_WORKERS = int(os.environ.get('MAX_FFMPEG_WORKERS', '6') or 6)
 _ffmpeg_limit = max(1, _DEFAULT_FFMPEG_WORKERS)
 _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
 _ffmpeg_lock = threading.Lock()
+NON_LIVE_MEDIA_EXTENSIONS = frozenset({
+    '.mp4',
+    '.m4v',
+    '.mov',
+    '.mkv',
+    '.avi',
+    '.wmv',
+    '.webm',
+    '.mpg',
+    '.mpeg',
+})
+NON_LIVE_CONTENT_TYPE_TO_EXT = {
+    'application/mp4': '.mp4',
+    'video/avi': '.avi',
+    'video/mp4': '.mp4',
+    'video/mpeg': '.mpeg',
+    'video/quicktime': '.mov',
+    'video/webm': '.webm',
+    'video/x-m4v': '.m4v',
+    'video/x-matroska': '.mkv',
+    'video/x-msvideo': '.avi',
+}
+STATIC_HLS_HOST_SUFFIXES = (
+    'cdn.jsdelivr.net',
+    'raw.githubusercontent.com',
+    'github.io',
+    'githubusercontent.com',
+)
+STATIC_HLS_PATH_KEYWORDS = (
+    '/testvideo/',
+    '/demo/',
+    '/sample/',
+    'playad',
+)
+STATIC_HLS_CONFIRM_MIN_DURATION = 90.0
+STATIC_HLS_CONFIRM_MIN_SEGMENTS = 6
+STATIC_HLS_CONFIRM_MIN_WAIT = 6.0
+STATIC_HLS_CONFIRM_MAX_WAIT = 12.0
 
 
 def set_ffmpeg_max_workers(limit):
@@ -66,6 +104,30 @@ def set_ffmpeg_max_workers(limit):
             _ffmpeg_limit = limit
             _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
     return _ffmpeg_limit
+
+
+def detect_non_live_media_url(url):
+    """识别明显的点播媒体文件 URL，避免误当作直播流参与测速。"""
+    try:
+        parsed = urlparse((url or '').strip())
+        path = unquote(parsed.path or '').lower()
+    except Exception:
+        return ''
+
+    for ext in NON_LIVE_MEDIA_EXTENSIONS:
+        if path.endswith(ext):
+            return ext
+    return ''
+
+
+def detect_non_live_media_response(url, content_type=''):
+    """结合最终 URL 和响应类型识别点播媒体文件。"""
+    media_ext = detect_non_live_media_url(url)
+    if media_ext:
+        return media_ext
+
+    normalized = (content_type or '').split(';', 1)[0].strip().lower()
+    return NON_LIVE_CONTENT_TYPE_TO_EXT.get(normalized, '')
 
 
 def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='wall_clock_after_connect', connection_latency_ms=None):
@@ -123,6 +185,13 @@ def read_response_text_limited(response, max_bytes=2 * 1024 * 1024):
             raise ValueError(f"响应内容超过 {max_bytes // 1024 // 1024}MB")
         chunks.append(chunk)
     return b''.join(chunks).decode(encoding, errors='ignore')
+
+
+def fetch_hls_playlist(url, deadline):
+    """获取 HLS 播放列表文本，并返回最终 URL。"""
+    with http_get(url, timeout=request_timeout(deadline, 3, 3), stream=True) as response:
+        response.raise_for_status()
+        return response.url, read_response_text_limited(response)
 
 
 def is_hls_response(response, text_probe=''):
@@ -235,6 +304,9 @@ def ffmpeg_test(url):
 def analyze_iptv_with_ffmpeg(url, duration=10, useffmpeg=True, min_width=1920, min_height=1080):
     """分析入口：强制使用 FFmpeg 做分辨率探测，再做带宽测试。"""
     try:
+        non_live_ext = detect_non_live_media_url(url)
+        if non_live_ext:
+            return {'success': False, 'error': f'疑似点播文件({non_live_ext})，已排除'}
         deadline = time.monotonic() + max(duration, 1) + 8
         stream_url = url
         stream_kind = 'direct'
@@ -361,6 +433,120 @@ def parse_hls_segments(m3u8_content, base_url):
     return segments
 
 
+def parse_hls_playlist_metadata(m3u8_content, base_url):
+    """提取 HLS 媒体播放列表特征，用于区分直播与静态测试源。"""
+    playlist_type = ''
+    target_duration = 0.0
+    media_sequence = None
+    has_endlist = False
+
+    for raw_line in m3u8_content.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith('#EXT-X-PLAYLIST-TYPE:'):
+            playlist_type = line.split(':', 1)[1].strip().lower()
+        elif line.startswith('#EXT-X-TARGETDURATION:'):
+            try:
+                target_duration = float(line.split(':', 1)[1])
+            except (IndexError, ValueError):
+                target_duration = 0.0
+        elif line.startswith('#EXT-X-MEDIA-SEQUENCE:'):
+            try:
+                media_sequence = int(line.split(':', 1)[1])
+            except (IndexError, ValueError):
+                media_sequence = None
+        elif line == '#EXT-X-ENDLIST':
+            has_endlist = True
+
+    segments = parse_hls_segments(m3u8_content, base_url)
+    total_duration = 0.0
+    segment_urls = []
+    for segment in segments:
+        segment_urls.append(segment.get('url', ''))
+        try:
+            total_duration += float(segment.get('duration') or 0)
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        'playlist_type': playlist_type,
+        'target_duration': target_duration,
+        'media_sequence': media_sequence,
+        'has_endlist': has_endlist,
+        'segment_count': len(segments),
+        'total_duration': round(total_duration, 3),
+        'segment_urls': segment_urls,
+        'segments': segments,
+    }
+
+
+def get_static_hls_hints(playlist_url, metadata):
+    """返回静态 HLS 测试源的可疑特征。"""
+    flags = []
+    try:
+        parsed = urlparse(playlist_url or '')
+        host = (parsed.netloc or '').lower()
+        path = unquote(parsed.path or '').lower()
+    except Exception:
+        host = ''
+        path = ''
+
+    if any(host == suffix or host.endswith('.' + suffix) for suffix in STATIC_HLS_HOST_SUFFIXES):
+        flags.append('static_host')
+    if any(keyword in path for keyword in STATIC_HLS_PATH_KEYWORDS):
+        flags.append('static_path')
+    if metadata.get('media_sequence') == 0:
+        flags.append('sequence_zero')
+    if metadata.get('total_duration', 0) >= STATIC_HLS_CONFIRM_MIN_DURATION:
+        flags.append('fixed_duration')
+    return flags
+
+
+def build_hls_playlist_fingerprint(metadata):
+    """构建用于二次确认的播放列表指纹。"""
+    return (
+        metadata.get('playlist_type', ''),
+        bool(metadata.get('has_endlist')),
+        metadata.get('media_sequence'),
+        int(metadata.get('segment_count', 0) or 0),
+        round(float(metadata.get('total_duration', 0) or 0), 3),
+        tuple(metadata.get('segment_urls', [])[-5:]),
+    )
+
+
+def detect_non_live_hls_playlist(playlist_url, m3u8_content, deadline):
+    """识别静态 HLS、点播清单或测试片源。"""
+    metadata = parse_hls_playlist_metadata(m3u8_content, playlist_url)
+    playlist_type = metadata.get('playlist_type', '')
+    if playlist_type == 'vod':
+        return True, 'playlist-type=VOD', metadata
+    if metadata.get('has_endlist'):
+        return True, 'playlist contains ENDLIST', metadata
+
+    hints = get_static_hls_hints(playlist_url, metadata)
+    should_confirm = (
+        metadata.get('segment_count', 0) >= STATIC_HLS_CONFIRM_MIN_SEGMENTS
+        and metadata.get('media_sequence') == 0
+        and any(flag in hints for flag in ('fixed_duration', 'static_host', 'static_path'))
+    )
+    if not should_confirm:
+        return False, '', metadata
+
+    wait_seconds = metadata.get('target_duration') or 0
+    wait_seconds = max(wait_seconds, STATIC_HLS_CONFIRM_MIN_WAIT)
+    wait_seconds = min(wait_seconds, STATIC_HLS_CONFIRM_MAX_WAIT)
+    if deadline - time.monotonic() <= wait_seconds + 1:
+        return False, '', metadata
+
+    time.sleep(wait_seconds)
+    refreshed_url, refreshed_content = fetch_hls_playlist(playlist_url, deadline)
+    refreshed_metadata = parse_hls_playlist_metadata(refreshed_content, refreshed_url)
+    if build_hls_playlist_fingerprint(metadata) == build_hls_playlist_fingerprint(refreshed_metadata):
+        return True, 'static HLS playlist confirmed by re-fetch', refreshed_metadata
+    return False, '', refreshed_metadata
+
+
 def test_direct_bandwidth(url, width, height, duration):
     """测试直链带宽。分辨率只认 FFmpeg 结果。"""
     try:
@@ -371,6 +557,12 @@ def test_direct_bandwidth(url, width, height, duration):
 
         with http_get(url, stream=True, timeout=request_timeout(deadline, 3, 2)) as response:
             response.raise_for_status()
+            non_live_ext = detect_non_live_media_response(
+                response.url or url,
+                response.headers.get('content-type', '')
+            )
+            if non_live_ext:
+                return {'success': False, 'error': f'疑似点播文件({non_live_ext})，已排除'}
             chunk_iter = response.iter_content(chunk_size=131072)
 
             try:
@@ -419,21 +611,21 @@ def test_hls_bandwidth(url, width, height, duration):
     """测试 HLS 带宽。分辨率只认 FFmpeg 结果。"""
     try:
         deadline = time.monotonic() + max(duration, 1) + 8
-        playlist_url = url
-        with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3), stream=True) as m3u8_resp:
-            m3u8_resp.raise_for_status()
-            m3u8_content = read_response_text_limited(m3u8_resp)
-            playlist_url = m3u8_resp.url
+        playlist_url, m3u8_content = fetch_hls_playlist(url, deadline)
 
         variant = pick_hls_variant(m3u8_content, playlist_url)
         if variant:
-            playlist_url = variant['url']
-            with http_get(playlist_url, timeout=request_timeout(deadline, 3, 3), stream=True) as m3u8_resp:
-                m3u8_resp.raise_for_status()
-                m3u8_content = read_response_text_limited(m3u8_resp)
-                playlist_url = m3u8_resp.url
+            playlist_url, m3u8_content = fetch_hls_playlist(variant['url'], deadline)
 
-        segments = parse_hls_segments(m3u8_content, playlist_url)
+        is_non_live_hls, non_live_reason, metadata = detect_non_live_hls_playlist(
+            playlist_url,
+            m3u8_content,
+            deadline
+        )
+        if is_non_live_hls:
+            return {'success': False, 'error': f'疑似非直播HLS({non_live_reason})，已排除'}
+
+        segments = metadata.get('segments') or parse_hls_segments(m3u8_content, playlist_url)
         if not segments:
             return test_direct_bandwidth(url, width, height, duration)
 

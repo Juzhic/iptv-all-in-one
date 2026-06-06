@@ -423,10 +423,10 @@ def api_delete_run(run_id):
 @app.route('/api/run/<run_id>/logs', methods=['GET'])
 def api_get_run_logs(run_id):
     """获取指定轮次的运行日志。"""
-    limit = request.args.get('limit', 500, type=int)
+    limit = request.args.get('limit', 0, type=int)
     from db import get_run_logs
-    logs = get_run_logs(run_id, limit=limit)
-    return jsonify(logs)
+    payload = get_run_logs(run_id, limit=limit if limit and limit > 0 else None)
+    return jsonify(payload)
 
 
 # ─────────────── 结果下载 API ───────────────

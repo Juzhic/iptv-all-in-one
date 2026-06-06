@@ -12,6 +12,7 @@ from FFmpegTest import (
     clear_timeouts as _clear_timeouts,
     set_ffmpeg_max_workers,
     http_get,
+    detect_non_live_media_url,
 )
 from db import init_db, insert_run, migrate_from_json, now_str, timestamp_str
 
@@ -363,6 +364,9 @@ def parse_iptv_addresses(m3u_content):
             continue
 
         if is_url(line):
+            if detect_non_live_media_url(line):
+                current_channel = {}
+                continue
             channel_info = current_channel.copy()
             if current_group:
                 channel_info.setdefault('group', current_group)
@@ -375,7 +379,7 @@ def parse_iptv_addresses(m3u_content):
             name, url = line.split(',', 1)
             name = name.strip()
             url = url.strip()
-            if name and is_url(url):
+            if name and is_url(url) and not detect_non_live_media_url(url):
                 channel_info = {'name': name}
                 if current_group:
                     channel_info['group'] = current_group
@@ -459,6 +463,33 @@ def filter_and_save_playlist(
         try:
             if stop_event and stop_event.is_set():
                 return {'index': idx, 'channel_info': channel_info, 'url': url, 'pass': False, 'reason': '任务已终止','duration': time.time() - start_time }
+            non_live_ext = detect_non_live_media_url(url)
+            if non_live_ext:
+                return {
+                    'index': idx,
+                    'channel_info': channel_info,
+                    'url': url,
+                    'pass': False,
+                    'duration': time.time() - start_time,
+                    'test_result': {
+                        'resolution': f"URL标记:{non_live_ext}",
+                        'speed_MBps': 0,
+                        'bandwidth_MBps': 0,
+                        'bitrate_mbps': 0,
+                        'measured_seconds': 0,
+                        'ffmpeg_used': False,
+                        'ffmpeg_available': True,
+                        'ffmpeg_resolution_found': False,
+                        'ffmpeg_error': '',
+                        'non_live_url': True,
+                        'non_live_extension': non_live_ext,
+                        'connection_latency_ms': None,
+                        'quality_score': 0,
+                        'resolution_pass': False,
+                        'bandwidth_pass': False,
+                        'resolution_compensation_pass': False
+                    }
+                }
             low_resolution_hint = detect_low_resolution_url(url)
             if low_resolution_hint:
                 return {
@@ -490,6 +521,33 @@ def filter_and_save_playlist(
             result = analyze_iptv_with_ffmpeg(url, duration, min_width=min_width, min_height=min_height)
             if not result or not result.get('success'):
                 error_reason = result.get('error', '分析失败') if result else '分析失败'
+                if '非直播HLS' in error_reason or '点播文件' in error_reason:
+                    return {
+                        'index': idx,
+                        'channel_info': channel_info,
+                        'url': url,
+                        'pass': False,
+                        'duration': time.time() - start_time,
+                        'test_result': {
+                            'resolution': 'URL标记:非直播源',
+                            'speed_MBps': 0,
+                            'bandwidth_MBps': 0,
+                            'bitrate_mbps': 0,
+                            'measured_seconds': 0,
+                            'ffmpeg_used': result.get('ffmpeg_used', False) if result else False,
+                            'ffmpeg_available': result.get('ffmpeg_available', True) if result else True,
+                            'ffmpeg_resolution_found': result.get('ffmpeg_resolution_found', False) if result else False,
+                            'ffmpeg_error': result.get('ffmpeg_error', '') if result else '',
+                            'non_live_url': True,
+                            'non_live_extension': 'hls' if '非直播HLS' in error_reason else (detect_non_live_media_url(url) or 'media'),
+                            'non_live_reason': error_reason,
+                            'connection_latency_ms': None,
+                            'quality_score': 0,
+                            'resolution_pass': False,
+                            'bandwidth_pass': False,
+                            'resolution_compensation_pass': False
+                        }
+                    }
                 return {'index': idx, 'channel_info': channel_info, 'url': url, 'pass': False, 'reason': error_reason,'duration': time.time() - start_time }
 
             width = result.get('width', 0)
@@ -615,7 +673,9 @@ def filter_and_save_playlist(
                 verdict = '拒绝'
                 reasons = []
                 resolution_found = test_result.get('ffmpeg_resolution_found', False)
-                if test_result.get('low_resolution_url'):
+                if test_result.get('non_live_url'):
+                    reasons.append(test_result.get('non_live_reason') or f"疑似点播文件({test_result.get('non_live_extension')})")
+                elif test_result.get('low_resolution_url'):
                     reasons.append(f"URL标记低清晰度({test_result.get('low_resolution_hint')})")
                 elif not test_result.get('resolution_pass'):
                     if not resolution_found:
@@ -633,6 +693,7 @@ def filter_and_save_playlist(
                         reasons.append(f"分辨率不足({test_result.get('resolution', 'N/A')})")
                 if (
                     not test_result.get('bandwidth_pass')
+                    and not test_result.get('non_live_url')
                     and not test_result.get('low_resolution_url')
                     and not test_result.get('bandwidth_skipped')
                 ):

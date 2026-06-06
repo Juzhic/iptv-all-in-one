@@ -876,14 +876,45 @@ def insert_log(run_id, level, message):
     conn.commit()
 
 
-def get_run_logs(run_id, limit=500):
+def get_run_logs(run_id, limit=None):
     """获取指定轮次的日志列表。"""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT ts, level, message FROM run_logs WHERE run_id = ? ORDER BY id LIMIT ?",
-        (run_id, limit)
-    ).fetchall()
-    return [dict(r) for r in rows]
+    total = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM run_logs WHERE run_id = ?",
+        (run_id,)
+    ).fetchone()['cnt']
+
+    if limit is None:
+        rows = conn.execute(
+            "SELECT ts, level, message FROM run_logs WHERE run_id = ? ORDER BY id",
+            (run_id,)
+        ).fetchall()
+        effective_limit = total
+    else:
+        try:
+            effective_limit = int(limit)
+        except (TypeError, ValueError):
+            effective_limit = 0
+
+        if effective_limit <= 0:
+            rows = conn.execute(
+                "SELECT ts, level, message FROM run_logs WHERE run_id = ? ORDER BY id",
+                (run_id,)
+            ).fetchall()
+            effective_limit = total
+        else:
+            rows = conn.execute(
+                "SELECT ts, level, message FROM run_logs WHERE run_id = ? ORDER BY id LIMIT ?",
+                (run_id, effective_limit)
+            ).fetchall()
+
+    items = [dict(r) for r in rows]
+    return {
+        'total': total,
+        'limit': effective_limit,
+        'truncated': total > len(items),
+        'logs': items,
+    }
 
 
 def migrate_from_json(json_path='output/history.json'):
