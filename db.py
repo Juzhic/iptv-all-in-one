@@ -327,6 +327,7 @@ def init_db():
             bandwidth_MBps REAL,
             connection_latency_ms REAL,
             quality_score REAL,
+            output_updated_at TEXT,
             codec TEXT,
             is_h265 BOOLEAN DEFAULT 0,
             sample_seconds REAL,
@@ -389,6 +390,7 @@ def _ensure_run_results_columns(conn):
     columns = {
         'connection_latency_ms': 'REAL',
         'quality_score': 'REAL',
+        'output_updated_at': 'TEXT',
     }
     for name, col_type in columns.items():
         if name not in existing:
@@ -425,9 +427,9 @@ def insert_run(run_data):
         conn.executemany(
             """INSERT INTO run_results
                (run_id, channel, url, resolution, bandwidth_MBps,
-                connection_latency_ms, quality_score,
+                connection_latency_ms, quality_score, output_updated_at,
                 codec, is_h265, sample_seconds, passed, reason, cost_seconds)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     run_data['run_id'],
@@ -437,6 +439,7 @@ def insert_run(run_data):
                     r.get('bandwidth_MBps', 0),
                     r.get('connection_latency_ms'),
                     r.get('quality_score', 0),
+                    r.get('output_updated_at', ''),
                     r.get('codec', ''),
                     r.get('is_h265', False),
                     r.get('sample_seconds', 0),
@@ -501,7 +504,7 @@ def get_latest_passed_results():
     if not run:
         return []
     results = conn.execute(
-        """SELECT channel, url, bandwidth_MBps, connection_latency_ms, quality_score
+        """SELECT channel, url, bandwidth_MBps, connection_latency_ms, quality_score, output_updated_at
            FROM run_results
            WHERE run_id = ? AND passed = 1
            ORDER BY channel,

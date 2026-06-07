@@ -97,6 +97,29 @@ def _entry_url(entry):
     return entry
 
 
+def _entry_output_updated_at(entry):
+    if isinstance(entry, dict):
+        return str(entry.get('output_updated_at') or '')
+    return ''
+
+
+def resolve_output_update_time(result_source, fallback=None):
+    latest = ''
+
+    if isinstance(result_source, dict):
+        groups = result_source.values()
+    else:
+        groups = [result_source]
+
+    for entries in groups:
+        for entry in entries:
+            ts = _entry_output_updated_at(entry)
+            if ts and ts > latest:
+                latest = ts
+
+    return latest or fallback or now_str()
+
+
 def _entry_sort_key(entry):
     if not isinstance(entry, dict):
         return (0, 0, 999999999, _entry_url(entry))
@@ -151,6 +174,7 @@ def build_output_urls_from_results(test_results, max_urls_per_channel=0):
             'bandwidth_MBps': result.get('bandwidth_MBps', 0),
             'connection_latency_ms': result.get('connection_latency_ms'),
             'quality_score': result.get('quality_score'),
+            'output_updated_at': result.get('output_updated_at', ''),
         }
         filtered[name].append(entry)
         seen[name].add(url)
@@ -648,6 +672,7 @@ def filter_and_save_playlist(
             or 0
         )
         reason = ''
+        output_updated_at = ''
 
         if result.get('pass'):
             verdict = '通过'
@@ -656,7 +681,8 @@ def filter_and_save_playlist(
             else:
                 reason = '符合条件'
             filtered_list.append((channel_info, url))
-            # 实时回调，立即写入结果文件
+            output_updated_at = now_str()
+            # Persist the pass event time for output regeneration.
             if on_pass_callback:
                 try:
                     on_pass_callback(name, {
@@ -664,6 +690,7 @@ def filter_and_save_playlist(
                         'bandwidth_MBps': round(bandwidth, 2),
                         'connection_latency_ms': round(connection_latency_ms, 2) if connection_latency_ms is not None else None,
                         'quality_score': round(quality_score, 4),
+                        'output_updated_at': output_updated_at,
                     })
                 except Exception as e:
                     logger.warning(f"实时写入回调失败: {e}")
@@ -719,6 +746,7 @@ def filter_and_save_playlist(
             'is_h265': is_h265,
             'sample_seconds': round(sample_seconds, 2),
             'passed': result.get('pass', False),
+            'output_updated_at': output_updated_at,
             'reason': reason,
             'cost_seconds': round(cost_time, 2)
         })
@@ -1020,10 +1048,10 @@ def _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases=None):
     return [_entry_url(item) for item in urls]
 
 
-def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.txt', show_update_time=True, update_time_position='top'):
+def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.txt', show_update_time=True, update_time_position='top', update_time=None):
     """按 demo 格式输出结果到 txt 文件。只输出测速通过的频道，跳过空分类。"""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    update_block = f'🕘️更新时间,#genre#\n{now_str},邮箱联系\n\n'
+    update_time_str = resolve_output_update_time(filtered_urls, update_time)
+    update_block = f'🕘️更新时间,#genre#\n{update_time_str},邮箱联系\n\n'
 
     with open(output_file, 'w', encoding='utf-8') as f:
         if show_update_time and update_time_position == 'top':
@@ -1045,13 +1073,13 @@ def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex
             f.write(update_block)
 
 
-def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top'):
+def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None):
     """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
     logo_base = 'https://www.xn--rgv465a.top/tvlogo'
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_time_str = resolve_output_update_time(filtered_urls, update_time)
     update_entry = (
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
-        f'group-title="🕘️更新时间",{now_str}\n'
+        f'group-title="🕘️更新时间",{update_time_str}\n'
         f'http://localhost/update_time\n'
     )
 

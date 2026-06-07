@@ -18,7 +18,7 @@ from db import (
     get_scheduler_state, update_scheduler_state, clear_scheduler_state,
     now_str,
 )
-from app import load_config, DEFAULT_CONFIG
+from app import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -482,16 +482,13 @@ def _results_for_channel(ch, channels, name_to_canonical=None, regex_aliases=Non
         return results[:max_urls]
     return results
 
-def _generate_result_txt(passed_results):
+def _generate_result_txt(passed_results, fallback_update_time=None):
     """从通过的结果动态生成 result.txt 格式内容。"""
     # 按频道分组，保持顺序
     channels = _group_passed_results(passed_results)
 
-    lines = []
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines.append(f'🕘️更新时间,#genre#')
-    lines.append(f'{now_str},邮箱联系')
-    lines.append('')
+    selected_results = []
+    body_lines = []
 
     # 按 demo.txt 的分类结构输出
     try:
@@ -500,13 +497,16 @@ def _generate_result_txt(passed_results):
         demo = parse_demo_file()
         for genre, ch_list in demo:
             genre_lines = []
+            genre_results = []
             for ch in ch_list:
                 for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
                     genre_lines.append(f'{ch},{result["url"]}')
+                    genre_results.append(result)
             if genre_lines:
-                lines.append(f'{genre},#genre#')
-                lines.extend(genre_lines)
-                lines.append('')
+                body_lines.append(f'{genre},#genre#')
+                body_lines.extend(genre_lines)
+                body_lines.append('')
+                selected_results.extend(genre_results)
     except Exception:
         # fallback: 简单列表
         max_urls = _get_max_urls_per_channel()
@@ -514,25 +514,26 @@ def _generate_result_txt(passed_results):
             if max_urls > 0:
                 results = results[:max_urls]
             for result in results:
-                lines.append(f'{ch},{result["url"]}')
+                body_lines.append(f'{ch},{result["url"]}')
+                selected_results.append(result)
 
+    update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
+    lines = [
+        '🕘️更新时间,#genre#',
+        f'{update_time_str},邮箱联系',
+        '',
+    ]
+    lines.extend(body_lines)
     return '\n'.join(lines)
 
 
-def _generate_result_m3u(passed_results):
+def _generate_result_m3u(passed_results, fallback_update_time=None):
     """从通过的结果动态生成 result.m3u 格式内容。"""
     channels = _group_passed_results(passed_results)
 
     logo_base = 'https://www.xn--rgv465a.top/tvlogo'
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = ['#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"']
-
-    # 更新时间条目
-    lines.append(
-        f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
-        f'group-title="🕘️更新时间",{now_str}'
-    )
-    lines.append('http://localhost/update_time')
+    selected_results = []
+    body_lines = []
 
     try:
         from app import parse_demo_file, load_aliases
@@ -541,25 +542,35 @@ def _generate_result_m3u(passed_results):
         for genre, ch_list in demo:
             for ch in ch_list:
                 for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
-                    lines.append(
+                    body_lines.append(
                         f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
                         f'tvg-logo="{logo_base}/{ch}.png" '
                         f'group-title="{genre}",{ch}'
                     )
-                    lines.append(result['url'])
+                    body_lines.append(result['url'])
+                    selected_results.append(result)
     except Exception:
         max_urls = _get_max_urls_per_channel()
         for ch, results in channels.items():
             if max_urls > 0:
                 results = results[:max_urls]
             for result in results:
-                lines.append(
+                body_lines.append(
                     f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
                     f'tvg-logo="{logo_base}/{ch}.png" '
                     f'group-title="默认",{ch}'
                 )
-                lines.append(result['url'])
+                body_lines.append(result['url'])
+                selected_results.append(result)
 
+    update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
+    lines = ['#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"']
+    lines.append(
+        f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
+        f'group-title="🕘️更新时间",{update_time_str}'
+    )
+    lines.append('http://localhost/update_time')
+    lines.extend(body_lines)
     return '\n'.join(lines)
 
 
@@ -569,16 +580,18 @@ def api_download(fmt):
     if fmt not in ('txt', 'm3u'):
         return jsonify({'error': '格式仅支持 txt 或 m3u'}), 400
 
+    latest_run = get_latest_run()
     passed = get_latest_passed_results()
     if not passed:
         return jsonify({'error': '暂无通过的频道数据'}), 404
+    fallback_update_time = (latest_run or {}).get('finished_at')
 
     if fmt == 'txt':
-        content = _generate_result_txt(passed)
+        content = _generate_result_txt(passed, fallback_update_time)
         filename = 'result.txt'
         mimetype = 'text/plain'
     else:
-        content = _generate_result_m3u(passed)
+        content = _generate_result_m3u(passed, fallback_update_time)
         filename = 'result.m3u'
         mimetype = 'application/x-mpegurl'
 
