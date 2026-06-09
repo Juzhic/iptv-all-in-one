@@ -3,6 +3,7 @@ import collections
 import hmac
 import json
 import os
+import logging
 import threading
 import time
 from datetime import datetime
@@ -18,7 +19,7 @@ from db import (
     get_scheduler_state, update_scheduler_state, clear_scheduler_state,
     now_str,
 )
-from app import load_config, DEFAULT_CONFIG, resolve_output_update_time
+from test_engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -27,6 +28,7 @@ app.jinja_env.auto_reload = True
 app.jinja_env.cache = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
 BASIC_AUTH_CONFIG_FILE = os.path.join(BASE_DIR, 'basic_auth.json')
 BASIC_AUTH_DEFAULT_CONFIG = {
     'username': 'admin',
@@ -100,9 +102,25 @@ def _asset_version(filename):
         return str(int(time.time()))
 
 
+def _finite_number_or_none(value):
+    """把外部 API 的数字字段规整成 JSON number；无效值返回 None。"""
+    if value is None or value == '':
+        return None
+    try:
+        num = float(str(value).replace(',', '').strip())
+    except (TypeError, ValueError):
+        return None
+    if num != num or num in (float('inf'), float('-inf')):
+        return None
+    return int(num) if num.is_integer() else num
+
+
 @app.context_processor
 def inject_asset_version():
-    return {'asset_version': _asset_version('js/index.js')}
+    return {
+        'asset_version': _asset_version('js/index.js'),
+        'scan_asset_version': _asset_version('js/scan.js'),
+    }
 
 # 初始化数据库（模块加载时执行，兼容 uWSGI / gunicorn 等 WSGI 服务器）
 init_db()
@@ -473,7 +491,7 @@ def _group_passed_results(passed_results):
 def _results_for_channel(ch, channels, name_to_canonical=None, regex_aliases=None):
     results = channels.get(ch, [])
     if not results and name_to_canonical:
-        from app import match_channel_name
+        from alias import match_channel_name
         canonical = match_channel_name(ch, name_to_canonical, regex_aliases)
         if canonical and canonical != ch:
             results = channels.get(canonical, [])
@@ -492,7 +510,8 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
 
     # 按 demo.txt 的分类结构输出
     try:
-        from app import parse_demo_file, load_aliases
+        from test_engine import parse_demo_file
+        from alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
@@ -536,7 +555,8 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
     body_lines = []
 
     try:
-        from app import parse_demo_file, load_aliases
+        from test_engine import parse_demo_file
+        from alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
@@ -610,7 +630,7 @@ def _is_run_token_active(run_token):
         return _test_running and _test_active_token is run_token
 
 
-def _start_test_background(trigger_source='web'):
+def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
     """启动一次后台测试。返回本次任务 token；已有测试在运行时返回 None。"""
     global _test_running, _test_log_seq, _test_stop_event, _test_active_token
     with _test_lock:
@@ -664,12 +684,14 @@ def _start_test_background(trigger_source='web'):
     def _run():
         global _test_running, _test_active_token
         try:
-            from app import run_test_cycle
+            from test_engine import run_test_cycle
             run_test_cycle(
                 progress_callback=_on_progress,
                 log_callback=_on_log,
                 stop_event=stop_event,
                 progress_source=trigger_source,
+                test_list=test_list,
+                scan_id=scan_id,
             )
         except Exception as e:
             import logging
@@ -723,7 +745,7 @@ def _scheduler_loop():
     _scheduler_running = True
     _write_scheduler_state(True, _next_scheduled_run)
     # 导入 app 模块的调度函数
-    from app import _next_run_datetime
+    from test_engine import _next_run_datetime
 
     try:
         while True:
@@ -935,6 +957,373 @@ def _start_scheduler_from_config():
 
 
 _start_scheduler_from_config()
+
+
+# ─────────────── 扫描模块 API ───────────────
+
+def _get_scanner():
+    """获取 scanner_integration 模块（延迟导入，避免未安装 aiohttp 时报错）。"""
+    try:
+        import scanner_integration as scanner
+        return scanner
+    except ImportError as e:
+        return None
+
+
+def _ensure_scan_bridge():
+    """确保扫描桥接层已初始化。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return None, jsonify({'error': '扫描模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
+    if scanner.bridge._loop is None or not scanner.bridge._loop.is_running():
+        scanner.init_bridge()
+    return scanner, None, None
+
+
+@app.route('/api/scan/trigger', methods=['POST'])
+def api_scan_trigger():
+    """启动一次扫描。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    data = request.get_json(silent=True) or {}
+    result = scanner.trigger_scan(
+        platforms=data.get('platforms'),
+        provinces=data.get('provinces')
+    )
+    if 'error' in result:
+        return jsonify(result), 409
+    return jsonify({'ok': True, 'message': '扫描已启动'})
+
+
+@app.route('/api/scan/stop', methods=['POST'])
+def api_scan_stop():
+    """请求停止扫描。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    result = scanner.trigger_stop()
+    return jsonify(result)
+
+
+@app.route('/api/scan/force-clear', methods=['POST'])
+def api_scan_force_clear():
+    """强制清除卡死的扫描状态。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        db.clear_scan_progress()
+        return jsonify({'ok': True, 'message': '扫描状态已清除'})
+    result = scanner.force_clear_scan()
+    return jsonify(result)
+
+
+@app.route('/api/scan/health', methods=['POST'])
+def api_scan_health():
+    """触发健康检查。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    result = scanner.trigger_health_check()
+    if 'error' in result:
+        return jsonify(result), 409
+    return jsonify({'ok': True, 'message': '健康检查已启动'})
+
+
+@app.route('/api/scan/status', methods=['GET'])
+def api_scan_status():
+    """获取扫描实时进度。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'running': False, 'phase': 'idle', 'message': '扫描模块未安装'})
+    status = scanner.get_scan_status()
+    return jsonify(status)
+
+
+@app.route('/api/scan/results', methods=['GET'])
+def api_scan_results():
+    """分页查询扫描结果。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'total': 0, 'items': []})
+    scan_id = request.args.get('scan_id')
+    page = int(request.args.get('page', 1))
+    size = int(request.args.get('size', 50))
+    category = request.args.get('category')
+    province = request.args.get('province')
+    search = request.args.get('search')
+    total, items = scanner.get_scan_results(
+        scan_id=scan_id, page=page, size=size,
+        category=category, province=province, search=search
+    )
+    return jsonify({'total': total, 'items': items, 'page': page, 'size': size})
+
+
+@app.route('/api/scan/latest', methods=['GET'])
+def api_scan_latest():
+    """获取最新扫描记录。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify(None)
+    return jsonify(scanner.get_latest_scan())
+
+
+@app.route('/api/scan/history', methods=['GET'])
+def api_scan_history():
+    """获取扫描历史。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify([])
+    limit = int(request.args.get('limit', 50))
+    return jsonify(scanner.get_scan_history(limit=limit))
+
+
+@app.route('/api/scan/run/<scan_id>', methods=['DELETE'])
+def api_scan_delete(scan_id):
+    """删除扫描记录。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'error': '扫描模块未安装'}), 503
+    scanner.delete_scan(scan_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/scan/feed-to-test', methods=['POST'])
+def api_scan_feed_to_test():
+    """将扫描结果送入测速流水线。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+
+    data = request.get_json(silent=True) or {}
+    scan_id = data.get('scan_id')
+    channel_names = data.get('channel_names')  # None = 全部
+
+    if not scan_id:
+        return jsonify({'error': '请指定 scan_id'}), 400
+
+    test_list, error = scanner.feed_scan_to_test(scan_id, channel_names)
+    if error:
+        return jsonify({'error': error}), 400
+
+    if not test_list:
+        return jsonify({'error': '没有可测速的频道'}), 400
+
+    # 标记这些扫描结果已参与测速
+    from db import mark_scan_results_tested
+    urls = [url for _, url in test_list]
+    run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
+    mark_scan_results_tested(scan_id, urls, run_id)
+
+    # 启动测速
+    token = _start_test_background(trigger_source='scan', test_list=test_list, scan_id=scan_id)
+    if token is not None:
+        return jsonify({
+            'ok': True,
+            'message': f'已将 {len(test_list)} 个频道地址送入测速',
+            'run_id': run_id,
+            'count': len(test_list)
+        })
+    return jsonify({'error': '测试正在运行中，请等待完成'}), 409
+
+
+@app.route('/api/scan/config', methods=['GET'])
+def api_scan_config_get():
+    """读取扫描配置（始终从数据库读取，不依赖 bridge）。"""
+    try:
+        from scanner_integration.config_bridge import get_scan_config
+        cfg = get_scan_config()
+        return jsonify(cfg)
+    except Exception:
+        from scanner_integration.config_bridge import DEFAULT_SCAN_CONFIG
+        return jsonify(DEFAULT_SCAN_CONFIG)
+
+
+@app.route('/api/scan/config', methods=['POST'])
+def api_scan_config_set():
+    """保存扫描配置（不依赖 bridge，直接写数据库）。"""
+    try:
+        from scanner_integration.config_bridge import save_scan_config, get_scan_config
+        data = request.get_json(silent=True) or {}
+        save_scan_config(data)
+        cfg = get_scan_config()
+        return jsonify({'ok': True, 'config': cfg})
+    except Exception as e:
+        return jsonify({'error': f'保存失败: {e}'}), 500
+
+
+@app.route('/api/scan/keys', methods=['GET'])
+def api_scan_keys_list():
+    """列出所有平台的 API Key（含积分信息）。"""
+    try:
+        from scanner_integration.key_manager import KeyManager, init_key_manager
+        from scanner_integration.config_bridge import get_scan_config
+        init_key_manager()
+        km = KeyManager.instance()
+        cfg = get_scan_config()
+        credits_info = {}
+        # Quake 积分
+        try:
+            import asyncio
+            from scanner_integration.key_manager import check_all_quake_credits
+            credits_info['quake'] = asyncio.run(check_all_quake_credits())
+        except Exception as e:
+            print(f"[Credits] Quake 积分查询失败: {e}")
+            credits_info['quake'] = []
+        # Hunter points（openApi 接口，使用 api-key 参数）
+        try:
+            import asyncio
+            from scanner_integration.key_manager import check_all_hunter_credits
+            credits_info['hunter'] = asyncio.run(check_all_hunter_credits())
+        except Exception as e:
+            print(f"[Credits] Hunter 积分查询失败: {e}")
+            credits_info['hunter'] = []
+        # DayDayMap points（scan API 接口，使用 api-key 头）
+        try:
+            import asyncio
+            from scanner_integration.key_manager import check_all_daydaymap_credits
+            credits_info['daydaymap'] = asyncio.run(check_all_daydaymap_credits())
+        except Exception as e:
+            print(f"[Credits] DayDayMap 积分查询失败: {e}")
+            credits_info['daydaymap'] = []
+        print(f"[Credits] results: hunter={credits_info.get('hunter')}, daydaymap={credits_info.get('daydaymap')}")
+        result = []
+        for platform in ('quake', 'hunter', 'daydaymap'):
+            keys = km.get_all_keys(platform)
+            platform_credits = credits_info.get(platform, [])
+            credit_map = {c['key_suffix']: c for c in platform_credits}
+            for key in keys:
+                suffix = f"...{key[-6:]}"
+                ci = credit_map.get(suffix, {})
+                result.append({
+                    'platform': platform,
+                    'key': key,
+                    'key_suffix': suffix,
+                    'credit': _finite_number_or_none(ci.get('credit')),
+                    'role': ci.get('role', ''),
+                    'role_limit': _finite_number_or_none(ci.get('role_limit')),
+                    'error': ci.get('error', ''),
+                })
+        return jsonify({'ok': True, 'keys': result})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@app.route('/api/scan/keys', methods=['POST'])
+def api_scan_keys_add():
+    """添加一个 API Key。"""
+    try:
+        from scanner_integration.config_bridge import get_scan_config, save_scan_config
+        from scanner_integration.key_manager import KeyManager, init_key_manager
+        data = request.get_json(silent=True) or {}
+        platform = data.get('platform', '').strip()
+        key = data.get('key', '').strip()
+        if not platform or not key:
+            return jsonify({'error': '平台和 Key 不能为空'}), 400
+        if platform not in ('quake', 'hunter', 'daydaymap'):
+            return jsonify({'error': '不支持的平台'}), 400
+
+        cfg = get_scan_config()
+        keys_list = cfg.get(f'{platform}_api_keys', [])
+        if not isinstance(keys_list, list):
+            keys_list = []
+        if key in keys_list:
+            return jsonify({'error': 'Key 已存在'}), 400
+        keys_list.append(key)
+        cfg[f'{platform}_api_keys'] = keys_list
+        save_scan_config(cfg)
+        init_key_manager()
+        return jsonify({'ok': True, 'message': f'{platform} Key 已添加'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scan/keys', methods=['DELETE'])
+def api_scan_keys_delete():
+    """删除一个 API Key。"""
+    try:
+        from scanner_integration.config_bridge import get_scan_config, save_scan_config
+        from scanner_integration.key_manager import KeyManager, init_key_manager
+        data = request.get_json(silent=True) or {}
+        platform = data.get('platform', '').strip()
+        key = data.get('key', '').strip()
+        if not platform or not key:
+            return jsonify({'error': '平台和 Key 不能为空'}), 400
+
+        cfg = get_scan_config()
+        keys_list = cfg.get(f'{platform}_api_keys', [])
+        if not isinstance(keys_list, list):
+            keys_list = []
+        if key in keys_list:
+            keys_list.remove(key)
+        cfg[f'{platform}_api_keys'] = keys_list
+        # 兼容：同步更新旧格式
+        if len(keys_list) == 1:
+            cfg[f'{platform}_api_key'] = keys_list[0]
+        elif len(keys_list) == 0:
+            cfg[f'{platform}_api_key'] = ''
+        save_scan_config(cfg)
+        init_key_manager()
+        return jsonify({'ok': True, 'message': 'Key 已删除'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scan/keys', methods=['PUT'])
+def api_scan_keys_update():
+    """更新一个 API Key（替换旧值）。"""
+    try:
+        from scanner_integration.config_bridge import get_scan_config, save_scan_config
+        from scanner_integration.key_manager import init_key_manager
+        data = request.get_json(silent=True) or {}
+        platform = data.get('platform', '').strip()
+        old_key = data.get('old_key', '').strip()
+        new_key = data.get('new_key', '').strip()
+        if not platform or not old_key or not new_key:
+            return jsonify({'error': '参数不完整'}), 400
+        if old_key == new_key:
+            return jsonify({'ok': True, 'message': 'Key 未变更'})
+
+        cfg = get_scan_config()
+        keys_list = cfg.get(f'{platform}_api_keys', [])
+        if not isinstance(keys_list, list):
+            keys_list = []
+        if old_key not in keys_list:
+            return jsonify({'error': '原 Key 不存在'}), 400
+        if new_key in keys_list:
+            return jsonify({'error': '新 Key 已存在'}), 400
+        idx = keys_list.index(old_key)
+        keys_list[idx] = new_key
+        cfg[f'{platform}_api_keys'] = keys_list
+        if len(keys_list) == 1:
+            cfg[f'{platform}_api_key'] = keys_list[0]
+        save_scan_config(cfg)
+        init_key_manager()
+        return jsonify({'ok': True, 'message': 'Key 已更新'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scan/quake-credits', methods=['GET'])
+def api_scan_quake_credits():
+    """查询所有 Quake key 的积分。"""
+    try:
+        import asyncio
+        from scanner_integration.key_manager import check_all_quake_credits, init_key_manager
+        init_key_manager()
+        results = asyncio.run(check_all_quake_credits())
+        return jsonify({'ok': True, 'keys': results})
+    except Exception as e:
+        return jsonify({'error': f'查询失败: {e}'})
+
+
+@app.route('/api/scan/stats', methods=['GET'])
+def api_scan_stats():
+    """获取扫描结果统计。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'by_category': {}, 'by_province': {}})
+    scan_id = request.args.get('scan_id')
+    return jsonify(scanner.get_scan_stats(scan_id=scan_id))
 
 
 # ─────────────── 启动 ───────────────

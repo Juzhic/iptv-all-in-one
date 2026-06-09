@@ -49,6 +49,10 @@ function setTheme(theme) {
   } catch (e) {}
   updateThemeToggle(nextTheme);
   rerenderThemeSensitiveViews();
+  if (typeof applyScanGridTheme === 'function') {
+    applyScanGridTheme();
+  }
+  window.dispatchEvent(new CustomEvent('iptv-theme-change', {detail: {theme: nextTheme}}));
 }
 
 function toggleTheme() {
@@ -99,6 +103,16 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById(tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'scanner' && typeof loadScanConfig === 'function') {
+      loadScanConfig();
+    }
+    if (tab.dataset.tab === 'scan-config' && typeof loadScanConfig === 'function') {
+      loadScanConfig();
+      if (typeof loadKeyList === 'function') loadKeyList();
+    }
+    if (tab.dataset.tab === 'scan-results' && typeof loadScanResults === 'function') {
+      loadScanResults();
+    }
   });
 });
 

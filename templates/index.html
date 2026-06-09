@@ -4,10 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>IPTV 测速管理后台</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@35.3.1/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@35.3.1/styles/ag-theme-alpine.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1a1a2e;font-size:14px;line-height:1.6}
-.container{max-width:1280px;margin:0 auto;padding:16px}
+.container{max-width:min(1600px,95vw);margin:0 auto;padding:16px}
 h1{font-size:20px;font-weight:600}
 .header{display:flex;align-items:center;justify-content:space-between;padding:12px 0;margin-bottom:16px;border-bottom:1px solid #e5e7eb}
 .header .meta{font-size:12px;color:#6b7280}
@@ -215,6 +217,8 @@ tr:hover{background:#f8f9fb}
 .modal-count{font-size:12px;color:var(--text-muted)}
 .modal-body{padding:0 18px 18px}
 .modal-log-panel{height:min(64vh,720px);margin-top:12px}
+.key-modal-card{background:var(--surface,#fff);color:var(--text-primary,#1a1a2e);border:1px solid var(--border,#e5e7eb);border-radius:12px;padding:24px;width:420px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.key-modal-card h3{color:var(--text-primary,#1a1a2e)}
 .run-log-pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:12px;line-height:1.7}
 .run-log-line{white-space:pre-wrap;word-break:break-word}
 .run-log-level{display:inline-block;min-width:54px;color:var(--text-subtle)}
@@ -242,6 +246,33 @@ td.ch-name{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:elli
 .run-selector label{font-size:13px;font-weight:600;color:#374151;white-space:nowrap}
 .run-selector select{padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none;min-width:280px}
 .run-selector select:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+
+/* ───── Scan Controls ───── */
+.scan-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.scan-controls .config-group{margin-bottom:0}
+.scan-platforms{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.scan-platforms label{display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:#374151}
+.scan-platforms input[type="checkbox"]{accent-color:#2563eb}
+
+/* Scan Stats */
+.scan-stats{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.scan-stats .card{flex:1;min-width:160px}
+
+/* Stability Bar */
+.stability-bar{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+.stability-bar .track{width:60px;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden}
+.stability-bar .track .fill{height:100%;border-radius:3px}
+.stability-bar .track .fill.good{background:#22c55e}
+.stability-bar .track .fill.mid{background:#f59e0b}
+.stability-bar .track .fill.bad{background:#ef4444}
+
+/* Scan Log */
+.scan-log{background:#1e1e2e;color:#cdd6f4;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:12px;line-height:1.7;height:400px;overflow-y:auto;border-radius:8px;padding:12px;position:relative;scroll-behavior:smooth}
+.scan-log .log-line{white-space:pre-wrap;word-break:break-all}
+.scan-log .log-line .log-time{color:#89b4fa;margin-right:8px}
+.scan-log .log-line .log-pass{color:#a6e3a1}
+.scan-log .log-line .log-fail{color:#f38ba8}
+.scan-log .log-line .log-info{color:#cba6f7}
 </style>
 <style>
 :root{
@@ -438,6 +469,9 @@ try {
   <div class="tab" data-tab="channels">按频道</div>
   <div class="tab {% if not latest %}active{% endif %}" data-tab="testing">系统测试</div>
   <div class="tab" data-tab="settings">系统配置</div>
+  <div class="tab" data-tab="scanner">📡 频道扫描</div>
+  <div class="tab" data-tab="scan-config">⚙️ 扫描配置</div>
+  <div class="tab" data-tab="scan-results">📋 扫描结果</div>
 </div>
 
 {% if latest %}
@@ -815,6 +849,213 @@ try {
 
 </div>
 
+<!-- Tab 7: Scanner (scan controls + progress) -->
+<div id="scanner" class="tab-content">
+
+  <!-- Scan Actions -->
+  <div class="config-section">
+    <h3>频道扫描</h3>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:12px">请先在「扫描配置」中设置 API Key 和扫描参数</p>
+    <div class="btn-group">
+      <button class="btn btn-success" id="btnStartScan">开始扫描</button>
+      <button class="btn btn-danger" id="btnStopScan" style="display:none">停止扫描</button>
+      <button class="btn btn-outline" id="btnHealthCheck">健康检查</button>
+      <button class="btn btn-outline" id="btnForceClearScan" style="color:#ef4444" title="扫描卡死时使用">强制清除</button>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="config-section">
+    <h3>扫描进度</h3>
+    <span id="scanStatusText" style="font-size:13px;color:#6b7280">空闲</span>
+    <div id="scanProgressWrap" style="display:none;margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span id="scanProgressLabel" style="font-size:12px;color:#374151">进度</span>
+        <span id="scanProgressPercent" style="font-size:12px;font-weight:600;color:#2563eb">0%</span>
+      </div>
+      <div class="progress-lg"><div class="progress-fill" id="scanProgressFill" style="width:0%"></div></div>
+    </div>
+    <div class="log-controls" style="margin-top:8px;margin-bottom:8px">
+      <button class="btn-scroll" id="btnScanAutoScroll" onclick="toggleScanAutoScroll()">自动滚动</button>
+      <button class="btn-scroll" onclick="clearScanLog()">清空</button>
+    </div>
+    <div class="scan-log" id="scanLogPanel">
+      <div class="log-line" style="color:#6b7280">等待扫描开始...</div>
+    </div>
+  </div>
+
+  <!-- Scan Stats -->
+  <div class="scan-stats">
+    <div class="card">
+      <div class="label">原始结果数</div>
+      <div class="value blue" id="scanStatRaw">0</div>
+      <div class="sub">平台返回的频道地址总数</div>
+    </div>
+    <div class="card">
+      <div class="label">过滤后</div>
+      <div class="value green" id="scanStatFiltered">0</div>
+      <div class="sub">去重和基础过滤后的数量</div>
+    </div>
+    <div class="card">
+      <div class="label">深度检测</div>
+      <div class="value purple" id="scanStatDeep">0</div>
+      <div class="sub">通过深度可用性检测的数量</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Tab 8: Scan Config -->
+<div id="scan-config" class="tab-content">
+
+  <!-- API Key Management -->
+  <div class="config-section">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">API Key 管理</h3>
+      <button class="btn btn-primary btn-sm" onclick="openAddKeyModal()">+ 添加 Key</button>
+    </div>
+    <div id="keyListGrid" class="ag-theme-alpine" style="width:100%;height:auto;min-height:80px;max-height:300px"></div>
+    <div style="margin-top:8px">
+      <button class="btn btn-outline btn-sm" onclick="refreshKeyCredits()">刷新余额</button>
+    </div>
+  </div>
+
+  <!-- Scan Parameters -->
+  <div class="config-section">
+    <h3>扫描参数</h3>
+    <div class="scan-controls">
+      <div>
+        <div class="config-group">
+          <label>省份</label>
+          <div class="hint">多选，留空表示全国</div>
+          <select id="scanProvince" multiple size="5">
+            <option value="">全国</option>
+            <option value="北京">北京</option><option value="上海">上海</option>
+            <option value="广东">广东</option><option value="浙江">浙江</option>
+            <option value="江苏">江苏</option><option value="山东">山东</option>
+            <option value="四川">四川</option><option value="湖北">湖北</option>
+            <option value="河南">河南</option><option value="湖南">湖南</option>
+            <option value="河北">河北</option><option value="福建">福建</option>
+            <option value="安徽">安徽</option><option value="辽宁">辽宁</option>
+            <option value="陕西">陕西</option><option value="重庆">重庆</option>
+            <option value="天津">天津</option><option value="江西">江西</option>
+            <option value="云南">云南</option><option value="广西">广西</option>
+            <option value="山西">山西</option><option value="吉林">吉林</option>
+            <option value="贵州">贵州</option><option value="黑龙江">黑龙江</option>
+            <option value="甘肃">甘肃</option><option value="内蒙古">内蒙古</option>
+            <option value="新疆">新疆</option><option value="海南">海南</option>
+            <option value="宁夏">宁夏</option><option value="青海">青海</option>
+            <option value="西藏">西藏</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label>运营商</label>
+          <select id="scanOperator">
+            <option value="">全部</option>
+            <option value="电信">电信</option>
+            <option value="联通">联通</option>
+            <option value="移动">移动</option>
+            <option value="广电">广电</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <div class="config-group">
+          <label>扫描数量</label>
+          <div class="hint">每个平台每次扫描返回的最大条数</div>
+          <input type="number" id="scanSize" value="100" min="1" step="1">
+        </div>
+        <div class="config-group">
+          <label>C段扫描</label>
+          <select id="scanCMode">
+            <option value="false">关闭</option>
+            <option value="true">开启</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label>定时扫描</label>
+          <div id="weekdayGroup" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">
+            <label style="font-size:13px"><input type="checkbox" value="0" class="scan-weekday"> 周一</label>
+            <label style="font-size:13px"><input type="checkbox" value="1" class="scan-weekday"> 周二</label>
+            <label style="font-size:13px"><input type="checkbox" value="2" class="scan-weekday"> 周三</label>
+            <label style="font-size:13px"><input type="checkbox" value="3" class="scan-weekday"> 周四</label>
+            <label style="font-size:13px"><input type="checkbox" value="4" class="scan-weekday"> 周五</label>
+            <label style="font-size:13px"><input type="checkbox" value="5" class="scan-weekday"> 周六</label>
+            <label style="font-size:13px"><input type="checkbox" value="6" class="scan-weekday"> 周日</label>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+            <label style="font-size:13px"><input type="time" id="scanUpdateTime" value="03:00"></label>
+            <label style="font-size:13px"><input type="checkbox" id="scanDailyFull"> 每天</label>
+          </div>
+          <div id="scanNextUpdate" style="margin-top:6px;font-size:12px;color:#2563eb"></div>
+        </div>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveScanConfig()">保存配置</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Add Key Modal -->
+<div id="addKeyModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;justify-content:center;align-items:center">
+  <div class="key-modal-card">
+    <h3 style="margin:0 0 16px 0">添加 API Key</h3>
+    <div class="config-group">
+      <label>平台</label>
+      <select id="addKeyPlatform" style="width:100%">
+        <option value="quake">Quake 360</option>
+        <option value="hunter">Hunter 鹰图</option>
+        <option value="daydaymap">DayDayMap</option>
+      </select>
+    </div>
+    <div class="config-group">
+      <label>API Key</label>
+      <input type="text" id="addKeyValue" placeholder="粘贴 API Key" style="width:100%">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeAddKeyModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitAddKey()">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 8: Scan Results -->
+<div id="scan-results" class="tab-content">
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <select id="scanHistorySelect">
+      <option value="">选择扫描记录...</option>
+    </select>
+    <select id="scanCategoryFilter">
+      <option value="all">全部分类</option>
+    </select>
+    <select id="scanProvinceFilter">
+      <option value="all">全部省份</option>
+    </select>
+    <input type="text" id="scanResultSearch" placeholder="搜索频道名...">
+  </div>
+
+  <!-- Action Buttons -->
+  <div class="btn-group" style="margin-top:0;margin-bottom:12px">
+    <button class="btn btn-outline btn-sm" onclick="scanSelectAll()">全选</button>
+    <button class="btn btn-primary btn-sm" onclick="scanSendToSpeedTest()">送入选中去测速</button>
+    <button class="btn btn-outline btn-sm" onclick="scanExportM3U()">导出M3U</button>
+  </div>
+
+  <!-- Results Table (AG Grid) -->
+  <div id="scanResultGrid" class="ag-theme-alpine" style="width:100%;height:500px"></div>
+
+  <!-- Pagination -->
+  <div id="scanPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
+    <span id="scanPageSummary" style="font-size:12px;color:#6b7280"></span>
+    <div style="display:flex;gap:4px" id="scanPageButtons"></div>
+  </div>
+
+</div>
+
 </div><!-- /container -->
 
 <div id="runLogModal" class="modal-backdrop" onclick="closeRunLogModal()">
@@ -845,6 +1086,8 @@ try {
 <div id="toast" class="toast"></div>
 
 <script id="initialRunsData" type="application/json">{{ runs|tojson }}</script>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@35.3.1/dist/ag-grid-community.min.noStyle.js"></script>
 <script src="{{ url_for('static', filename='js/index.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scan.js') }}?v={{ scan_asset_version|default(asset_version) }}"></script>
 </body>
 </html>

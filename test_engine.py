@@ -6,6 +6,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from alias import load_aliases, match_channel_name
 from FFmpegTest import (
     analyze_iptv_with_ffmpeg,
     register_timeout as _reg_timeout,
@@ -942,55 +943,6 @@ def load_subscribe_urls():
     return urls
 
 
-def load_aliases():
-    """
-    从数据库读取频道别名，返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
-    canonical_to_aliases: {主名: [别名列表]}
-    name_to_canonical:    {频道名(精确): 主名}
-    regex_aliases:        [(compiled_regex, 主名), ...]
-    """
-    from db import get_config_data
-    content = get_config_data('alias')
-    canonical_to_aliases = {}
-    name_to_canonical = {}
-    regex_aliases = []
-    for line in content.split('\n'):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        parts = [p.strip() for p in line.split(',') if p.strip()]
-        if not parts:
-            continue
-        canonical = parts[0]
-        aliases = parts[1:]
-        canonical_to_aliases[canonical] = aliases
-        name_to_canonical[canonical] = canonical
-        for alias in aliases:
-            if alias.startswith('re:'):
-                try:
-                    regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
-                except re.error:
-                    continue
-            else:
-                name_to_canonical[alias] = canonical
-    return canonical_to_aliases, name_to_canonical, regex_aliases
-
-
-def match_channel_name(name, name_to_canonical, regex_aliases=None):
-    """根据别名表匹配频道名称，返回主名；无匹配返回 None。"""
-    if not name:
-        return None
-    # 精确匹配（O(1)）
-    if name in name_to_canonical:
-        return name_to_canonical[name]
-    # 正则匹配（预编译，比逐条快很多）
-    if regex_aliases:
-        for pattern, canonical in regex_aliases:
-            if pattern.match(name):
-                return canonical
-    return None
-
-
 def parse_demo_file():
     """从数据库读取 demo 模板，返回 [(genre, [channel_name, ...]), ...]。"""
     from db import get_config_data
@@ -1113,7 +1065,8 @@ def save_run_result(run_data, filepath='output/history.json'):
     insert_run(run_data)
 
 
-def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None, progress_source=None):
+def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
+                   progress_source=None, test_list=None, scan_id=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     from db import clear_run_progress, update_run_progress
     _clear_timeouts()
@@ -1153,51 +1106,59 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None, p
     except (TypeError, ValueError):
         MAX_URLS_PER_CHANNEL = 0
 
-    # 获取订阅源
-    m3u_urls = load_subscribe_urls()
+    # 如果外部传入了 test_list（来自扫描结果），跳过 M3U 获取和匹配
+    if test_list:
+        _log(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
+        print(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
+        # 扫描模式下也需要 demo_structure 用于输出文件生成
+        if not demo_structure:
+            demo_structure = [('', [])]  # 空模板，仅用于输出
+    else:
+        # 获取订阅源
+        m3u_urls = load_subscribe_urls()
 
-    if not m3u_urls:
-        print("订阅源为空，请在 Web 后台「系统配置」中填写订阅源地址")
-        _log("订阅源为空，请先配置订阅源地址")
-        return
+        if not m3u_urls:
+            print("订阅源为空，请在 Web 后台「系统配置」中填写订阅源地址")
+            _log("订阅源为空，请先配置订阅源地址")
+            return
 
-    _log(f"开始测试任务，共 {len(m3u_urls)} 个数据源")
-    print(f"数据源数量：{len(m3u_urls)}")
-    print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS} | FFmpeg并发：{MAX_FFMPEG_WORKERS}")
-    print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
-    print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
-    print(f"每频道输出数量：{MAX_URLS_PER_CHANNEL if MAX_URLS_PER_CHANNEL > 0 else '不限制'}")
-    print("=" * 60)
-    _log(f"并发设置：测试线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
+        _log(f"开始测试任务，共 {len(m3u_urls)} 个数据源")
+        print(f"数据源数量：{len(m3u_urls)}")
+        print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS} | FFmpeg并发：{MAX_FFMPEG_WORKERS}")
+        print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
+        print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
+        print(f"每频道输出数量：{MAX_URLS_PER_CHANNEL if MAX_URLS_PER_CHANNEL > 0 else '不限制'}")
+        print("=" * 60)
+        _log(f"并发设置：测试线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
 
-    # 获取并解析所有 M3U 数据源
-    all_iptv_list = []
-    for idx, m3u_url in enumerate(m3u_urls, 1):
-        _log(f"[{idx}/{len(m3u_urls)}] 正在获取: {m3u_url}")
-        print(f"\n[{idx}/{len(m3u_urls)}] 正在从 {m3u_url} 获取 M3U 数据...")
-        m3u_content = fetch_m3u_playlist(m3u_url)
-        if m3u_content:
-            iptv_list = parse_iptv_addresses(m3u_content)
-            _log(f"  -> 解析到 {len(iptv_list)} 个频道地址")
-            print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
-            all_iptv_list.extend(iptv_list)
-        else:
-            _log(f"  -> 获取失败，跳过")
-            print("  -> 获取失败，跳过")
+        # 获取并解析所有 M3U 数据源
+        all_iptv_list = []
+        for idx, m3u_url in enumerate(m3u_urls, 1):
+            _log(f"[{idx}/{len(m3u_urls)}] 正在获取: {m3u_url}")
+            print(f"\n[{idx}/{len(m3u_urls)}] 正在从 {m3u_url} 获取 M3U 数据...")
+            m3u_content = fetch_m3u_playlist(m3u_url)
+            if m3u_content:
+                iptv_list = parse_iptv_addresses(m3u_content)
+                _log(f"  -> 解析到 {len(iptv_list)} 个频道地址")
+                print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
+                all_iptv_list.extend(iptv_list)
+            else:
+                _log(f"  -> 获取失败，跳过")
+                print("  -> 获取失败，跳过")
 
-    print(f"\n共计解析 {len(all_iptv_list)} 个频道地址")
+        print(f"\n共计解析 {len(all_iptv_list)} 个频道地址")
 
-    # 匹配 demo 中的频道
-    matched_urls = match_channels_from_m3u(all_iptv_list, demo_structure, name_to_canonical, regex_aliases)
-    matched_count = sum(len(v) for v in matched_urls.values())
-    _log(f"匹配到 {len(matched_urls)} 个频道，共 {matched_count} 个待测地址")
-    print(f"匹配到 demo 中 {len(matched_urls)} 个频道，共 {matched_count} 个地址")
+        # 匹配 demo 中的频道
+        matched_urls = match_channels_from_m3u(all_iptv_list, demo_structure, name_to_canonical, regex_aliases)
+        matched_count = sum(len(v) for v in matched_urls.values())
+        _log(f"匹配到 {len(matched_urls)} 个频道，共 {matched_count} 个待测地址")
+        print(f"匹配到 demo 中 {len(matched_urls)} 个频道，共 {matched_count} 个地址")
 
-    # 构建待测列表
-    test_list = []
-    for canonical_name, urls in matched_urls.items():
-        for url in urls:
-            test_list.append(({'name': canonical_name}, url))
+        # 构建待测列表
+        test_list = []
+        for canonical_name, urls in matched_urls.items():
+            for url in urls:
+                test_list.append(({'name': canonical_name}, url))
 
     print(f"待测频道数：{len(test_list)}\n")
     _log(f"开始测速，共 {len(test_list)} 个频道地址")

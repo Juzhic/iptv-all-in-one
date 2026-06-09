@@ -377,6 +377,65 @@ def init_db():
             updated_at TEXT
         );
         INSERT OR IGNORE INTO scheduler_state (id) VALUES (1);
+
+        CREATE TABLE IF NOT EXISTS scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT UNIQUE NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT DEFAULT 'running',
+            trigger_source TEXT DEFAULT 'web',
+            platforms_used TEXT,
+            total_raw INTEGER DEFAULT 0,
+            total_deduped INTEGER DEFAULT 0,
+            total_fast_pass INTEGER DEFAULT 0,
+            total_deep_pass INTEGER DEFAULT 0,
+            duration_seconds REAL DEFAULT 0,
+            error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS scan_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            category TEXT,
+            province TEXT,
+            city TEXT,
+            source_ip TEXT,
+            resolution TEXT,
+            codec TEXT,
+            delay REAL,
+            bandwidth REAL,
+            stability INTEGER DEFAULT 0,
+            tested_in_run TEXT,
+            test_passed BOOLEAN,
+            FOREIGN KEY (scan_id) REFERENCES scan_runs(scan_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_category ON scan_results(category);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_province ON scan_results(province);
+
+        CREATE TABLE IF NOT EXISTS scan_progress (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            running BOOLEAN DEFAULT 0,
+            started_at TEXT,
+            phase TEXT DEFAULT '',
+            total INTEGER DEFAULT 0,
+            processed INTEGER DEFAULT 0,
+            percent REAL DEFAULT 0,
+            message TEXT DEFAULT '',
+            updated_at TEXT
+        );
+        INSERT OR IGNORE INTO scan_progress (id) VALUES (1);
+
+        CREATE TABLE IF NOT EXISTS scan_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seq INTEGER NOT NULL,
+            time TEXT NOT NULL,
+            msg TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_logs_seq ON scan_logs(seq);
     """)
     _ensure_run_results_columns(conn)
     conn.commit()
@@ -957,3 +1016,316 @@ def migrate_from_json(json_path='output/history.json'):
             pass
 
     return migrated
+
+
+# ==================== 扫描模块 CRUD ====================
+
+MAX_SCAN_RUNS = 50
+
+
+def insert_scan_run(scan_data):
+    """写入一条扫描记录。"""
+    conn = _get_conn()
+    conn.execute(
+        """INSERT OR REPLACE INTO scan_runs
+           (scan_id, started_at, finished_at, status, trigger_source,
+            platforms_used, total_raw, total_deduped, total_fast_pass,
+            total_deep_pass, duration_seconds, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            scan_data['scan_id'],
+            scan_data.get('started_at', ''),
+            scan_data.get('finished_at', ''),
+            scan_data.get('status', 'running'),
+            scan_data.get('trigger_source', 'web'),
+            scan_data.get('platforms_used', ''),
+            scan_data.get('total_raw', 0),
+            scan_data.get('total_deduped', 0),
+            scan_data.get('total_fast_pass', 0),
+            scan_data.get('total_deep_pass', 0),
+            scan_data.get('duration_seconds', 0),
+            scan_data.get('error', ''),
+        )
+    )
+    conn.commit()
+    _cleanup_old_scan_runs(conn)
+
+
+def update_scan_run(scan_id, **kwargs):
+    """更新扫描记录的指定字段。"""
+    if not kwargs:
+        return
+    conn = _get_conn()
+    sets = ', '.join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values()) + [scan_id]
+    conn.execute(f"UPDATE scan_runs SET {sets} WHERE scan_id = ?", vals)
+    conn.commit()
+
+
+def insert_scan_results(scan_id, channels):
+    """批量写入扫描结果。channels 为 dict 列表。"""
+    conn = _get_conn()
+    conn.executemany(
+        """INSERT INTO scan_results
+           (scan_id, name, url, category, province, city, source_ip,
+            resolution, codec, delay, bandwidth, stability)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                scan_id,
+                ch.get('name', ''),
+                ch.get('url', ''),
+                ch.get('category', ''),
+                ch.get('province', ''),
+                ch.get('city', ''),
+                ch.get('source_ip', ''),
+                ch.get('resolution', ''),
+                ch.get('codec', ''),
+                ch.get('delay'),
+                ch.get('bandwidth'),
+                ch.get('stability', 0),
+            )
+            for ch in channels
+        ]
+    )
+    conn.commit()
+
+
+def update_scan_result_stability(scan_id, url, stability, delay=None,
+                                  bandwidth=None, resolution=None, codec=None):
+    """更新单条扫描结果的检测指标。"""
+    conn = _get_conn()
+    sets = ["stability = ?"]
+    vals = [stability]
+    if delay is not None:
+        sets.append("delay = ?")
+        vals.append(delay)
+    if bandwidth is not None:
+        sets.append("bandwidth = ?")
+        vals.append(bandwidth)
+    if resolution is not None:
+        sets.append("resolution = ?")
+        vals.append(resolution)
+    if codec is not None:
+        sets.append("codec = ?")
+        vals.append(codec)
+    vals.extend([scan_id, url])
+    conn.execute(
+        f"UPDATE scan_results SET {', '.join(sets)} WHERE scan_id = ? AND url = ?",
+        vals
+    )
+    conn.commit()
+
+
+def delete_scan_results_by_urls(scan_id, urls):
+    """删除扫描结果中指定 URL 的条目。"""
+    conn = _get_conn()
+    conn.executemany(
+        "DELETE FROM scan_results WHERE scan_id = ? AND url = ?",
+        [(scan_id, u) for u in urls]
+    )
+    conn.commit()
+
+
+def get_scan_results(scan_id=None, page=1, size=50, category=None,
+                     province=None, search=None):
+    """分页查询扫描结果。返回 (total, items)。"""
+    conn = _get_conn()
+    where = ["1=1"]
+    params = []
+    if scan_id:
+        where.append("scan_id = ?")
+        params.append(scan_id)
+    if category:
+        where.append("category = ?")
+        params.append(category)
+    if province:
+        where.append("province = ?")
+        params.append(province)
+    if search:
+        where.append("name LIKE ?")
+        params.append(f"%{search}%")
+    where_sql = ' AND '.join(where)
+
+    total = conn.execute(
+        f"SELECT COUNT(*) AS cnt FROM scan_results WHERE {where_sql}",
+        params
+    ).fetchone()['cnt']
+
+    offset = (page - 1) * size
+    rows = conn.execute(
+        f"""SELECT * FROM scan_results WHERE {where_sql}
+            ORDER BY stability DESC, bandwidth DESC, id
+            LIMIT ? OFFSET ?""",
+        params + [size, offset]
+    ).fetchall()
+    return total, [dict(r) for r in rows]
+
+
+def get_scan_results_for_feed(scan_id, channel_names=None):
+    """获取用于送入测速的扫描结果。channel_names 为 None 时取全部。"""
+    conn = _get_conn()
+    if channel_names:
+        placeholders = ','.join('?' * len(channel_names))
+        rows = conn.execute(
+            f"""SELECT name, url, category, source_ip FROM scan_results
+                WHERE scan_id = ? AND stability > 0
+                  AND name IN ({placeholders})
+                ORDER BY name, stability DESC, bandwidth DESC""",
+            [scan_id] + list(channel_names)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT name, url, category, source_ip FROM scan_results
+               WHERE scan_id = ? AND stability > 0
+               ORDER BY name, stability DESC, bandwidth DESC""",
+            (scan_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_scan_results_tested(scan_id, urls, run_id, passed=None):
+    """标记扫描结果已参与测速。"""
+    conn = _get_conn()
+    if passed is not None:
+        conn.executemany(
+            "UPDATE scan_results SET tested_in_run = ?, test_passed = ? WHERE scan_id = ? AND url = ?",
+            [(run_id, passed, scan_id, u) for u in urls]
+        )
+    else:
+        conn.executemany(
+            "UPDATE scan_results SET tested_in_run = ? WHERE scan_id = ? AND url = ?",
+            [(run_id, scan_id, u) for u in urls]
+        )
+    conn.commit()
+
+
+def get_scan_run(scan_id):
+    """获取单条扫描记录。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM scan_runs WHERE scan_id = ?", (scan_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_scan_history(limit=50):
+    """获取扫描历史列表。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM scan_runs ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_scan_run():
+    """获取最新一条扫描记录。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_scan_run(scan_id):
+    """删除扫描记录及其所有结果。"""
+    conn = _get_conn()
+    conn.execute("DELETE FROM scan_results WHERE scan_id = ?", (scan_id,))
+    conn.execute("DELETE FROM scan_runs WHERE scan_id = ?", (scan_id,))
+    conn.commit()
+
+
+def _cleanup_old_scan_runs(conn):
+    """保留最近 MAX_SCAN_RUNS 条扫描记录。"""
+    rows = conn.execute(
+        "SELECT scan_id FROM scan_runs ORDER BY id DESC LIMIT -1 OFFSET ?",
+        (MAX_SCAN_RUNS,)
+    ).fetchall()
+    for row in rows:
+        conn.execute("DELETE FROM scan_results WHERE scan_id = ?", (row['scan_id'],))
+        conn.execute("DELETE FROM scan_runs WHERE scan_id = ?", (row['scan_id'],))
+    if rows:
+        conn.commit()
+
+
+# --- scan_progress ---
+
+def get_scan_progress():
+    """读取扫描进度。"""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM scan_progress WHERE id = 1").fetchone()
+    if not row:
+        return {'running': False, 'phase': 'idle', 'total': 0,
+                'processed': 0, 'percent': 0, 'message': ''}
+    return dict(row)
+
+
+def update_scan_progress(**kwargs):
+    """更新扫描进度。"""
+    if not kwargs:
+        return
+    kwargs['updated_at'] = now_str()
+    conn = _get_conn()
+    sets = ', '.join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values())
+    conn.execute(f"UPDATE scan_progress SET {sets} WHERE id = 1", vals)
+    conn.commit()
+
+
+def clear_scan_progress():
+    """重置扫描进度为空闲。"""
+    update_scan_progress(
+        running=False, started_at='', phase='idle',
+        total=0, processed=0, percent=0, message='空闲'
+    )
+
+
+def insert_scan_log(seq, time_str, msg):
+    """写入一条扫描日志到数据库。"""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO scan_logs (seq, time, msg) VALUES (?, ?, ?)",
+        (seq, time_str, msg)
+    )
+    conn.commit()
+
+
+def get_scan_logs(after_seq=0, limit=300):
+    """读取扫描日志，只返回 seq > after_seq 的行（增量拉取）。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT seq, time, msg FROM scan_logs WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+        (after_seq, limit)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_scan_logs():
+    """清空扫描日志表（新扫描开始前调用）。"""
+    conn = _get_conn()
+    conn.execute("DELETE FROM scan_logs")
+    conn.commit()
+
+
+def get_scan_stats(scan_id=None):
+    """获取扫描结果的统计信息（按分类、省份分布）。"""
+    conn = _get_conn()
+    where = "WHERE scan_id = ?" if scan_id else ""
+    params = [scan_id] if scan_id else []
+
+    cat_rows = conn.execute(
+        f"SELECT category, COUNT(*) as cnt FROM scan_results {where} GROUP BY category ORDER BY cnt DESC",
+        params
+    ).fetchall()
+
+    prov_rows = conn.execute(
+        f"""SELECT CASE WHEN province = '' OR province IS NULL THEN '未知' ELSE province END as prov,
+                   COUNT(*) as cnt
+            FROM scan_results {where} GROUP BY prov ORDER BY cnt DESC""",
+        params
+    ).fetchall()
+
+    return {
+        'by_category': {r['category'] or '未分类': r['cnt'] for r in cat_rows},
+        'by_province': {r['prov']: r['cnt'] for r in prov_rows},
+    }
