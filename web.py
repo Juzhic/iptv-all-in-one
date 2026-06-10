@@ -1,14 +1,29 @@
 ﻿"""IPTV 测速管理后台 — Web 服务。"""
 import collections
 import hmac
+import importlib.util
 import json
 import os
+import pkgutil
+import sys
 import logging
+import subprocess
 import threading
 import time
 from datetime import datetime
 
-from flask import Flask, render_template, request, jsonify, send_file, Response
+# Python 3.14 移除了 pkgutil.get_loader，当前 Flask 仍会调用它。
+if not hasattr(pkgutil, 'get_loader'):
+    def _compat_get_loader(module_or_name):
+        name = module_or_name if isinstance(module_or_name, str) else getattr(module_or_name, '__name__', None)
+        if not name:
+            return None
+        spec = importlib.util.find_spec(name)
+        return spec.loader if spec else None
+
+    pkgutil.get_loader = _compat_get_loader
+
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 from db import (
     init_db, migrate_from_json,
     get_latest_run, get_latest_passed_results,
@@ -21,14 +36,138 @@ from db import (
 )
 from test_engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
-app = Flask(__name__)
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-app.jinja_env.auto_reload = True
-app.jinja_env.cache = None
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, root_path=BASE_DIR, instance_path=BASE_DIR)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+
+DIST_DIR = os.path.join(BASE_DIR, 'dist')
+FRONTEND_DIR = os.path.join(BASE_DIR, 'frontend')
 logger = logging.getLogger(__name__)
+
+
+def _safe_mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
+def _iter_frontend_watch_files():
+    """返回需要触发前端重构的源码和配置文件。"""
+    for name in ('index.html', 'vite.config.js', 'package.json', 'package-lock.json'):
+        path = os.path.join(FRONTEND_DIR, name)
+        if os.path.exists(path):
+            yield path
+
+    src_dir = os.path.join(FRONTEND_DIR, 'src')
+    if not os.path.isdir(src_dir):
+        return
+
+    for root, dirs, files in os.walk(src_dir):
+        for filename in files:
+            yield os.path.join(root, filename)
+
+
+def _frontend_deps_need_install():
+    """package.json / package-lock.json 更新后，自动补 npm install。"""
+    pkg = os.path.join(FRONTEND_DIR, 'package.json')
+    if not os.path.exists(pkg):
+        return False
+
+    node_modules_dir = os.path.join(FRONTEND_DIR, 'node_modules')
+    if not os.path.isdir(node_modules_dir):
+        return True
+
+    manifest_mtime = max(
+        _safe_mtime(pkg),
+        _safe_mtime(os.path.join(FRONTEND_DIR, 'package-lock.json')),
+    )
+    install_stamp = os.path.join(node_modules_dir, '.package-lock.json')
+    return manifest_mtime > _safe_mtime(install_stamp)
+
+
+def _ensure_frontend():
+    """检查 dist/ 是否存在且为最新；缺失或过期时自动执行 npm run build。"""
+    index_html = os.path.join(DIST_DIR, 'index.html')
+    if not os.path.exists(index_html):
+        # dist 不存在，尝试构建
+        pkg = os.path.join(FRONTEND_DIR, 'package.json')
+        if not os.path.exists(pkg):
+            return  # 无前端源码，跳过
+        print('[前端] dist/ 不存在，正在自动构建...')
+        _run_frontend_build()
+        return
+
+    if _frontend_deps_need_install():
+        print('[前端] 检测到依赖清单变更，正在重新安装依赖并构建...')
+        _run_frontend_build()
+        return
+
+    # dist 存在，检查源码是否有更新
+    try:
+        dist_mtime = os.path.getmtime(index_html)
+        for path in _iter_frontend_watch_files():
+            if _safe_mtime(path) > dist_mtime:
+                print(f'[前端] 检测到前端文件更新 ({os.path.basename(path)})，正在重新构建...')
+                _run_frontend_build()
+                return
+    except OSError:
+        pass
+
+
+def _run_frontend_build():
+    """在 frontend/ 目录执行 npm run build。"""
+    pkg = os.path.join(FRONTEND_DIR, 'package.json')
+    if not os.path.exists(pkg):
+        return
+
+    if _frontend_deps_need_install():
+        print('[前端] 正在安装依赖 (npm install)...')
+        install_result = subprocess.run(
+            ['cmd', '/c', 'npm install --production=false'],
+            cwd=FRONTEND_DIR,
+            shell=False,
+            capture_output=True,
+            check=False,
+        )
+        if install_result.returncode != 0:
+            stderr = install_result.stderr.decode('utf-8', errors='replace')[-500:] if install_result.stderr else ''
+            print(f'[前端] 依赖安装失败: {stderr}')
+            return
+
+    print('[前端] 正在构建 (npm run build)...')
+    result = subprocess.run(
+        ['cmd', '/c', 'npm run build'],
+        cwd=FRONTEND_DIR,
+        shell=False,
+        capture_output=True,
+    )
+    # 打印构建输出（过滤关键行）
+    if result.stdout:
+        for line in result.stdout.decode('utf-8', errors='replace').splitlines():
+            line = line.strip()
+            if line and ('built in' in line or '.html' in line or '.js' in line or '.css' in line or 'error' in line.lower()):
+                # 移除 ANSI 转义码和特殊 Unicode 字符，避免 GBK 终端报错
+                import re as _re
+                clean = _re.sub(r'\x1b\[[0-9;]*m', '', line)
+                clean = clean.replace('✓', '[OK]').replace('✗', '[X]')
+                try:
+                    print(f'[前端]   {clean}')
+                except UnicodeEncodeError:
+                    print(f'[前端]   {clean.encode("utf-8", errors="replace").decode("ascii", errors="replace")}')
+    if result.returncode == 0:
+        print('[前端] 构建完成')
+    else:
+        stderr = result.stderr.decode('utf-8', errors='replace')[-500:] if result.stderr else ''
+        print(f'[前端] 构建失败: {stderr}')
+
+
+def _prepare_frontend_on_startup():
+    """启动 Web 服务前预构建前端，避免首个请求时才发现 dist 缺失。"""
+    _ensure_frontend()
+    index_html = os.path.join(DIST_DIR, 'index.html')
+    if not os.path.exists(index_html):
+        raise RuntimeError('前端构建失败或 dist/index.html 不存在，请检查 frontend 构建日志')
 BASIC_AUTH_CONFIG_FILE = os.path.join(BASE_DIR, 'basic_auth.json')
 BASIC_AUTH_DEFAULT_CONFIG = {
     'username': 'admin',
@@ -93,15 +232,6 @@ def require_basic_auth():
     return _basic_auth_challenge()
 
 
-def _asset_version(filename):
-    """用静态文件修改时间生成版本号，避免部署后浏览器继续使用旧资源。"""
-    path = os.path.join(app.static_folder, filename.replace('/', os.sep))
-    try:
-        return str(int(os.path.getmtime(path)))
-    except OSError:
-        return str(int(time.time()))
-
-
 def _finite_number_or_none(value):
     """把外部 API 的数字字段规整成 JSON number；无效值返回 None。"""
     if value is None or value == '':
@@ -115,12 +245,6 @@ def _finite_number_or_none(value):
     return int(num) if num.is_integer() else num
 
 
-@app.context_processor
-def inject_asset_version():
-    return {
-        'asset_version': _asset_version('js/index.js'),
-        'scan_asset_version': _asset_version('js/scan.js'),
-    }
 
 # 初始化数据库（模块加载时执行，兼容 uWSGI / gunicorn 等 WSGI 服务器）
 init_db()
@@ -131,6 +255,8 @@ try:
 except Exception:
     pass
 
+# 检查前端是否需要构建（dist/ 不存在或源码更新时自动 npm run build）
+_ensure_frontend()
 
 @app.after_request
 def add_no_cache_headers(response):
@@ -296,23 +422,40 @@ def _scheduler_status():
 
 @app.route('/')
 def index():
-    """渲染主页面（仪表盘 + 配置管理）。"""
+    """服务 Vue SPA 入口文件。"""
+    spa_path = os.path.join(DIST_DIR, 'index.html')
+    if os.path.exists(spa_path):
+        return send_file(spa_path)
+    _ensure_frontend()
+    if os.path.exists(spa_path):
+        return send_file(spa_path)
+    return '前端未构建，请先执行: cd frontend && npm run build', 500
+
+
+@app.route('/static/dist/<path:filename>')
+def serve_spa_assets(filename):
+    """服务 Vue SPA 构建产物（JS/CSS/图片等）。"""
+    if not os.path.isdir(DIST_DIR):
+        _ensure_frontend()
+    return send_from_directory(DIST_DIR, filename)
+
+
+@app.route('/api/initial')
+def api_initial():
+    """为 Vue SPA 提供初始数据（替代 Jinja2 服务端渲染）。"""
     latest = get_latest_run()
     runs = get_run_history()
-
     channel_summary = {}
     codec_stats = {}
     if latest and latest.get('results'):
         channel_summary = get_channel_summary(latest['run_id'])
         codec_stats = get_codec_stats(latest['run_id'])
-
-    return render_template(
-        'index.html',
-        latest=latest,
-        runs=runs,
-        channel_summary=channel_summary,
-        codec_stats=codec_stats,
-    )
+    return jsonify({
+        'latest': latest,
+        'runs': runs,
+        'channel_summary': channel_summary,
+        'codec_stats': codec_stats,
+    })
 
 
 # ─────────────── 配置 API ───────────────
@@ -1332,11 +1475,14 @@ if __name__ == '__main__':
     try:
         host = '0.0.0.0'
         port = 58080
+        dev_mode = '--dev' in sys.argv
+
+        _prepare_frontend_on_startup()
+
         try:
             cfg = load_config()
         except Exception:
             cfg = DEFAULT_CONFIG
-            pass
 
         # 启动定时调度线程
         run_mode = cfg.get('run_mode', 'once') if cfg else 'once'
@@ -1347,7 +1493,23 @@ if __name__ == '__main__':
         else:
             print("运行模式：once（仅手动触发）")
 
-        print(f"Web 管理后台已启动: http://localhost:{port}")
+        if dev_mode:
+            # 开发模式：启动 Vite 开发服务器（HMR 热更新）
+            frontend_dir = os.path.join(BASE_DIR, 'frontend')
+            if os.path.exists(os.path.join(frontend_dir, 'package.json')):
+                print("开发模式：正在启动 Vite 开发服务器...")
+                subprocess.Popen(
+                    ['cmd', '/c', 'npm run dev'],
+                    cwd=frontend_dir,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0,
+                )
+                print("Vite 开发服务器: http://localhost:3000（API 代理到 Flask :58080）")
+            else:
+                print("警告：frontend/ 目录不存在，请先创建 Vue 项目")
+            print(f"Flask API 服务器已启动: http://localhost:{port}")
+        else:
+            print(f"Web 管理后台已启动: http://localhost:{port}")
+
         app.run(host=host, port=port, debug=False)
     except OSError as e:
         print(f"\n端口 {port} 启动失败: {e}")

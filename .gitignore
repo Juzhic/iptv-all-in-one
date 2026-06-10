@@ -19,3 +19,7 @@ logs/
 .DS_Store
 Thumbs.db
 /.idea
+
+# 前端构建产物
+dist/
+frontend/node_modules/
