@@ -1286,8 +1286,10 @@ def api_scan_config_set():
     """保存扫描配置（不依赖 bridge，直接写数据库）。"""
     try:
         from scanner_integration.config_bridge import save_scan_config, get_scan_config
+        from scanner_integration.key_manager import init_key_manager
         data = request.get_json(silent=True) or {}
         save_scan_config(data)
+        init_key_manager()
         cfg = get_scan_config()
         return jsonify({'ok': True, 'config': cfg})
     except Exception as e:

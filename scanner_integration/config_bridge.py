@@ -61,6 +61,53 @@ DEFAULT_SCAN_CONFIG = {
 _CONFIG_CACHE = None
 
 
+def _normalize_key_list(cfg, platform, *legacy_single_names):
+    """Normalize per-platform API keys into both list and single-key fields."""
+    list_key = f'{platform}_api_keys'
+    single_key = f'{platform}_api_key'
+
+    merged = []
+    raw_list = cfg.get(list_key, [])
+    if isinstance(raw_list, list):
+        merged.extend(raw_list)
+
+    for name in (single_key, *legacy_single_names):
+        value = cfg.get(name)
+        if isinstance(value, str) and value.strip():
+            merged.append(value)
+
+    normalized = []
+    seen = set()
+    for key in merged:
+        if not isinstance(key, str):
+            continue
+        value = key.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+
+    cfg[list_key] = normalized
+    cfg[single_key] = normalized[0] if normalized else ''
+
+
+def _normalize_scan_config(raw_cfg):
+    """Merge defaults and legacy aliases into a single canonical config."""
+    cfg = dict(DEFAULT_SCAN_CONFIG)
+    if isinstance(raw_cfg, dict):
+        cfg.update(raw_cfg)
+
+    _normalize_key_list(cfg, 'quake', 'quake_key')
+    _normalize_key_list(cfg, 'hunter', 'hunter_key')
+    _normalize_key_list(cfg, 'daydaymap', 'daydaymap_key')
+
+    # Runtime compatibility for older scan paths that still read legacy names.
+    cfg['quake_key'] = cfg.get('quake_api_key', '')
+    cfg['hunter_key'] = cfg.get('hunter_api_key', '')
+    cfg['daydaymap_key'] = cfg.get('daydaymap_api_key', '')
+    return cfg
+
+
 def get_scan_config():
     """从数据库读取扫描配置，合并默认值后返回 dict。"""
     global _CONFIG_CACHE
@@ -73,8 +120,7 @@ def get_scan_config():
             loaded = {}
     else:
         loaded = {}
-    cfg = dict(DEFAULT_SCAN_CONFIG)
-    cfg.update(loaded)
+    cfg = _normalize_scan_config(loaded)
     _CONFIG_CACHE = cfg
     return cfg
 
@@ -83,8 +129,20 @@ def save_scan_config(cfg):
     """保存扫描配置到数据库。"""
     global _CONFIG_CACHE
     from db import set_config_data
-    set_config_data('scan_config', json.dumps(cfg, ensure_ascii=False, indent=2))
-    _CONFIG_CACHE = cfg
+    current = get_scan_config()
+    merged = dict(current)
+    if isinstance(cfg, dict):
+        merged.update(cfg)
+    normalized = _normalize_scan_config(merged)
+
+    # Do not persist runtime-only compatibility aliases back to the database.
+    persisted = dict(normalized)
+    persisted.pop('quake_key', None)
+    persisted.pop('hunter_key', None)
+    persisted.pop('daydaymap_key', None)
+
+    set_config_data('scan_config', json.dumps(persisted, ensure_ascii=False, indent=2))
+    _CONFIG_CACHE = normalized
 
 
 def get_scan_config_value(key, default=None):

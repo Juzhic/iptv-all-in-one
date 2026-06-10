@@ -1,9 +1,16 @@
 <template>
-  <div class="scan-config-tab">
-    <t-card size="small" :bordered="false" style="margin-bottom: 12px">
+  <div class="scan-config-tab" :class="{ 'is-dark-theme': isDarkTheme }">
+    <t-card size="small" :bordered="false" class="keys-card">
       <div class="section-header">
-        <div class="section-title" style="margin: 0">API Key 管理</div>
-        <t-button theme="primary" size="small" @click="openAddModal">+ 添加 Key</t-button>
+        <div>
+          <div class="section-title section-title--flush">API Key 管理</div>
+          <p class="section-desc">统一管理 Quake、Hunter 和 DayDayMap 的扫描 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
+        </div>
+
+        <t-space>
+          <t-button variant="outline" size="small" @click="loadKeys">刷新余额</t-button>
+          <t-button theme="primary" size="small" @click="openAddModal">+ 添加 Key</t-button>
+        </t-space>
       </div>
 
       <t-table
@@ -30,22 +37,41 @@
           </t-space>
         </template>
       </t-table>
-
-      <t-button variant="outline" size="small" style="margin-top: 8px" @click="loadKeys">刷新余额</t-button>
     </t-card>
 
-    <t-card size="small" :bordered="false">
-      <div class="section-title">扫描参数</div>
+    <t-card size="small" :bordered="false" class="config-card">
+      <div class="config-header">
+        <div>
+          <div class="section-title section-title--flush">扫描参数</div>
+          <p class="section-desc">把扫描范围、采集规模和定时策略拆成两块，常用项更集中，也能顺手看出 C 段扫描当前到底是开还是关。</p>
+        </div>
 
-      <t-row :gutter="16">
-        <t-col :span="12">
-          <t-form label-width="80px" label-align="left">
-            <t-form-item label="省份">
-              <div class="province-picker">
+        <div class="config-header-pills">
+          <span class="config-pill">{{ provinceBadgeText }}</span>
+          <span class="config-pill config-pill--accent">{{ cScanStatusLabel }}</span>
+        </div>
+      </div>
+
+      <div class="config-panel-grid">
+        <section class="config-panel">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">范围与来源</div>
+            <h3>省份与运营商</h3>
+            <p>控制扫描覆盖的地区范围。留空时按全国跑，适合第一次摸底；限定省份时更聚焦，也更省额度。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>省份范围</label>
+                <span>留空表示全国范围，可直接搜索省份名后批量选择。</span>
+              </div>
+
+              <div class="province-card">
                 <div class="province-toolbar">
                   <div class="province-summary">
                     <span class="province-summary-main">{{ provinceSummary }}</span>
-                    <span class="province-summary-sub">留空表示全国范围，可直接搜索省份名</span>
+                    <span class="province-summary-sub">已选 {{ scanCfg.selected_provinces.length }} / {{ PROVINCES.length }} 个省份</span>
                   </div>
 
                   <t-space :size="8">
@@ -65,44 +91,83 @@
                   class="province-select"
                   :popup-props="{ overlayInnerStyle: { maxHeight: '320px' } }"
                 />
+              </div>
+            </div>
 
-                <div class="province-tips">
-                  已选 {{ scanCfg.selected_provinces.length }} / {{ PROVINCES.length }} 个省份
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>运营商</label>
+                <span>只看特定网络环境时可以缩小到电信、联通、移动或广电。</span>
+              </div>
+              <t-select v-model="scanCfg.operator" clearable :options="operatorOptions" placeholder="全部运营商" class="field-control field-control--wide" />
+            </div>
+          </div>
+        </section>
+
+        <section class="config-panel config-panel--accent">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">策略与调度</div>
+            <h3>采集规模与定时</h3>
+            <p>这里控制每轮采集量、是否启用 C 段扩展扫描，以及后台自动执行的时间安排。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>扫描数量</label>
+                <span>每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quake_size" :min="1" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>C 段扫描</label>
+                <span>开启后会围绕已命中的可用 IP 扩展同网段探测，能补量，但会增加请求数。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.enable_c_scan" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.enable_c_scan ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.enable_c_scan ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+                <div class="field-inline-hint">
+                  {{ cScanHint }}
                 </div>
               </div>
-            </t-form-item>
+            </div>
 
-            <t-form-item label="运营商">
-              <t-select v-model="scanCfg.operator" clearable :options="operatorOptions" placeholder="全部运营商" />
-            </t-form-item>
-          </t-form>
-        </t-col>
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>定时扫描</label>
+                <span>设置自动扫描的星期和时间，适合夜间低峰期定时补源。</span>
+              </div>
 
-        <t-col :span="12">
-          <t-form label-width="100px" label-align="left">
-            <t-form-item label="扫描数量">
-              <t-input-number v-model="scanCfg.quake_size" :min="1" :step="1" style="width: 100%" />
-            </t-form-item>
+              <div class="schedule-card">
+                <t-checkbox-group v-model="scanCfg.update_days" :options="weekdayOptions" class="weekday-group" />
 
-            <t-form-item label="C段扫描">
-              <t-switch v-model="scanCfg.enable_c_scan" :label="['关闭', '开启']" />
-            </t-form-item>
-
-            <t-form-item label="定时扫描">
-              <div>
-                <t-checkbox-group v-model="scanCfg.update_days" :options="weekdayOptions" />
                 <div class="schedule-row">
-                  <t-time-picker v-model="scanCfg.update_time" format="HH:mm" style="width: 120px" />
+                  <t-time-picker v-model="scanCfg.update_time" format="HH:mm" class="schedule-time" />
                   <t-checkbox v-model="scanCfg.daily_full_update" @change="onDailyFullChange">每天</t-checkbox>
                 </div>
+
+                <div class="schedule-summary">{{ scheduleSummary }}</div>
                 <div v-if="countdownText" class="countdown-text">{{ countdownText }}</div>
               </div>
-            </t-form-item>
-          </t-form>
-        </t-col>
-      </t-row>
+            </div>
+          </div>
+        </section>
+      </div>
 
-      <t-button theme="primary" :loading="saving" style="margin-top: 8px" @click="saveScanConfig">保存配置</t-button>
+      <div class="config-actions">
+        <div class="config-actions-tip">当前数据库里的 C 段扫描真实值是 {{ scanCfg.enable_c_scan ? '开启' : '关闭' }}，现在页面会按真实状态显示，不再出现灰色却写“开启”的错位。</div>
+        <t-space>
+          <t-button theme="primary" :loading="saving" @click="saveScanConfig">保存配置</t-button>
+          <t-button variant="outline" @click="loadConfig">重新加载</t-button>
+        </t-space>
+      </div>
     </t-card>
 
     <t-dialog
@@ -126,7 +191,7 @@
         </t-form-item>
       </t-form>
 
-      <t-space style="justify-content: flex-end; margin-top: 16px">
+      <t-space class="dialog-actions">
         <t-button variant="outline" @click="keyModalVisible = false">取消</t-button>
         <t-button theme="primary" @click="submitKey">{{ keyEditMode ? '保存' : '添加' }}</t-button>
       </t-space>
@@ -137,6 +202,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
+import { useTheme } from '../composables/useTheme.js'
 import {
   apiSaveScanConfig,
   apiScanConfig,
@@ -153,6 +219,7 @@ const keyModalTitle = ref('添加 API Key')
 const keyEditMode = ref(false)
 const keyForm = reactive({ platform: 'quake', key: '' })
 const oldKey = ref('')
+const { theme } = useTheme()
 
 const scanCfg = reactive({
   selected_provinces: [],
@@ -177,6 +244,8 @@ const PROVINCES = [
   '宁夏', '新疆', '香港', '澳门',
 ]
 
+const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
 const provinceOptions = PROVINCES.map((province) => ({
   label: province,
   value: province,
@@ -190,7 +259,7 @@ const operatorOptions = [
   { label: '广电', value: '广电' },
 ]
 
-const weekdayOptions = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((label, index) => ({
+const weekdayOptions = WEEKDAY_LABELS.map((label, index) => ({
   label,
   value: index,
 }))
@@ -210,6 +279,39 @@ const provinceSummary = computed(() => {
   if (count <= 4) return `已选：${scanCfg.selected_provinces.join('、')}`
   return `已选 ${count} 个省份`
 })
+
+const provinceBadgeText = computed(() => {
+  const count = scanCfg.selected_provinces.length
+  return count ? `范围：${count} 省` : '范围：全国'
+})
+
+const cScanStatusLabel = computed(() => (
+  scanCfg.enable_c_scan ? 'C段扫描：已启用' : 'C段扫描：已关闭'
+))
+
+const cScanHint = computed(() => (
+  scanCfg.enable_c_scan
+    ? '当前会围绕已命中的网段继续扩展探测，补量能力更强，但扫描时间也会更长。'
+    : '当前只使用主搜索结果，不做同网段扩展，速度更快，也更省额度。'
+))
+
+const scheduleSummary = computed(() => {
+  const time = scanCfg.update_time || '03:00'
+  if (scanCfg.daily_full_update) {
+    return `执行计划：每天 ${time}`
+  }
+
+  const labels = (scanCfg.update_days || [])
+    .map((index) => WEEKDAY_LABELS[index])
+    .filter(Boolean)
+
+  if (!labels.length) {
+    return '执行计划：未选择扫描日'
+  }
+  return `执行计划：${labels.join('、')} ${time}`
+})
+
+const isDarkTheme = computed(() => theme.value === 'dark')
 
 function statusTheme(status) {
   if (status === '正常') return 'success'
@@ -293,8 +395,8 @@ function updateCountdown() {
   const pad = (value) => (value < 10 ? `0${value}` : `${value}`)
 
   countdownText.value = daysLeft > 0
-    ? `下次扫描: ${daysLeft}天 ${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
-    : `下次扫描: ${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
+    ? `下次扫描：${daysLeft}天 ${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
+    : `下次扫描：${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
 }
 
 async function loadConfig() {
@@ -302,7 +404,7 @@ async function loadConfig() {
     const cfg = await apiScanConfig()
     scanCfg.selected_provinces = Array.isArray(cfg.selected_provinces) ? cfg.selected_provinces : []
     scanCfg.operator = cfg.operator || ''
-    scanCfg.quake_size = cfg.quake_size || 100
+    scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 100
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
@@ -436,75 +538,362 @@ onBeforeUnmount(() => {
 <style scoped>
 .scan-config-tab {
   padding-top: 4px;
+  --surface-text-primary: #0f172a;
+  --surface-text-secondary: #475569;
+  --surface-text-muted: #64748b;
+  --surface-border-strong: rgba(148, 163, 184, 0.18);
+  --surface-border-soft: rgba(226, 232, 240, 0.92);
+  --surface-border-softer: rgba(226, 232, 240, 0.96);
+  --surface-shell-bg: rgba(255, 255, 255, 0.8);
+  --surface-shell-gradient:
+    radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
+  --surface-panel-accent: linear-gradient(180deg, rgba(236, 253, 245, 0.9), rgba(255, 255, 255, 0.92));
+  --surface-field-bg: rgba(248, 250, 252, 0.84);
+  --surface-inner-bg: rgba(255, 255, 255, 0.82);
+  --surface-pill-bg: rgba(15, 23, 42, 0.05);
+  --surface-pill-accent-bg: rgba(16, 185, 129, 0.12);
+  --surface-pill-accent-text: #047857;
+  --surface-accent: #0f766e;
+  --surface-accent-strong: #047857;
+  --surface-accent-soft: rgba(16, 185, 129, 0.08);
+  --surface-link-accent: #2563eb;
+  --surface-shadow: 0 18px 48px rgba(15, 23, 42, 0.05);
 }
 
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.scan-config-tab.is-dark-theme {
+  --surface-text-primary: #e5edf7;
+  --surface-text-secondary: #9fb0c7;
+  --surface-text-muted: #8fa2ba;
+  --surface-border-strong: rgba(71, 85, 105, 0.48);
+  --surface-border-soft: rgba(71, 85, 105, 0.58);
+  --surface-border-softer: rgba(71, 85, 105, 0.52);
+  --surface-shell-bg: rgba(15, 23, 42, 0.72);
+  --surface-shell-gradient:
+    radial-gradient(circle at top right, rgba(45, 212, 191, 0.14), transparent 32%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(8, 15, 28, 0.98));
+  --surface-panel-accent: linear-gradient(180deg, rgba(10, 38, 40, 0.94), rgba(8, 15, 28, 0.95));
+  --surface-field-bg: rgba(15, 23, 42, 0.78);
+  --surface-inner-bg: rgba(15, 23, 42, 0.7);
+  --surface-pill-bg: rgba(148, 163, 184, 0.14);
+  --surface-pill-accent-bg: rgba(45, 212, 191, 0.18);
+  --surface-pill-accent-text: #99f6e4;
+  --surface-accent: #5eead4;
+  --surface-accent-strong: #99f6e4;
+  --surface-accent-soft: rgba(45, 212, 191, 0.16);
+  --surface-link-accent: #93c5fd;
+  --surface-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.keys-card {
   margin-bottom: 12px;
+}
+
+.section-header,
+.config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
 .section-title {
   margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--td-border-level-1-color, #f3f4f6);
   font-size: 15px;
   font-weight: 600;
 }
 
-.province-picker {
+.section-title--flush {
+  margin-bottom: 6px;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.section-desc {
+  max-width: 760px;
+  margin: 0;
+  color: var(--surface-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.config-card {
+  color: var(--surface-text-primary);
+  border-radius: 18px;
+  background: var(--surface-shell-gradient);
+}
+
+.config-header-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.config-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--surface-pill-bg);
+  color: var(--surface-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.config-pill--accent {
+  background: var(--surface-pill-accent-bg);
+  color: var(--surface-pill-accent-text);
+}
+
+.config-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.config-panel {
+  padding: 18px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 18px;
+  background: var(--surface-shell-bg);
+  box-shadow: var(--surface-shadow);
+  backdrop-filter: blur(8px);
+}
+
+.config-panel--accent {
+  background: var(--surface-panel-accent);
+}
+
+.config-panel-head {
+  margin-bottom: 16px;
+}
+
+.config-panel-eyebrow {
+  margin-bottom: 6px;
+  color: var(--surface-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.config-panel-head h3 {
+  margin: 0;
+  color: var(--surface-text-primary);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.config-panel-head p {
+  margin: 8px 0 0;
+  color: var(--surface-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.config-field-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+
+.config-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: 14px;
+  background: var(--surface-field-bg);
+}
+
+.config-field--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.config-field-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.config-field--stack .config-field-meta {
+  width: 100%;
+  flex: none;
+}
+
+.config-field-meta label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--surface-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.config-field-meta span {
+  display: block;
+  color: var(--surface-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.field-control {
+  width: 220px;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.field-control--wide {
+  width: 320px;
+}
+
+.field-stack {
+  width: 320px;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.field-stack--switch {
+  width: 100%;
+}
+
+.field-inline-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-accent-soft);
+  color: var(--surface-accent-strong);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.province-card,
+.schedule-card {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: 14px;
+  background: var(--surface-inner-bg);
 }
 
 .province-toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
 }
 
 .province-summary {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
 }
 
 .province-summary-main {
+  color: var(--surface-text-primary);
   font-size: 13px;
   font-weight: 600;
-  color: var(--td-text-color-primary);
 }
 
-.province-summary-sub,
-.province-tips {
+.province-summary-sub {
+  color: var(--surface-text-muted);
   font-size: 12px;
-  color: var(--td-text-color-placeholder, #9ca3af);
 }
 
 .province-select {
   width: 100%;
 }
 
-.schedule-row {
+.switch-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.schedule-time {
+  width: 140px;
+}
+
+.schedule-summary {
+  margin-top: 10px;
+  color: var(--surface-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .countdown-text {
   margin-top: 6px;
+  color: var(--surface-link-accent);
   font-size: 12px;
-  color: #2563eb;
+  line-height: 1.5;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--surface-border-soft);
+}
+
+.config-actions-tip {
+  color: var(--surface-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+@media (max-width: 1100px) {
+  .config-panel-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 768px) {
+  .section-header,
+  .config-header,
+  .config-actions,
+  .config-field {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .config-header-pills {
+    justify-content: flex-start;
+  }
+
+  .field-control,
+  .field-control--wide,
+  .field-stack {
+    width: 100%;
+  }
+
   .province-toolbar {
-    align-items: flex-start;
+    align-items: stretch;
   }
 }
 </style>
