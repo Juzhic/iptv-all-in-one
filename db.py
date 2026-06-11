@@ -436,6 +436,31 @@ def init_db():
             msg TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_scan_logs_seq ON scan_logs(seq);
+
+        CREATE TABLE IF NOT EXISTS persistent_scan_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            category TEXT,
+            province TEXT,
+            city TEXT,
+            source_ip TEXT,
+            platform TEXT,
+            resolution TEXT,
+            codec TEXT,
+            delay REAL,
+            bandwidth REAL,
+            stability INTEGER DEFAULT 0,
+            quality_status TEXT DEFAULT 'pending',
+            consecutive_failures INTEGER DEFAULT 0,
+            last_checked_at TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_updated_at TEXT NOT NULL,
+            validated INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_psr_src ON persistent_scan_results(source_ip);
+        CREATE INDEX IF NOT EXISTS idx_psr_quality ON persistent_scan_results(quality_status);
+        CREATE INDEX IF NOT EXISTS idx_psr_platform ON persistent_scan_results(platform);
     """)
     _ensure_run_results_columns(conn)
     conn.commit()
@@ -1329,3 +1354,234 @@ def get_scan_stats(scan_id=None):
         'by_category': {r['category'] or '未分类': r['cnt'] for r in cat_rows},
         'by_province': {r['prov']: r['cnt'] for r in prov_rows},
     }
+
+
+# ==================== 持久化扫描结果 (persistent_scan_results) ====================
+
+def upsert_persistent_results(rows):
+    """批量 UPSERT 到持久化结果表。URL 冲突时更新元数据并重置失败计数。"""
+    if not rows:
+        return
+    conn = _get_conn()
+    now = now_str()
+    conn.executemany(
+        """INSERT INTO persistent_scan_results
+           (url, name, category, province, city, source_ip, platform,
+            resolution, codec, delay, bandwidth, stability,
+            quality_status, consecutive_failures, last_checked_at,
+            first_seen_at, last_updated_at, validated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, ?, ?, 0)
+           ON CONFLICT(url) DO UPDATE SET
+               name=excluded.name, category=excluded.category,
+               province=excluded.province, city=excluded.city,
+               source_ip=excluded.source_ip, platform=excluded.platform,
+               resolution=excluded.resolution, codec=excluded.codec,
+               delay=excluded.delay, bandwidth=excluded.bandwidth,
+               stability=excluded.stability,
+               quality_status='pending', consecutive_failures=0,
+               last_checked_at=NULL, last_updated_at=excluded.last_updated_at,
+               validated=0""",
+        [
+            (
+                r.get('url', ''), r.get('name', ''),
+                r.get('category', ''), r.get('province', ''),
+                r.get('city', ''), r.get('source_ip', ''),
+                r.get('platform', ''),
+                r.get('resolution', ''), r.get('codec', ''),
+                r.get('delay'), r.get('bandwidth'),
+                r.get('stability', 0),
+                now, now,
+            )
+            for r in rows
+        ]
+    )
+    conn.commit()
+
+
+def get_persistent_details_by_ip(source_ip):
+    """查询某个来源 IP 下的所有频道明细。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, url, name, category, province, city, source_ip, platform,
+                  resolution, codec, delay, bandwidth, stability,
+                  quality_status, consecutive_failures,
+                  last_checked_at, first_seen_at, last_updated_at, validated
+           FROM persistent_scan_results
+           WHERE source_ip = ?
+           ORDER BY stability DESC, bandwidth DESC""",
+        (source_ip,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_persistent_stats():
+    """按 quality_status 统计持久化结果数量。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT quality_status, COUNT(*) as cnt
+           FROM persistent_scan_results
+           GROUP BY quality_status"""
+    ).fetchall()
+    result = {r['quality_status']: r['cnt'] for r in rows}
+    total = sum(result.values())
+    result['total'] = total
+    return result
+
+
+def get_persistent_grouped():
+    """两级分组：platform → source_ip，返回完整分组结构。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT platform, source_ip,
+                  COUNT(*) as channel_count,
+                  ROUND(AVG(stability), 1) as avg_stability,
+                  ROUND(AVG(delay), 1) as avg_delay,
+                  ROUND(AVG(bandwidth), 1) as avg_bandwidth,
+                  SUM(CASE WHEN quality_status='good' THEN 1 ELSE 0 END) as good_count,
+                  SUM(CASE WHEN quality_status='poor' THEN 1 ELSE 0 END) as poor_count,
+                  SUM(CASE WHEN quality_status='unreachable' THEN 1 ELSE 0 END) as unreachable_count,
+                  SUM(CASE WHEN quality_status='pending' THEN 1 ELSE 0 END) as pending_count,
+                  MIN(first_seen_at) as first_seen,
+                  MAX(last_updated_at) as last_updated
+           FROM persistent_scan_results
+           GROUP BY platform, source_ip
+           ORDER BY platform, channel_count DESC"""
+    ).fetchall()
+
+    platforms = {}
+    for r in rows:
+        plat = r['platform'] or '未知'
+        if plat not in platforms:
+            platforms[plat] = {
+                'platform': plat,
+                'source_count': 0,
+                'channel_count': 0,
+                'total_stability': 0,
+                'sources': [],
+            }
+        p = platforms[plat]
+        p['source_count'] += 1
+        p['channel_count'] += r['channel_count']
+        p['total_stability'] += r['avg_stability'] * r['channel_count']
+        p['sources'].append({
+            'source_ip': r['source_ip'],
+            'channel_count': r['channel_count'],
+            'avg_stability': r['avg_stability'],
+            'avg_delay': r['avg_delay'],
+            'avg_bandwidth': r['avg_bandwidth'],
+            'good_count': r['good_count'],
+            'poor_count': r['poor_count'],
+            'unreachable_count': r['unreachable_count'],
+            'pending_count': r['pending_count'],
+            'first_seen': r['first_seen'],
+            'last_updated': r['last_updated'],
+        })
+
+    result = []
+    for plat, data in platforms.items():
+        avg_stab = round(data['total_stability'] / data['channel_count'], 1) if data['channel_count'] else 0
+        result.append({
+            'platform': plat,
+            'source_count': data['source_count'],
+            'channel_count': data['channel_count'],
+            'avg_stability': avg_stab,
+            'sources': data['sources'],
+        })
+    result.sort(key=lambda x: x['channel_count'], reverse=True)
+    return result
+
+
+def update_persistent_check(url, ok, stability=None, delay=None,
+                            bandwidth=None, resolution=None, codec=None):
+    """更新单条持久化结果的检测状态。"""
+    conn = _get_conn()
+    now = now_str()
+    if ok:
+        # 连接成功：重置失败计数，根据指标更新质量状态
+        quality = _evaluate_quality(stability, delay, bandwidth)
+        conn.execute(
+            """UPDATE persistent_scan_results
+               SET consecutive_failures=0, last_checked_at=?,
+                   quality_status=?, validated=1,
+                   stability=COALESCE(?, stability),
+                   delay=COALESCE(?, delay),
+                   bandwidth=COALESCE(?, bandwidth),
+                   resolution=COALESCE(?, resolution),
+                   codec=COALESCE(?, codec)
+               WHERE url=?""",
+            (now, quality, stability, delay, bandwidth, resolution, codec, url)
+        )
+    else:
+        # 连接失败：失败计数 +1
+        conn.execute(
+            """UPDATE persistent_scan_results
+               SET consecutive_failures=consecutive_failures+1,
+                   last_checked_at=?, quality_status='unreachable'
+               WHERE url=?""",
+            (now, url)
+        )
+    conn.commit()
+
+
+def _evaluate_quality(stability, delay, bandwidth):
+    """根据检测指标判定质量等级。"""
+    if stability is None:
+        return 'unreachable'
+    if stability >= 60 and (delay is None or delay < 2000) and (bandwidth is None or bandwidth >= 300):
+        return 'good'
+    if stability >= 30:
+        return 'poor'
+    return 'unreachable'
+
+
+def delete_persistent_by_threshold(threshold):
+    """删除连续失败次数达到阈值的持久化结果。返回删除数量。"""
+    conn = _get_conn()
+    cursor = conn.execute(
+        "DELETE FROM persistent_scan_results WHERE consecutive_failures >= ?",
+        (threshold,)
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+def delete_persistent_by_id(row_id):
+    """删除单条持久化结果。"""
+    conn = _get_conn()
+    conn.execute("DELETE FROM persistent_scan_results WHERE id = ?", (row_id,))
+    conn.commit()
+
+
+def get_persistent_for_test():
+    """获取已验证且质量好的持久化结果，用于融合测速。
+    返回 [(channel_info_dict, url)] 格式，与 test_engine 的 test_list 兼容。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT name, url FROM persistent_scan_results
+           WHERE validated = 1 AND quality_status = 'good'
+           ORDER BY stability DESC, bandwidth DESC"""
+    ).fetchall()
+    return [({'name': r['name']}, r['url']) for r in rows]
+
+
+def get_all_persistent_for_check():
+    """获取所有持久化结果用于检测循环。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, url, name, stability, delay, bandwidth
+           FROM persistent_scan_results
+           ORDER BY id"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pending_persistent():
+    """获取所有待验证的持久化结果。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, url, name, stability, delay, bandwidth, resolution, codec
+           FROM persistent_scan_results
+           WHERE validated = 0
+           ORDER BY id"""
+    ).fetchall()
+    return [dict(r) for r in rows]

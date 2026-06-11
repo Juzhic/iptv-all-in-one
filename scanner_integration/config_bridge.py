@@ -56,6 +56,8 @@ DEFAULT_SCAN_CONFIG = {
     "c_scan_concurrent": 30,
     "c_segment_max_segments": 8,
     "c_segment_max_total_ips": 200,
+    "detection_interval_minutes": 120,
+    "deletion_threshold": 3,
 }
 
 _CONFIG_CACHE = None

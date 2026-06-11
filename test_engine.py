@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     'run_mode': 'once',
     'run_times': [],
     'run_interval_minutes': 60,
+    'include_scan_results_in_test': False,
 }
 
 
@@ -1159,6 +1160,24 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
         for canonical_name, urls in matched_urls.items():
             for url in urls:
                 test_list.append(({'name': canonical_name}, url))
+
+        # 融合扫描源：将已验证的持久化扫描结果作为额外订阅源
+        if cfg.get('include_scan_results_in_test', False):
+            try:
+                from db import get_persistent_for_test
+                scan_items = get_persistent_for_test()
+                if scan_items:
+                    existing_urls = {url for _, url in test_list}
+                    added = 0
+                    for ci, url in scan_items:
+                        if url not in existing_urls:
+                            test_list.append((ci, url))
+                            existing_urls.add(url)
+                            added += 1
+                    _log(f"融合扫描源：新增 {added} 个地址（总计 {len(test_list)}）")
+                    print(f"融合扫描源：新增 {added} 个地址（总计 {len(test_list)}）")
+            except Exception as e:
+                _log(f"融合扫描源失败: {e}")
 
     print(f"待测频道数：{len(test_list)}\n")
     _log(f"开始测速，共 {len(test_list)} 个频道地址")

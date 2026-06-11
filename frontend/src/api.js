@@ -115,6 +115,9 @@ export function apiScanHealth() {
 export function apiScanStatus() {
   return fetchJSON('/api/scan/status')
 }
+export function apiScanLatest() {
+  return fetchJSON('/api/scan/latest')
+}
 export function apiScanResults(params = {}) {
   const qs = new URLSearchParams(params).toString()
   return fetchJSON('/api/scan/results' + (qs ? '?' + qs : ''))
@@ -146,5 +149,25 @@ export function apiScanKeyDelete(platform, key) {
 }
 export function apiScanFeedToTest(scanId, channelNames) {
   return postJSON('/api/scan/feed-to-test', { scan_id: scanId, channel_names: channelNames })
+}
+
+// ─── 持久化扫描结果 ───
+export function apiPersistentGrouped() {
+  return fetchJSON('/api/scan/persistent/grouped')
+}
+export function apiPersistentDetails(sourceIp) {
+  return fetchJSON('/api/scan/persistent/details?source_ip=' + encodeURIComponent(sourceIp))
+}
+export function apiPersistentStats() {
+  return fetchJSON('/api/scan/persistent/stats')
+}
+export function apiPersistentManualCheck() {
+  return postJSON('/api/scan/persistent/manual-check')
+}
+export function apiPersistentExportUrl() {
+  return '/api/scan/persistent/export'
+}
+export function apiPersistentDelete(id) {
+  return deleteJSON(`/api/scan/persistent/${id}`)
 }
 

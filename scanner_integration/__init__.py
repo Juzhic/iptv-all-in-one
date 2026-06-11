@@ -129,6 +129,12 @@ def init_bridge():
         logger.warning(f"[Bridge] KeyManager 初始化失败: {e}")
     # 启动定时扫描任务
     start_daily_task()
+    # 启动定期检测任务
+    try:
+        from .detection import detection_manager
+        detection_manager.start()
+    except Exception as e:
+        logger.warning(f"[Bridge] 检测模块启动失败: {e}")
 
 
 # ==================== 扫描编排协程 ====================
@@ -261,6 +267,14 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                                  message=f'扫描完成，{len(quick)} 个频道')
         _scan_log(f"[Scan:{scan_id}] 扫描完成，耗时 {duration:.1f}s，共 {len(quick)} 个频道")
 
+        # 合并到持久化结果集
+        try:
+            from .persistence import merge_scan_to_persistent
+            await merge_scan_to_persistent(scan_id)
+            _scan_log(f"[Scan:{scan_id}] 已合并到持久化结果集")
+        except Exception as e:
+            logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {e}")
+
     except BaseException as e:
         _scan_log(f"[Scan:{scan_id}] 扫描异常: {e}")
         try:
@@ -378,6 +392,34 @@ def get_scan_status():
     """获取扫描进度，附带增量日志行（从数据库读取，关闭浏览器再回来也能看到）。"""
     import db as _db
     progress = db_get_scan_progress()
+    latest_run = _db.get_latest_scan_run() or {}
+
+    progress['summary'] = {
+        'scan_id': latest_run.get('scan_id', ''),
+        'status': latest_run.get('status', ''),
+        'started_at': latest_run.get('started_at', ''),
+        'finished_at': latest_run.get('finished_at', ''),
+        'duration_seconds': latest_run.get('duration_seconds', 0) or 0,
+        'total_raw': latest_run.get('total_raw', 0) or 0,
+        'total_deduped': latest_run.get('total_deduped', 0) or 0,
+        'total_fast_pass': latest_run.get('total_fast_pass', 0) or 0,
+        'total_deep_pass': latest_run.get('total_deep_pass', 0) or 0,
+    }
+
+    if progress.get('phase') == 'deep_check':
+        try:
+            from . import video_check as _vc
+            deep_progress = getattr(_vc, 'update_progress', {}) or {}
+            percent = int(deep_progress.get('percent') or progress.get('percent') or 0)
+            total = int(progress.get('total') or 0)
+            progress['percent'] = max(0, min(100, percent))
+            if total > 0 and percent > 0:
+                progress['processed'] = min(total, max(int(progress.get('processed') or 0), round(total * percent / 100)))
+            if deep_progress.get('message'):
+                progress['message'] = deep_progress['message']
+        except Exception:
+            pass
+
     # 始终附上日志行，前端通过 last_log_seq 增量消费
     progress['lines'] = _db.get_scan_logs(after_seq=0, limit=300)
     progress['last_log_seq'] = _scan_log_seq
@@ -451,6 +493,64 @@ def feed_scan_to_test(scan_id, channel_names=None):
             deduped.append((info, url))
 
     return deduped, None
+
+
+# ==================== 持久化结果桥接函数 ====================
+
+def get_persistent_grouped():
+    """获取持久化结果的两级分组汇总。"""
+    import db as _db
+    return _db.get_persistent_grouped()
+
+
+def get_persistent_details(source_ip):
+    """获取某个来源 IP 的频道明细。"""
+    import db as _db
+    return _db.get_persistent_details_by_ip(source_ip)
+
+
+def get_persistent_stats():
+    """获取持久化结果的质量统计。"""
+    import db as _db
+    return _db.get_persistent_stats()
+
+
+def trigger_persistent_manual_check():
+    """手动触发一轮持久化结果检测。"""
+    from .detection import detection_manager
+    if bridge._loop is None:
+        return {'ok': False, 'error': '异步循环未启动'}
+    asyncio.run_coroutine_threadsafe(
+        detection_manager._run_detection_cycle(), bridge._loop
+    )
+    return {'ok': True, 'status': 'started'}
+
+
+def get_persistent_for_export():
+    """获取所有持久化结果用于导出 M3U。"""
+    import db as _db
+    conn = _db._get_conn()
+    rows = conn.execute(
+        """SELECT name, url, category, province, source_ip,
+                  stability, quality_status
+           FROM persistent_scan_results
+           WHERE quality_status != 'unreachable'
+           ORDER BY category, name, stability DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_persistent_item(row_id):
+    """删除单条持久化结果。"""
+    import db as _db
+    _db.delete_persistent_by_id(row_id)
+    return {'status': 'deleted'}
+
+
+def get_detection_status():
+    """获取检测模块状态。"""
+    from .detection import detection_manager
+    return detection_manager.status
 
 
 def db_get_scan_progress():

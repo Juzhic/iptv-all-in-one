@@ -209,6 +209,21 @@
               </div>
               <t-input-number v-model="config.run_interval_minutes" :min="1" :step="1" class="field-control" />
             </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>融合扫描源参与测速</label>
+                <span>开启后，已验证的扫描结果会作为额外的本地订阅源，自动参与常规测速流程。仅使用质量状态为"好"的结果。</span>
+              </div>
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="config.include_scan_results_in_test" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="config.include_scan_results_in_test ? 'success' : 'default'" size="small" variant="light">
+                    {{ config.include_scan_results_in_test ? '已开启' : '已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -254,6 +269,7 @@ const CONFIG_FIELDS = [
   'run_mode',
   'run_times',
   'run_interval_minutes',
+  'include_scan_results_in_test',
 ]
 
 const config = reactive({})
@@ -854,5 +870,16 @@ onMounted(() => {
   .field-stack {
     width: 100%;
   }
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field-stack--switch {
+  width: 100%;
 }
 </style>

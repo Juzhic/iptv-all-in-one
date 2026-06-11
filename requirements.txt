@@ -5,3 +5,4 @@ flask>=3.0.0
 
 # 扫描模块依赖（scanner_integration）
 aiohttp>=3.9.0
+ddgs

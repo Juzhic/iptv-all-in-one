@@ -358,6 +358,8 @@ IPTV-Test/
 **Q: 扫描模块报错 aiohttp 未安装？**
 运行 `pip install aiohttp>=3.9.0` 安装扫描模块依赖。扫描模块为可选功能，不安装 aiohttp 不影响测速模块的正常使用。
 
+如果启用了 DDGS 扫描，还需要额外安装 `ddgs`：`pip install ddgs`。
+
 **Q: 扫描需要 API Key 吗？**
 是的。至少需要配置一个搜索引擎的 API Key（Quake 360、Hunter 鹰图或 DayDayMap 之一）。在"频道扫描"标签页的配置区域填写，点击旁边的"获取 ↗"链接可跳转到对应平台申请。
 

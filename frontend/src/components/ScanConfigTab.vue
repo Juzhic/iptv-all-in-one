@@ -161,6 +161,34 @@
         </section>
       </div>
 
+      <div class="config-panel-grid" style="margin-top: 18px;">
+        <section class="config-panel">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">检测维护</div>
+            <h3>定期检测与淘汰</h3>
+            <p>扫描结果会定期检测可用性，连续失败达到阈值的源自动删除，保持结果池质量。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>检测间隔（分钟）</label>
+                <span>每隔多久对持久化结果执行一轮健康检查。设为 0 暂停检测。</span>
+              </div>
+              <t-input-number v-model="scanCfg.detection_interval_minutes" :min="0" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>连续失败删除阈值</label>
+                <span>源连续检测失败几次后自动从结果池中删除。</span>
+              </div>
+              <t-input-number v-model="scanCfg.deletion_threshold" :min="1" :step="1" class="field-control" />
+            </div>
+          </div>
+        </section>
+      </div>
+
       <div class="config-actions">
         <div class="config-actions-tip">当前数据库里的 C 段扫描真实值是 {{ scanCfg.enable_c_scan ? '开启' : '关闭' }}，现在页面会按真实状态显示，不再出现灰色却写“开启”的错位。</div>
         <t-space>
@@ -229,6 +257,8 @@ const scanCfg = reactive({
   update_time: '03:00',
   update_days: [0, 1, 2, 3, 4, 5, 6],
   daily_full_update: false,
+  detection_interval_minutes: 120,
+  deletion_threshold: 3,
 })
 
 const platformLabelMap = {
@@ -409,6 +439,8 @@ async function loadConfig() {
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
+    scanCfg.detection_interval_minutes = typeof cfg.detection_interval_minutes === 'number' ? cfg.detection_interval_minutes : 120
+    scanCfg.deletion_threshold = typeof cfg.deletion_threshold === 'number' ? cfg.deletion_threshold : 3
     updateCountdown()
   } catch (_) {
     MessagePlugin.error('加载扫描配置失败')

@@ -688,15 +688,24 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
     return entries
 
 # DuckDuckGo 搜索
-try:
-    from ddgs import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
-    logger.warning("[DDGS] ddgs 库未安装，请运行: pip install ddgs")
+_DDGS_CLASS = None
+_DDGS_IMPORT_ATTEMPTED = False
+
+
+def _get_ddgs_class():
+    global _DDGS_CLASS, _DDGS_IMPORT_ATTEMPTED
+    if not _DDGS_IMPORT_ATTEMPTED:
+        _DDGS_IMPORT_ATTEMPTED = True
+        try:
+            from ddgs import DDGS as ddgs_class
+            _DDGS_CLASS = ddgs_class
+        except ImportError:
+            _DDGS_CLASS = None
+    return _DDGS_CLASS
 
 async def ddgs_scan(query=None, target_size=30, session=None):
-    if not DDGS_AVAILABLE:
+    ddgs_class = _get_ddgs_class()
+    if ddgs_class is None:
         logger.warning("[DDGS] ddgs 库未安装，跳过扫描")
         return []
     if session is None:
@@ -706,7 +715,7 @@ async def ddgs_scan(query=None, target_size=30, session=None):
     try:
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(
-            None, lambda: list(DDGS().text(query, max_results=target_size))
+            None, lambda: list(ddgs_class().text(query, max_results=target_size))
         )
         if not results:
             logger.info("[DDGS] 未搜索到结果")

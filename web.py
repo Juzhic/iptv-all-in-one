@@ -1,4 +1,4 @@
-﻿"""IPTV 测速管理后台 — Web 服务。"""
+"""IPTV 测速管理后台 — Web 服务。"""
 import collections
 import hmac
 import importlib.util
@@ -93,7 +93,8 @@ def _ensure_frontend():
         # dist 不存在，尝试构建
         pkg = os.path.join(FRONTEND_DIR, 'package.json')
         if not os.path.exists(pkg):
-            return  # 无前端源码，跳过
+            print('[前端] dist/ 不存在，且无前端源码 (frontend/package.json)，跳过构建')
+            return
         print('[前端] dist/ 不存在，正在自动构建...')
         _run_frontend_build()
         return
@@ -113,6 +114,8 @@ def _ensure_frontend():
                 return
     except OSError:
         pass
+
+    print('[前端] 前端已是最新，无需构建 (dist/index.html 存在且源码未变更)')
 
 
 def _run_frontend_build():
@@ -1469,6 +1472,76 @@ def api_scan_stats():
         return jsonify({'by_category': {}, 'by_province': {}})
     scan_id = request.args.get('scan_id')
     return jsonify(scanner.get_scan_stats(scan_id=scan_id))
+
+
+# ─────────────── 持久化扫描结果 API ───────────────
+
+@app.route('/api/scan/persistent/grouped', methods=['GET'])
+def api_persistent_grouped():
+    """获取持久化结果按 platform → source_ip 两级分组汇总。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.get_persistent_grouped())
+
+
+@app.route('/api/scan/persistent/details', methods=['GET'])
+def api_persistent_details():
+    """获取某个来源 IP 的频道明细。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    source_ip = request.args.get('source_ip', '')
+    if not source_ip:
+        return jsonify({'error': 'source_ip is required'}), 400
+    return jsonify(scanner.get_persistent_details(source_ip))
+
+
+@app.route('/api/scan/persistent/stats', methods=['GET'])
+def api_persistent_stats():
+    """获取持久化结果的质量分布统计。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.get_persistent_stats())
+
+
+@app.route('/api/scan/persistent/manual-check', methods=['POST'])
+def api_persistent_manual_check():
+    """手动触发一轮持久化结果检测。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.trigger_persistent_manual_check())
+
+
+@app.route('/api/scan/persistent/export', methods=['GET'])
+def api_persistent_export():
+    """导出持久化结果为 M3U。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    results = scanner.get_persistent_for_export()
+    if not results:
+        return Response('#EXTM3U\n', mimetype='audio/x-mpegurl',
+                        headers={'Content-Disposition': 'attachment; filename=persistent.m3u'})
+    lines = ['#EXTM3U']
+    for r in results:
+        status_tag = f"[{r.get('quality_status', '')}]"
+        lines.append(f"#EXTINF:-1,{r['name']} {status_tag}")
+        lines.append(r['url'])
+    m3u_content = '\n'.join(lines) + '\n'
+    return Response(m3u_content, mimetype='audio/x-mpegurl',
+                    headers={'Content-Disposition': 'attachment; filename=persistent.m3u'})
+
+
+@app.route('/api/scan/persistent/<int:row_id>', methods=['DELETE'])
+def api_persistent_delete(row_id):
+    """删除单条持久化结果。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.delete_persistent_item(row_id))
 
 
 # ─────────────── 启动 ───────────────
