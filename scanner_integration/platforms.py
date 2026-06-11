@@ -1192,6 +1192,8 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
 
 # ---------- 主收集函数（串行化平台，JSMpeg 全国扫描一次） ----------
 async def collect_all(size=None):
+    """采集所有平台的 IPTV 频道。
+    返回 (clean_channels, actual_platforms) 元组。"""
     from .key_manager import KeyManager
     km = KeyManager.instance()
 
@@ -1234,18 +1236,24 @@ async def collect_all(size=None):
             # 串行执行每个平台（带 key 轮换）
             if "quake" in enabled_platforms and quake_key:
                 q_res = await _run_with_key_rotation('quake', quake_scan, qq, target_size, session=scan_session)
+                for ch in q_res:
+                    ch['platform'] = 'Quake 360'
                 all_raw.extend(q_res)
                 logger.info(f"[Quake] 省份 {prov} 完成，获得 {len(q_res)} 个频道")
                 await asyncio.sleep(API_REQUEST_DELAY)
 
             if "hunter" in enabled_platforms and hunter_key:
                 h_res = await _run_with_key_rotation('hunter', hunter_scan, hq, target_size, session=scan_session)
+                for ch in h_res:
+                    ch['platform'] = 'Hunter'
                 all_raw.extend(h_res)
                 logger.info(f"[Hunter] 省份 {prov} 完成，获得 {len(h_res)} 个频道")
                 await asyncio.sleep(API_REQUEST_DELAY)
 
             if "daydaymap" in enabled_platforms and ddm_key:
                 d_res = await _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target_size, session=scan_session)
+                for ch in d_res:
+                    ch['platform'] = 'DayDayMap'
                 all_raw.extend(d_res)
                 logger.info(f"[DayDayMap] 省份 {prov} 完成，获得 {len(d_res)} 个频道")
                 await asyncio.sleep(API_REQUEST_DELAY)
@@ -1254,6 +1262,8 @@ async def collect_all(size=None):
         if enabled_platforms:
             try:
                 zhgx_result = await asyncio.wait_for(zhgx_scan(target_size, session=scan_session), timeout=PLATFORM_TIMEOUT)
+                for ch in zhgx_result:
+                    ch['platform'] = 'ZHGX'
                 all_raw.extend(zhgx_result)
             except asyncio.TimeoutError:
                 logger.warning("[ZHGX] 总超时，放弃")
@@ -1264,6 +1274,8 @@ async def collect_all(size=None):
                 jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=target_size, session=scan_session),
                 timeout=PLATFORM_TIMEOUT
             )
+            for ch in jsmpeg_result:
+                ch['platform'] = 'JSMpeg'
             all_raw.extend(jsmpeg_result)
             logger.info(f"[JSMpeg] 全国扫描完成，获得 {len(jsmpeg_result)} 个频道")
         except asyncio.TimeoutError:
@@ -1272,6 +1284,8 @@ async def collect_all(size=None):
         if hunter_key:
             try:
                 tvh_result = await asyncio.wait_for(tvheadend_scan(hunter_key, None, 30, session=scan_session), timeout=PLATFORM_TIMEOUT)
+                for ch in tvh_result:
+                    ch['platform'] = 'Tvheadend'
                 all_raw.extend(tvh_result)
                 logger.info(f"[Tvheadend] 新增频道 {len(tvh_result)} 个")
             except asyncio.TimeoutError:
@@ -1280,6 +1294,8 @@ async def collect_all(size=None):
         if hunter_key:
             try:
                 iptv_interactive_result = await asyncio.wait_for(iptv_interactive_scan(hunter_key, None, 30, session=scan_session), timeout=PLATFORM_TIMEOUT)
+                for ch in iptv_interactive_result:
+                    ch['platform'] = 'IPTV互动'
                 all_raw.extend(iptv_interactive_result)
                 logger.info(f"[IPTV互动] 新增频道 {len(iptv_interactive_result)} 个")
             except asyncio.TimeoutError:
@@ -1288,6 +1304,8 @@ async def collect_all(size=None):
         if ddgs_enabled:
             try:
                 ddgs_result = await asyncio.wait_for(ddgs_scan(None, target_size, session=scan_session), timeout=PLATFORM_TIMEOUT)
+                for ch in ddgs_result:
+                    ch['platform'] = 'DDGS'
                 all_raw.extend(ddgs_result)
                 logger.info(f"[DDGS] 新增频道 {len(ddgs_result)} 个")
             except asyncio.TimeoutError:
@@ -1303,6 +1321,8 @@ async def collect_all(size=None):
                 for port in [8080, 80, 443]:
                     ch = await extract_channels_from_ip(ip, port, scan_session)
                     if ch:
+                        for c in ch:
+                            c['platform'] = '域名/IP'
                         all_raw.extend(ch)
                         break
             logger.info(f"[域名/IP扫描] 新增频道总数: {len(all_raw)}")
@@ -1320,4 +1340,14 @@ async def collect_all(size=None):
         ent['name_province'] = ent.get('name_province')
         ent['source_ip'] = ent.get('source_ip', '')
         clean.append(ent)
-    return clean
+    # 检测实际启用的平台（用于记录 platforms_used）
+    actual_platforms = []
+    if ddgs_enabled:
+        actual_platforms.append('ddgs')
+    if enabled_platforms:
+        actual_platforms.extend(enabled_platforms)
+    if km.get_all_keys('hunter'):
+        if 'hunter' not in actual_platforms:
+            actual_platforms.append('hunter')
+
+    return clean, actual_platforms

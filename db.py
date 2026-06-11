@@ -403,6 +403,7 @@ def init_db():
             province TEXT,
             city TEXT,
             source_ip TEXT,
+            platform TEXT DEFAULT '',
             resolution TEXT,
             codec TEXT,
             delay REAL,
@@ -461,8 +462,47 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_psr_src ON persistent_scan_results(source_ip);
         CREATE INDEX IF NOT EXISTS idx_psr_quality ON persistent_scan_results(quality_status);
         CREATE INDEX IF NOT EXISTS idx_psr_platform ON persistent_scan_results(platform);
+
+        CREATE TABLE IF NOT EXISTS detection_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            level TEXT DEFAULT 'INFO',
+            message TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_detection_logs_ts ON detection_logs(ts);
+
+        CREATE TABLE IF NOT EXISTS detection_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle_id TEXT NOT NULL UNIQUE,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            trigger_source TEXT DEFAULT 'auto',
+            total_checked INTEGER DEFAULT 0,
+            ok_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            deleted_count INTEGER DEFAULT 0,
+            duration_seconds REAL DEFAULT 0,
+            error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_det_runs_started ON detection_runs(started_at);
+
+        CREATE TABLE IF NOT EXISTS detection_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            name TEXT,
+            check_ok INTEGER DEFAULT 0,
+            http_status INTEGER DEFAULT 0,
+            response_time_ms REAL DEFAULT 0,
+            response_size_bytes INTEGER DEFAULT 0,
+            consecutive_failures INTEGER DEFAULT 0,
+            quality_status TEXT DEFAULT 'pending',
+            FOREIGN KEY (cycle_id) REFERENCES detection_runs(cycle_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_det_results_cycle ON detection_results(cycle_id);
     """)
     _ensure_run_results_columns(conn)
+    _ensure_scan_results_columns(conn)
     conn.commit()
     _init_default_data()
 
@@ -479,6 +519,14 @@ def _ensure_run_results_columns(conn):
     for name, col_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE run_results ADD COLUMN {name} {col_type}")
+
+
+def _ensure_scan_results_columns(conn):
+    """为旧数据库补齐 scan_results 新增字段。"""
+    rows = conn.execute("PRAGMA table_info(scan_results)").fetchall()
+    existing = {row['name'] for row in rows}
+    if 'platform' not in existing:
+        conn.execute("ALTER TABLE scan_results ADD COLUMN platform TEXT DEFAULT ''")
 
 
 def insert_run(run_data):
@@ -1092,9 +1140,9 @@ def insert_scan_results(scan_id, channels):
     conn = _get_conn()
     conn.executemany(
         """INSERT INTO scan_results
-           (scan_id, name, url, category, province, city, source_ip,
+           (scan_id, name, url, category, province, city, source_ip, platform,
             resolution, codec, delay, bandwidth, stability)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (
                 scan_id,
@@ -1104,6 +1152,7 @@ def insert_scan_results(scan_id, channels):
                 ch.get('province', ''),
                 ch.get('city', ''),
                 ch.get('source_ip', ''),
+                ch.get('platform', ''),
                 ch.get('resolution', ''),
                 ch.get('codec', ''),
                 ch.get('delay'),
@@ -1186,42 +1235,6 @@ def get_scan_results(scan_id=None, page=1, size=50, category=None,
     ).fetchall()
     return total, [dict(r) for r in rows]
 
-
-def get_scan_results_for_feed(scan_id, channel_names=None):
-    """获取用于送入测速的扫描结果。channel_names 为 None 时取全部。"""
-    conn = _get_conn()
-    if channel_names:
-        placeholders = ','.join('?' * len(channel_names))
-        rows = conn.execute(
-            f"""SELECT name, url, category, source_ip FROM scan_results
-                WHERE scan_id = ? AND stability > 0
-                  AND name IN ({placeholders})
-                ORDER BY name, stability DESC, bandwidth DESC""",
-            [scan_id] + list(channel_names)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT name, url, category, source_ip FROM scan_results
-               WHERE scan_id = ? AND stability > 0
-               ORDER BY name, stability DESC, bandwidth DESC""",
-            (scan_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def mark_scan_results_tested(scan_id, urls, run_id, passed=None):
-    """标记扫描结果已参与测速。"""
-    conn = _get_conn()
-    if passed is not None:
-        conn.executemany(
-            "UPDATE scan_results SET tested_in_run = ?, test_passed = ? WHERE scan_id = ? AND url = ?",
-            [(run_id, passed, scan_id, u) for u in urls]
-        )
-    else:
-        conn.executemany(
-            "UPDATE scan_results SET tested_in_run = ? WHERE scan_id = ? AND url = ?",
-            [(run_id, scan_id, u) for u in urls]
-        )
     conn.commit()
 
 
@@ -1332,6 +1345,144 @@ def clear_scan_logs():
     conn.commit()
 
 
+# ==================== 定期检测日志 (detection_logs) ====================
+
+
+def insert_detection_log(level, message):
+    """写入一条定期检测日志。"""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO detection_logs (ts, level, message) VALUES (?, ?, ?)",
+        (now_str(), level, message)
+    )
+    conn.commit()
+
+
+def get_detection_logs(limit=200):
+    """读取定期检测日志，返回最近 limit 条（按时间正序）。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT ts, level, message FROM detection_logs ORDER BY id DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def clear_detection_logs(keep=500):
+    """只保留最近 keep 条检测日志，删除更早的记录。"""
+    conn = _get_conn()
+    conn.execute(
+        "DELETE FROM detection_logs WHERE id NOT IN "
+        "(SELECT id FROM detection_logs ORDER BY id DESC LIMIT ?)",
+        (keep,)
+    )
+    conn.commit()
+
+
+# ==================== 定期检测轮次 (detection_runs / detection_results) ====================
+
+
+def insert_detection_run(cycle_id, started_at, trigger_source='auto'):
+    """创建一条检测轮次记录。"""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO detection_runs (cycle_id, started_at, trigger_source) VALUES (?, ?, ?)",
+        (cycle_id, started_at, trigger_source)
+    )
+    conn.commit()
+
+
+def finish_detection_run(cycle_id, finished_at, total, ok, failed, deleted, duration, error=None):
+    """更新检测轮次结束状态。"""
+    conn = _get_conn()
+    conn.execute(
+        """UPDATE detection_runs
+           SET finished_at=?, total_checked=?, ok_count=?,
+               failed_count=?, deleted_count=?, duration_seconds=?, error=?
+           WHERE cycle_id=?""",
+        (finished_at, total, ok, failed, deleted, duration, error, cycle_id)
+    )
+    conn.commit()
+
+
+def insert_detection_results(cycle_id, results_list):
+    """批量插入某轮检测的每个 URL 结果明细。"""
+    if not results_list:
+        return
+    conn = _get_conn()
+    conn.executemany(
+        """INSERT INTO detection_results
+           (cycle_id, url, name, check_ok, http_status,
+            response_time_ms, response_size_bytes,
+            consecutive_failures, quality_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                cycle_id,
+                r['url'], r.get('name'), int(r['check_ok']),
+                r.get('http_status', 0), r.get('response_time_ms', 0),
+                r.get('response_size_bytes', 0), r.get('consecutive_failures', 0),
+                r.get('quality_status', 'pending'),
+            )
+            for r in results_list
+        ]
+    )
+    conn.commit()
+
+
+def get_detection_runs(start=None, end=None, limit=100):
+    """按时间范围查询检测轮次记录。"""
+    conn = _get_conn()
+    conditions = []
+    params = []
+    if start:
+        conditions.append("started_at >= ?")
+        params.append(start)
+    if end:
+        conditions.append("started_at <= ?")
+        params.append(end)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"""SELECT cycle_id, started_at, finished_at, trigger_source,
+                   total_checked, ok_count, failed_count, deleted_count,
+                   duration_seconds, error
+            FROM detection_runs {where}
+            ORDER BY started_at DESC LIMIT ?""",
+        params
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_detection_results(cycle_id):
+    """查询某轮检测的所有 URL 结果明细。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT url, name, check_ok, http_status,
+                  response_time_ms, response_size_bytes,
+                  consecutive_failures, quality_status
+           FROM detection_results WHERE cycle_id = ? ORDER BY id""",
+        (cycle_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cleanup_old_detection_runs(keep=50):
+    """只保留最近 keep 轮检测记录，删除更早的 runs + results。"""
+    conn = _get_conn()
+    old_ids = conn.execute(
+        "SELECT cycle_id FROM detection_runs ORDER BY started_at DESC LIMIT -1 OFFSET ?",
+        (keep,)
+    ).fetchall()
+    if not old_ids:
+        return
+    ids = [r['cycle_id'] for r in old_ids]
+    placeholders = ','.join('?' * len(ids))
+    conn.execute(f"DELETE FROM detection_results WHERE cycle_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM detection_runs WHERE cycle_id IN ({placeholders})", ids)
+    conn.commit()
+
+
 def get_scan_stats(scan_id=None):
     """获取扫描结果的统计信息（按分类、省份分布）。"""
     conn = _get_conn()
@@ -1414,6 +1565,21 @@ def get_persistent_details_by_ip(source_ip):
     return [dict(r) for r in rows]
 
 
+def get_all_persistent_for_detection_table():
+    """获取所有持久化结果用于检测概览表格。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, name, source_ip, platform, quality_status,
+                  consecutive_failures, last_checked_at,
+                  stability, delay, bandwidth
+           FROM persistent_scan_results
+           ORDER BY
+             CASE WHEN last_checked_at IS NULL THEN 1 ELSE 0 END,
+             last_checked_at DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_persistent_stats():
     """按 quality_status 统计持久化结果数量。"""
     conn = _get_conn()
@@ -1489,6 +1655,16 @@ def get_persistent_grouped():
         })
     result.sort(key=lambda x: x['channel_count'], reverse=True)
     return result
+
+
+def get_persistent_by_url(url):
+    """按 URL 查询单条持久化结果。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT consecutive_failures, quality_status FROM persistent_scan_results WHERE url = ?",
+        (url,)
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def update_persistent_check(url, ok, stability=None, delay=None,

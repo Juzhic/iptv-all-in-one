@@ -6,6 +6,7 @@
 """
 import asyncio
 import logging
+import uuid
 
 import aiohttp
 
@@ -50,26 +51,38 @@ class DetectionManager:
             self._task.cancel()
             logger.info("[Detection] 检测循环已停止")
 
+    def _log(self, level, message):
+        """写入 Python logger 同时持久化到数据库。"""
+        if level == 'ERROR':
+            logger.error(message)
+        elif level == 'WARNING':
+            logger.warning(message)
+        else:
+            logger.info(message)
+        try:
+            import db as _db
+            _db.insert_detection_log(level, message)
+        except Exception:
+            pass
+
     async def _loop(self):
         """主循环：等待间隔 → 执行检测 → 循环。"""
-        # 启动后先等一个间隔再开始第一次检测
         while self._running:
             cfg = config_bridge.get_scan_config()
             interval = cfg.get('detection_interval_minutes', 120)
             if interval <= 0:
-                # 间隔为 0 或负数时暂停，60秒后重新检查配置
                 await asyncio.sleep(60)
                 continue
 
-            logger.info(f"[Detection] 下次检测将在 {interval} 分钟后")
+            self._log('INFO', f"[Detection] 下次检测将在 {interval} 分钟后")
             await asyncio.sleep(interval * 60)
 
             if not self._running:
                 break
-            await self._run_detection_cycle()
+            await self._run_detection_cycle(trigger_source='auto')
 
-    async def _run_detection_cycle(self):
-        """执行一次完整的检测周期。"""
+    async def _run_detection_cycle(self, trigger_source='auto'):
+        """执行一次完整的检测周期，结果持久化到数据库。"""
         import db as _db
         from datetime import datetime
 
@@ -78,15 +91,22 @@ class DetectionManager:
 
         all_items = _db.get_all_persistent_for_check()
         if not all_items:
-            logger.info("[Detection] 持久化结果集为空，跳过检测")
+            self._log('INFO', "[Detection] 持久化结果集为空，跳过检测")
             self._last_cycle_at = _db.now_str()
             self._last_cycle_result = {'total': 0, 'ok': 0, 'failed': 0, 'deleted': 0}
             return
 
-        logger.info(f"[Detection] 开始检测 {len(all_items)} 条记录...")
-        start_time = datetime.now()
+        # 创建本轮检测记录
+        now = datetime.now()
+        started_at = _db.now_str()
+        cycle_id = f"det_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        _db.insert_detection_run(cycle_id, started_at, trigger_source)
+
+        self._log('INFO', f"[Detection] 开始检测 {len(all_items)} 条记录 (cycle={cycle_id})...")
+        start_time = now
         ok_count = 0
         fail_count = 0
+        results_list = []
 
         sem = asyncio.Semaphore(30)
         timeout = aiohttp.ClientTimeout(total=5)
@@ -94,20 +114,39 @@ class DetectionManager:
             async def check_one(item):
                 nonlocal ok_count, fail_count
                 url = item['url']
+                name = item.get('name', '')
+
                 if not url.startswith(('http://', 'https://')):
                     _db.update_persistent_check(url, ok=False)
                     fail_count += 1
+                    results_list.append({
+                        'url': url, 'name': name, 'check_ok': False,
+                        'http_status': 0, 'response_time_ms': 0,
+                        'response_size_bytes': 0, 'consecutive_failures': 0,
+                        'quality_status': 'unreachable',
+                    })
                     return
 
                 async with sem:
-                    alive = await _quick_check(session, url)
-                    if alive:
-                        # 连接成功，保持已有指标不变
+                    result = await _quick_check(session, url)
+                    if result['alive']:
                         _db.update_persistent_check(url, ok=True)
                         ok_count += 1
                     else:
                         _db.update_persistent_check(url, ok=False)
                         fail_count += 1
+
+                    # 获取更新后的 consecutive_failures 和 quality_status
+                    psr = _db.get_persistent_by_url(url)
+                    results_list.append({
+                        'url': url, 'name': name,
+                        'check_ok': result['alive'],
+                        'http_status': result['status'],
+                        'response_time_ms': round(result['time_ms'], 1),
+                        'response_size_bytes': result['bytes'],
+                        'consecutive_failures': psr['consecutive_failures'] if psr else 0,
+                        'quality_status': psr['quality_status'] if psr else 'unreachable',
+                    })
 
             await asyncio.gather(*[check_one(item) for item in all_items])
 
@@ -115,7 +154,8 @@ class DetectionManager:
         deleted = _db.delete_persistent_by_threshold(threshold)
 
         elapsed = (datetime.now() - start_time).total_seconds()
-        self._last_cycle_at = _db.now_str()
+        finished_at = _db.now_str()
+        self._last_cycle_at = finished_at
         self._last_cycle_result = {
             'total': len(all_items),
             'ok': ok_count,
@@ -123,28 +163,54 @@ class DetectionManager:
             'deleted': deleted,
             'elapsed_seconds': round(elapsed, 1),
         }
-        logger.info(
+
+        # 持久化本轮结果
+        _db.insert_detection_results(cycle_id, results_list)
+        _db.finish_detection_run(
+            cycle_id, finished_at,
+            len(all_items), ok_count, fail_count, deleted,
+            round(elapsed, 1),
+        )
+        _db.cleanup_old_detection_runs(50)
+
+        self._log(
+            'INFO',
             f"[Detection] 检测完成: 总计={len(all_items)}, "
             f"通过={ok_count}, 失败={fail_count}, 删除={deleted}, "
             f"耗时={elapsed:.1f}s"
         )
+        try:
+            _db.clear_detection_logs()
+        except Exception:
+            pass
 
 
 async def _quick_check(session, url):
-    """快速检查 URL 是否可连接。"""
+    """快速检查 URL，返回详细结果字典。"""
+    result = {'alive': False, 'status': 0, 'time_ms': 0, 'bytes': 0}
     try:
+        from datetime import datetime
+        start = datetime.now()
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=4),
                                allow_redirects=True) as r:
+            result['status'] = r.status
             if r.status != 200:
-                return False
+                result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+                return result
             total = 0
             async for chunk in r.content.iter_chunked(2048):
                 total += len(chunk)
                 if total >= 4096:
-                    return True
-            return total > 0
+                    result['alive'] = True
+                    result['bytes'] = total
+                    result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+                    return result
+            result['alive'] = total > 0
+            result['bytes'] = total
+            result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+            return result
     except Exception:
-        return False
+        return result
 
 
 # 全局单例

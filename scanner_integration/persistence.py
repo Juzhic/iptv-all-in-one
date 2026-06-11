@@ -65,8 +65,11 @@ async def merge_scan_to_persistent(scan_id):
     _db.upsert_persistent_results(merge_rows)
     logger.info(f"[Persistence] 合并 {len(merge_rows)} 条记录到持久化结果集")
 
-    # 4. 立即验证所有 pending 行
-    await _validate_pending()
+    # 4. 立即验证所有 pending 行（验证失败不影响已合并的数据）
+    try:
+        await _validate_pending()
+    except Exception as e:
+        logger.warning(f"[Persistence] 验证过程出错（数据已保留）: {e}")
 
 
 def _extract_main_platform(platforms_used_str):

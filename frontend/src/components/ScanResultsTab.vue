@@ -1,15 +1,15 @@
 <template>
   <div class="scan-results-tab">
     <!-- 视图切换 -->
-    <t-space style="margin-bottom:12px;">
-      <t-radio-group v-model="viewMode" variant="default-filled" size="small">
-        <t-radio-button value="grouped">按来源分组</t-radio-button>
-        <t-radio-button value="legacy">按扫描记录</t-radio-button>
-      </t-radio-group>
+    <div class="view-tabs-row">
+      <t-tabs v-model="viewMode" theme="normal" size="small" :destroy-on-hide="false">
+        <t-tab-panel value="grouped" label="按来源分组" />
+        <t-tab-panel value="legacy" label="按扫描记录" />
+      </t-tabs>
       <t-button v-if="viewMode === 'grouped'" variant="outline" size="small" :loading="manualChecking" @click="triggerManualCheck">
         手动检测一轮
       </t-button>
-    </t-space>
+    </div>
 
     <!-- ==================== 按来源分组视图 ==================== -->
     <template v-if="viewMode === 'grouped'">
@@ -133,8 +133,6 @@
       </t-space>
       <t-space style="margin-bottom:12px">
         <t-button variant="outline" size="small" @click="selectAllLegacy">全选/取消</t-button>
-        <t-button theme="primary" size="small" @click="sendToSpeedTest">送入选中去测速</t-button>
-        <t-button variant="outline" size="small" @click="exportLegacyM3U">导出M3U</t-button>
       </t-space>
       <t-table
         :columns="legacyColumns"
@@ -147,6 +145,11 @@
         :pagination="pagination"
         @page-change="onPageChange"
       >
+        <template #platform="{ row }">
+          <t-tag variant="light" size="small" :theme="row.platform ? 'primary' : 'default'">
+            {{ platformLabel(row.platform || '') }}
+          </t-tag>
+        </template>
         <template #stability="{ row }">
           <div class="stability-cell">
             <div class="stability-track">
@@ -166,7 +169,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import {
-  apiScanResults, apiScanHistory, apiScanFeedToTest, apiScanStats,
+  apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
   apiPersistentManualCheck, apiPersistentExportUrl,
 } from '../api.js'
@@ -238,6 +241,7 @@ const detailColumns = [
 
 const legacyColumns = [
   { colKey: 'row-select', type: 'multiple', width: 40 },
+  { colKey: 'platform', title: '来源', width: 120 },
   { colKey: 'name', title: '频道名', width: 160 },
   { colKey: 'category', title: '分类', width: 110 },
   { colKey: 'province', title: '省份', width: 90 },
@@ -463,35 +467,6 @@ function selectAllLegacy() {
   }
 }
 
-async function sendToSpeedTest() {
-  const selected = selectedKeys.value
-  if (!selected.length) { MessagePlugin.error('请先勾选频道'); return }
-  const scanId = selectedScanId.value
-  if (!scanId) { MessagePlugin.error('请先选择一条扫描记录'); return }
-  const names = results.value.filter(r => selected.includes(r.id)).map(r => r.name).filter(Boolean)
-  const unique = [...new Set(names)]
-  if (!unique.length) { MessagePlugin.error('未找到选中频道'); return }
-  try {
-    const res = await apiScanFeedToTest(scanId, unique)
-    if (res.ok) {
-      MessagePlugin.success(res.message || '已送入测速')
-      document.querySelectorAll('.t-tabs__nav-item').forEach(el => {
-        if (el.textContent.includes('系统测试')) el.click()
-      })
-    } else { MessagePlugin.error(res.error || '送入失败') }
-  } catch (e) { MessagePlugin.error('送入失败') }
-}
-
-function exportLegacyM3U() {
-  const scanId = selectedScanId.value
-  if (!scanId) { MessagePlugin.error('请先选择一条扫描记录'); return }
-  apiScanResults({ scan_id: scanId, size: 9999 }).then(res => {
-    const items = res.items || []
-    if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
-    downloadM3U(items, 'scan_result.m3u')
-  }).catch(() => MessagePlugin.error('导出失败'))
-}
-
 function downloadM3U(items, filename) {
   let m3u = '#EXTM3U\n'
   items.forEach(ch => {
@@ -531,6 +506,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .scan-results-tab { padding-top: 4px; }
+
+.view-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
 
 .stats-bar {
   display: flex;

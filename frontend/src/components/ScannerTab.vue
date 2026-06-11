@@ -8,8 +8,6 @@
         <t-button v-if="scanRunning" theme="danger" :disabled="scanStopping" @click="stopScan">
           {{ scanStopping ? '终止中...' : '停止扫描' }}
         </t-button>
-        <t-button variant="outline" @click="healthCheck">健康检查</t-button>
-        <t-button variant="outline" class="danger-ghost" title="扫描卡死时使用" @click="forceClear">强制清除</t-button>
       </t-space>
     </t-card>
 
@@ -68,7 +66,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import { apiScanForceClear, apiScanHealth, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
+import { apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
 
 const scanRunning = ref(false)
@@ -317,44 +315,6 @@ async function stopScan() {
   }
 }
 
-async function healthCheck() {
-  try {
-    const res = await apiScanHealth()
-    if (res.ok) {
-      MessagePlugin.success(res.message || '健康检查已启动')
-      wasRunning = true
-      progressVisible.value = true
-      startPoll()
-    } else {
-      MessagePlugin.error(res.error || '健康检查启动失败')
-    }
-  } catch (_) {
-    MessagePlugin.error('健康检查请求失败')
-  }
-}
-
-async function forceClear() {
-  try {
-    const res = await apiScanForceClear()
-    if (res.ok) {
-      MessagePlugin.success(res.message || '已清除')
-      scanRunning.value = false
-      wasRunning = false
-      triggerPending = false
-      stopPoll()
-      progressVisible.value = false
-      progressPct.value = 0
-      progressLabel.value = ''
-      phaseText.value = '空闲'
-      await refreshStatus()
-    } else {
-      MessagePlugin.error(res.error || '清除失败')
-    }
-  } catch (_) {
-    MessagePlugin.error('清除失败')
-  }
-}
-
 onMounted(async () => {
   await refreshStatus()
   if (scanRunning.value) {
@@ -418,10 +378,6 @@ onMounted(async () => {
   align-items: center;
   margin-top: 8px;
   margin-bottom: 8px;
-}
-
-.danger-ghost {
-  color: #dc2626;
 }
 
 .log-panel {

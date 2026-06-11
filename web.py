@@ -36,6 +36,12 @@ from db import (
 )
 from test_engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
+# 启动时即导入扫描模块，避免请求内并发 import 导致死锁（Python 3.14+）
+try:
+    import scanner_integration as _scanner_module
+except ImportError:
+    _scanner_module = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, root_path=BASE_DIR, instance_path=BASE_DIR)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -1108,12 +1114,8 @@ _start_scheduler_from_config()
 # ─────────────── 扫描模块 API ───────────────
 
 def _get_scanner():
-    """获取 scanner_integration 模块（延迟导入，避免未安装 aiohttp 时报错）。"""
-    try:
-        import scanner_integration as scanner
-        return scanner
-    except ImportError as e:
-        return None
+    """获取 scanner_integration 模块（启动时已导入，直接返回缓存引用）。"""
+    return _scanner_module
 
 
 def _ensure_scan_bridge():
@@ -1232,44 +1234,6 @@ def api_scan_delete(scan_id):
     scanner.delete_scan(scan_id)
     return jsonify({'ok': True})
 
-
-@app.route('/api/scan/feed-to-test', methods=['POST'])
-def api_scan_feed_to_test():
-    """将扫描结果送入测速流水线。"""
-    scanner, err, code = _ensure_scan_bridge()
-    if err:
-        return err, code
-
-    data = request.get_json(silent=True) or {}
-    scan_id = data.get('scan_id')
-    channel_names = data.get('channel_names')  # None = 全部
-
-    if not scan_id:
-        return jsonify({'error': '请指定 scan_id'}), 400
-
-    test_list, error = scanner.feed_scan_to_test(scan_id, channel_names)
-    if error:
-        return jsonify({'error': error}), 400
-
-    if not test_list:
-        return jsonify({'error': '没有可测速的频道'}), 400
-
-    # 标记这些扫描结果已参与测速
-    from db import mark_scan_results_tested
-    urls = [url for _, url in test_list]
-    run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
-    mark_scan_results_tested(scan_id, urls, run_id)
-
-    # 启动测速
-    token = _start_test_background(trigger_source='scan', test_list=test_list, scan_id=scan_id)
-    if token is not None:
-        return jsonify({
-            'ok': True,
-            'message': f'已将 {len(test_list)} 个频道地址送入测速',
-            'run_id': run_id,
-            'count': len(test_list)
-        })
-    return jsonify({'error': '测试正在运行中，请等待完成'}), 409
 
 
 @app.route('/api/scan/config', methods=['GET'])
@@ -1542,6 +1506,35 @@ def api_persistent_delete(row_id):
     if err:
         return err, code
     return jsonify(scanner.delete_persistent_item(row_id))
+
+
+@app.route('/api/scan/detection/logs', methods=['GET'])
+def api_detection_logs():
+    """获取定期检测日志。"""
+    from db import get_detection_logs
+    limit = request.args.get('limit', 200, type=int)
+    return jsonify(get_detection_logs(limit=limit))
+
+
+@app.route('/api/scan/detection/runs', methods=['GET'])
+def api_detection_runs():
+    """获取检测轮次记录，支持 start/end 时间范围过滤。"""
+    start = request.args.get('start')
+    end = request.args.get('end')
+    limit = request.args.get('limit', 100, type=int)
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.get_detection_runs(start, end, limit))
+
+
+@app.route('/api/scan/detection/run/<cycle_id>/results', methods=['GET'])
+def api_detection_run_results(cycle_id):
+    """获取某轮检测的所有 URL 结果明细。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify(scanner.get_detection_results(cycle_id))
 
 
 # ─────────────── 启动 ───────────────

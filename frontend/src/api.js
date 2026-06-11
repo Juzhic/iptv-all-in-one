@@ -106,12 +106,6 @@ export function apiScanTrigger(provinces) {
 export function apiScanStop() {
   return postJSON('/api/scan/stop')
 }
-export function apiScanForceClear() {
-  return postJSON('/api/scan/force-clear')
-}
-export function apiScanHealth() {
-  return postJSON('/api/scan/health')
-}
 export function apiScanStatus() {
   return fetchJSON('/api/scan/status')
 }
@@ -147,9 +141,6 @@ export function apiScanKeyUpdate(platform, oldKey, newKey) {
 export function apiScanKeyDelete(platform, key) {
   return deleteJSON('/api/scan/keys', { platform, key })
 }
-export function apiScanFeedToTest(scanId, channelNames) {
-  return postJSON('/api/scan/feed-to-test', { scan_id: scanId, channel_names: channelNames })
-}
 
 // ─── 持久化扫描结果 ───
 export function apiPersistentGrouped() {
@@ -169,5 +160,21 @@ export function apiPersistentExportUrl() {
 }
 export function apiPersistentDelete(id) {
   return deleteJSON(`/api/scan/persistent/${id}`)
+}
+export function apiDetectionLogs(limit = 200) {
+  return fetchJSON('/api/scan/detection/logs?limit=' + limit)
+}
+export function apiDetectionResults() {
+  return fetchJSON('/api/scan/detection/results')
+}
+export function apiDetectionRuns(start, end, limit = 100) {
+  const params = new URLSearchParams()
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  params.set('limit', limit)
+  return fetchJSON('/api/scan/detection/runs?' + params.toString())
+}
+export function apiDetectionRunResults(cycleId) {
+  return fetchJSON('/api/scan/detection/run/' + encodeURIComponent(cycleId) + '/results')
 }
 

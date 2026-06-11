@@ -79,13 +79,22 @@ class AsyncBridge:
     def __init__(self):
         self._loop = None
         self._thread = None
+        self._start_lock = threading.Lock()
 
     def start(self):
-        if self._loop is not None and self._loop.is_running():
-            return
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run, daemon=True, name='scan-async')
-        self._thread.start()
+        with self._start_lock:
+            if self._loop is not None and self._loop.is_running():
+                return
+            if self._loop is not None and self._thread is not None and self._thread.is_alive():
+                # 线程已启动但循环还没标记 running，等一下
+                for _ in range(50):
+                    if self._loop.is_running():
+                        return
+                    time.sleep(0.05)
+                return
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._run, daemon=True, name='scan-async')
+            self._thread.start()
         logger.info("[Bridge] 异步事件循环已启动")
 
     def _run(self):
@@ -179,7 +188,10 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     try:
         # 阶段1：采集
         _scan_log(f"[Scan:{scan_id}] 开始采集...")
-        raw = await collect_all()
+        raw, actual_platforms = await collect_all()
+        # 用实际启用的平台覆盖 platforms_used
+        if actual_platforms:
+            _db.update_scan_run(scan_id, platforms_used=str(actual_platforms))
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
@@ -273,6 +285,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             await merge_scan_to_persistent(scan_id)
             _scan_log(f"[Scan:{scan_id}] 已合并到持久化结果集")
         except Exception as e:
+            _scan_log(f"[Scan:{scan_id}] 合并到持久化结果集失败: {e}")
             logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {e}")
 
     except BaseException as e:
@@ -470,31 +483,6 @@ def save_scan_config(cfg):
     return {'status': 'saved'}
 
 
-def feed_scan_to_test(scan_id, channel_names=None):
-    """将扫描结果送入 IPTV-Test 测速流水线。返回 test_list 格式。"""
-    import db as _db
-
-    results = _db.get_scan_results_for_feed(scan_id, channel_names)
-    if not results:
-        return None, '没有可测速的频道'
-
-    # 转换为 IPTV-Test 内部格式: [(channel_info_dict, url), ...]
-    test_list = []
-    for r in results:
-        channel_info = {'name': r['name']}
-        test_list.append((channel_info, r['url']))
-
-    # 按频道去重，每个频道保留所有 URL
-    seen_urls = set()
-    deduped = []
-    for info, url in test_list:
-        if url not in seen_urls:
-            seen_urls.add(url)
-            deduped.append((info, url))
-
-    return deduped, None
-
-
 # ==================== 持久化结果桥接函数 ====================
 
 def get_persistent_grouped():
@@ -515,13 +503,31 @@ def get_persistent_stats():
     return _db.get_persistent_stats()
 
 
+def get_all_persistent_for_detection_table():
+    """获取所有持久化结果用于检测概览表格。"""
+    import db as _db
+    return _db.get_all_persistent_for_detection_table()
+
+
+def get_detection_runs(start=None, end=None, limit=100):
+    """获取检测轮次记录。"""
+    import db as _db
+    return _db.get_detection_runs(start, end, limit)
+
+
+def get_detection_results(cycle_id):
+    """获取某轮检测的 URL 结果明细。"""
+    import db as _db
+    return _db.get_detection_results(cycle_id)
+
+
 def trigger_persistent_manual_check():
     """手动触发一轮持久化结果检测。"""
     from .detection import detection_manager
     if bridge._loop is None:
         return {'ok': False, 'error': '异步循环未启动'}
     asyncio.run_coroutine_threadsafe(
-        detection_manager._run_detection_cycle(), bridge._loop
+        detection_manager._run_detection_cycle(trigger_source='manual'), bridge._loop
     )
     return {'ok': True, 'status': 'started'}
 
