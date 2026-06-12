@@ -1155,6 +1155,7 @@ onBeforeUnmount(() => {
 .config-panel--log {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .detection-log-toolbar {
@@ -1165,7 +1166,9 @@ onBeforeUnmount(() => {
 
 .detection-log-panel {
   flex: 1;
-  height: 340px;
+  height: 0;
+  min-height: 120px;
+  max-height: 260px;
   overflow-y: auto;
   padding: 12px;
   border-radius: 12px;

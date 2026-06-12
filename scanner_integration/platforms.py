@@ -508,7 +508,7 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
     hunter_key = config_bridge.get_scan_config().get("hunter_key")
     ddm_key = config_bridge.get_scan_config().get("daydaymap_api_key")
 
-    collected_ips = set()
+    collected_ips = {}  # (ip, port) -> 来源平台名（Quake/Hunter/DayDayMap）
 
     one_month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
@@ -539,8 +539,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                         for item in items:
                             ip = item.get("ip")
                             port = item.get("port", 8080)
-                            if ip:
-                                collected_ips.add((ip, port))
+                            if ip and (ip, port) not in collected_ips:
+                                collected_ips[(ip, port)] = 'Quake 360'
                         logger.info(f"[JSMpeg] Quake 发现 {len(items)} 个IP")
                     else:
                         logger.warning(f"[JSMpeg] Quake 返回错误: {j.get('message')}")
@@ -569,8 +569,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                         for item in items:
                             ip = item.get("ip")
                             port = item.get("port", 8080)
-                            if ip:
-                                collected_ips.add((ip, port))
+                            if ip and (ip, port) not in collected_ips:
+                                collected_ips[(ip, port)] = 'Hunter'
                         logger.info(f"[JSMpeg] Hunter 发现 {len(items)} 个IP")
                     else:
                         logger.warning(f"[JSMpeg] Hunter 返回错误: {j.get('message')}")
@@ -600,7 +600,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                             ip = item.get("ip")
                             if ip:
                                 port = int(item.get("port", 8080))
-                                collected_ips.add((ip, port))
+                                if (ip, port) not in collected_ips:
+                                    collected_ips[(ip, port)] = 'DayDayMap'
                         logger.info(f"[JSMpeg] DayDayMap 发现 {len(items)} 个IP")
                     else:
                         logger.warning(f"[JSMpeg] DayDayMap 返回错误: {data.get('message')}")
@@ -617,7 +618,7 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
 
     logger.info(f"[JSMpeg] 共发现 {len(collected_ips)} 个潜在服务器，开始提取频道列表")
     entries = []
-    async def process_server(ip, port):
+    async def process_server(ip, port, source):
         base_url = f"http://{ip}:{port}"
         list_urls = [
             f"{base_url}/streamer/list",
@@ -679,7 +680,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                             'city': '',
                             'ip_province': province or '',
                             'name_province': detected_prov,
-                            'source_ip': ip
+                            'source_ip': ip,
+                            'scan_source': source
                         })
                     if chs:
                         logger.debug(f"[JSMpeg] 从 {ip}:{port} 的 {list_url} 提取到 {len(chs)} 个频道")
@@ -689,7 +691,7 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                 continue
         return []
 
-    tasks = [process_server(ip, port) for ip, port in collected_ips]
+    tasks = [process_server(ip, port, source) for (ip, port), source in collected_ips.items()]
     for result in await asyncio.gather(*tasks, return_exceptions=True):
         if isinstance(result, list) and result:
             entries.extend(result)
@@ -1286,7 +1288,7 @@ async def collect_all(size=None):
                 timeout=PLATFORM_TIMEOUT
             )
             for ch in jsmpeg_result:
-                ch['platform'] = 'JSMpeg'
+                ch['platform'] = ch.pop('scan_source', 'Quake 360')
             all_raw.extend(jsmpeg_result)
             logger.info(f"[JSMpeg] 全国扫描完成，获得 {len(jsmpeg_result)} 个频道")
         except asyncio.TimeoutError:

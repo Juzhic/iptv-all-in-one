@@ -69,9 +69,6 @@
         <t-tab-panel value="history" label="历史明细" :destroy-on-hide="false">
           <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
         </t-tab-panel>
-        <t-tab-panel value="channels" label="按频道" :destroy-on-hide="false">
-          <ChannelsTab v-if="visitedTabs.has('channels')" :channel-summary="channelSummary" />
-        </t-tab-panel>
         <t-tab-panel value="testing" label="系统测试" :destroy-on-hide="false">
           <TestingTab v-if="visitedTabs.has('testing')" @test-finished="onTestFinished" />
         </t-tab-panel>
@@ -99,7 +96,6 @@ import { apiGetInitial, apiGetProgress } from './api.js'
 import { usePolling } from './composables/usePolling.js'
 import OverviewTab from './components/OverviewTab.vue'
 import HistoryTab from './components/HistoryTab.vue'
-import ChannelsTab from './components/ChannelsTab.vue'
 import TestingTab from './components/TestingTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import ScannerTab from './components/ScannerTab.vue'
@@ -120,6 +116,7 @@ const activeTab = ref('overview')
 // 已访问的标签保持挂载（destroy-on-hide=false），切回时不重新请求。
 const visitedTabs = reactive(new Set(['overview']))
 const latestRun = ref(null)
+const latestScan = ref(null)
 const runs = ref([])
 const channelSummary = ref({})
 const codecStats = ref({})
@@ -133,11 +130,19 @@ const topSummaryCards = computed(() => {
   const summary = latestSummary.value
   const totalTested = Number(summary.total_tested || 0)
   const totalPassed = Number(summary.total_passed || 0)
-  const totalFailed = Number(summary.total_failed || Math.max(totalTested - totalPassed, 0))
   const passRate = Number(summary.pass_rate || 0)
+  const channelsPassed = Number(summary.unique_channels_passed || 0)
+  const channelsTotal = Number(summary.unique_channels_total || 0)
+  const channelCoverage = channelsTotal > 0
+    ? Math.round((channelsPassed / channelsTotal) * 1000) / 10
+    : 0
   const durationMinutes = latestRun.value.duration_seconds
     ? Math.max(1, Math.round(latestRun.value.duration_seconds / 60))
     : 0
+
+  const scan = latestScan.value
+  const scannedTotal = scan ? Number(scan.total_deduped || scan.total_raw || 0) : 0
+  const scannedRaw = scan ? Number(scan.total_raw || 0) : 0
 
   return [
     {
@@ -149,18 +154,20 @@ const topSummaryCards = computed(() => {
       progressStatus: passRate >= 50 ? 'success' : 'warning',
     },
     {
-      label: '通过频道',
-      value: `${summary.unique_channels_passed || 0}`,
-      sub: `共 ${summary.unique_channels_total || 0} 个频道`,
+      label: '覆盖频道',
+      value: `${channelCoverage}%`,
+      sub: `${channelsPassed} / ${channelsTotal} 个频道`,
       klass: 'blue',
-      progress: null,
-      progressStatus: 'success',
+      progress: channelCoverage,
+      progressStatus: channelCoverage >= 50 ? 'success' : 'warning',
     },
     {
-      label: '测试地址',
-      value: `${totalTested}`,
-      sub: `失败 ${totalFailed} 个`,
-      klass: '',
+      label: '扫描结果',
+      value: scannedTotal.toLocaleString(),
+      sub: scan
+        ? `原始 ${scannedRaw.toLocaleString()} 个地址`
+        : '暂无扫描数据',
+      klass: 'cyan',
       progress: null,
       progressStatus: 'success',
     },
@@ -198,6 +205,7 @@ async function loadInitialData() {
   try {
     const data = await apiGetInitial()
     latestRun.value = data.latest
+    latestScan.value = data.latest_scan || null
     runs.value = data.runs || []
     channelSummary.value = data.channel_summary || {}
     codecStats.value = data.codec_stats || {}
@@ -386,7 +394,7 @@ body {
 
 .summary-card {
   width: 100%;
-  border-radius: 18px;
+  border-radius: 16px;
   box-shadow: var(--td-shadow-1);
 }
 
@@ -397,32 +405,34 @@ body {
 .top-summary-card :deep(.t-card__body) {
   display: flex;
   flex-direction: column;
-  min-height: 152px;
+  min-height: 140px;
+  padding: 18px 20px 16px;
 }
 
 .card-label {
-  margin-bottom: 8px;
-  font-size: 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--td-text-color-placeholder, #6b7280);
 }
 
 .card-value {
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.25;
   color: var(--td-text-color-primary, #111827);
 }
 
 .card-value.green { color: #16a34a; }
 .card-value.red { color: #dc2626; }
 .card-value.blue { color: #2563eb; }
+.card-value.cyan { color: #0891b2; }
 .card-value.purple { color: #7c3aed; }
 
 .card-sub {
-  margin-top: 8px;
-  margin-bottom: 12px;
+  margin-top: 6px;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--td-text-color-placeholder, #9ca3af);
 }
 
@@ -464,11 +474,11 @@ body {
   }
 
   .top-summary-card :deep(.t-card__body) {
-    min-height: 138px;
+    min-height: 128px;
   }
 
   .card-value {
-    font-size: 24px;
+    font-size: 22px;
   }
 }
 </style>

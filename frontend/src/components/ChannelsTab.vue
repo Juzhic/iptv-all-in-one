@@ -36,9 +36,14 @@
           :header-affixed-top="false"
         >
           <template #url="{ row }">
-            <t-popup :content="row.url" placement="top">
-              <div class="url-cell">{{ row.url }}</div>
-            </t-popup>
+            <div class="url-with-copy">
+              <t-popup :content="row.url" placement="top">
+                <span class="url-cell">{{ row.url }}</span>
+              </t-popup>
+              <t-button v-if="row.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(row.url)">
+                <template #icon><t-icon name="copy" /></template>
+              </t-button>
+            </div>
           </template>
           <template #is_h265="{ row }">
             <t-tag v-if="row.is_h265" class="codec-tag codec-tag-h265" size="small" variant="light">H.265</t-tag>
@@ -62,11 +67,25 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { MessagePlugin } from 'tdesign-vue-next'
 
 const props = defineProps({ channelSummary: Object })
 
 const searchQuery = ref('')
 const filter = ref('all')
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    MessagePlugin.success('已复制')
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
+    document.body.removeChild(ta)
+    MessagePlugin.success('已复制')
+  }
+}
 
 const urlColumns = [
   { colKey: 'url', title: 'URL', width: 300, ellipsis: true },
@@ -104,6 +123,9 @@ const filteredChannels = computed(() => {
 .ch-name { font-weight: 600; font-size: 14px; }
 .url-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--td-text-color-placeholder, #6b7280); font-family: monospace; cursor: pointer; }
 .url-cell:hover { white-space: normal; word-break: break-all; }
+.url-with-copy { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.copy-btn { flex-shrink: 0; opacity: 0; transition: opacity 0.15s; padding: 0 2px !important; min-width: auto !important; }
+.url-with-copy:hover .copy-btn { opacity: 1; }
 .empty-hint { text-align: center; padding: 40px; color: var(--td-text-color-placeholder); font-size: 13px; }
 .codec-tag-h265 { background: var(--td-brand-color-light); color: var(--td-brand-color); }
 .codec-tag-codec { background: var(--td-bg-color-component); color: var(--td-text-color-secondary); }

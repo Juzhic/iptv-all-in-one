@@ -337,6 +337,7 @@ def init_db():
             passed BOOLEAN DEFAULT 0,
             reason TEXT,
             cost_seconds REAL,
+            source_url TEXT DEFAULT '',
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         );
 
@@ -518,6 +519,7 @@ def _ensure_run_results_columns(conn):
         'connection_latency_ms': 'REAL',
         'quality_score': 'REAL',
         'output_updated_at': 'TEXT',
+        'source_url': 'TEXT DEFAULT \'\'',
     }
     for name, col_type in columns.items():
         if name not in existing:
@@ -563,8 +565,8 @@ def insert_run(run_data):
             """INSERT INTO run_results
                (run_id, channel, url, resolution, bandwidth_MBps,
                 connection_latency_ms, quality_score, output_updated_at,
-                codec, is_h265, sample_seconds, passed, reason, cost_seconds)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                codec, is_h265, sample_seconds, passed, reason, cost_seconds, source_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     run_data['run_id'],
@@ -581,6 +583,7 @@ def insert_run(run_data):
                     r.get('passed', False),
                     r.get('reason', ''),
                     r.get('cost_seconds', 0),
+                    r.get('source_url', ''),
                 )
                 for r in results
             ]
@@ -763,6 +766,76 @@ def get_channel_summary(run_id):
         summary[ch] = {
             'total': r['total'],
             'passed': r['passed'],
+            'urls': details_by_channel.get(ch, []),
+        }
+    return summary
+
+
+def get_channel_summary_with_source(run_id):
+    """按频道聚合某轮测试结果，并关联数据来源平台（Quake/Hunter/DayDayMap 等）。"""
+    conn = _get_conn()
+
+    # 1. 按频道聚合统计
+    rows = conn.execute(
+        """SELECT channel,
+                  COUNT(*) as total,
+                  SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed
+           FROM run_results WHERE run_id = ?
+           GROUP BY channel ORDER BY channel""",
+        (run_id,)
+    ).fetchall()
+
+    # 2. 获取所有结果明细
+    detail_rows = conn.execute(
+        """SELECT * FROM run_results WHERE run_id = ?
+           ORDER BY channel,
+                    passed DESC,
+                    COALESCE(quality_score, 0) DESC,
+                    COALESCE(bandwidth_MBps, 0) DESC,
+                    COALESCE(connection_latency_ms, 999999999) ASC,
+                    id""",
+        (run_id,)
+    ).fetchall()
+
+    # 3. 收集所有 URL，批量查询 persistent_scan_results 获取平台来源
+    all_urls = [r['url'] for r in detail_rows]
+    url_platform = {}
+    if all_urls:
+        # 分批查询，避免 SQLite 参数数量限制
+        batch_size = 500
+        for i in range(0, len(all_urls), batch_size):
+            batch = all_urls[i:i + batch_size]
+            placeholders = ','.join(['?'] * len(batch))
+            platform_rows = conn.execute(
+                f"SELECT url, platform FROM persistent_scan_results WHERE url IN ({placeholders})",
+                batch
+            ).fetchall()
+            for pr in platform_rows:
+                url_platform[pr['url']] = pr['platform'] or '未知'
+
+    # 4. 按频道组装结果
+    details_by_channel = {}
+    sources_by_channel = {}
+    for r in detail_rows:
+        ch = r['channel']
+        if ch not in details_by_channel:
+            details_by_channel[ch] = []
+            sources_by_channel[ch] = set()
+        row_dict = dict(r)
+        platform = url_platform.get(r['url'])
+        row_dict['platform'] = platform or ''
+        details_by_channel[ch].append(row_dict)
+        if platform:
+            sources_by_channel[ch].add(platform)
+
+    summary = {}
+    for r in rows:
+        ch = r['channel']
+        sources = sorted(sources_by_channel.get(ch, set()))
+        summary[ch] = {
+            'total': r['total'],
+            'passed': r['passed'],
+            'sources': sources,
             'urls': details_by_channel.get(ch, []),
         }
     return summary

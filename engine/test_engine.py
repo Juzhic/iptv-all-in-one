@@ -750,7 +750,8 @@ def filter_and_save_playlist(
             'passed': result.get('pass', False),
             'output_updated_at': output_updated_at,
             'reason': reason,
-            'cost_seconds': round(cost_time, 2)
+            'cost_seconds': round(cost_time, 2),
+            'source_url': channel_info.get('source_url', ''),
         })
 
         status = f"{verdict} | 原因: {reason}"
@@ -986,8 +987,9 @@ def match_channels_from_m3u(iptv_list, demo_structure, name_to_canonical, regex_
         if canonical in needed:
             if canonical not in matched:
                 matched[canonical] = []
-            if url not in matched[canonical]:
-                matched[canonical].append(url)
+            src = channel_info.get('source_url', '')
+            if not any(u == url for u, _ in matched[canonical]):
+                matched[canonical].append((url, src))
     return matched
 
 
@@ -1140,6 +1142,8 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
             m3u_content = fetch_m3u_playlist(m3u_url)
             if m3u_content:
                 iptv_list = parse_iptv_addresses(m3u_content)
+                for ci, stream_url in iptv_list:
+                    ci['source_url'] = m3u_url
                 _log(f"  -> 解析到 {len(iptv_list)} 个频道地址")
                 print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
                 all_iptv_list.extend(iptv_list)
@@ -1157,9 +1161,9 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
 
         # 构建待测列表
         test_list = []
-        for canonical_name, urls in matched_urls.items():
-            for url in urls:
-                test_list.append(({'name': canonical_name}, url))
+        for canonical_name, url_entries in matched_urls.items():
+            for url, src in url_entries:
+                test_list.append(({'name': canonical_name, 'source_url': src}, url))
 
         # 融合扫描源：将已验证的持久化扫描结果作为额外订阅源
         if cfg.get('include_scan_results_in_test', False):

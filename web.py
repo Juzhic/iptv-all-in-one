@@ -33,7 +33,7 @@ from database import (
     get_config_data, set_config_data, DEFAULT_DEMO,
     get_config, save_config as db_save_config,
     get_scheduler_state, update_scheduler_state, clear_scheduler_state,
-    now_str,
+    now_str, get_latest_scan_run,
 )
 from engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
@@ -462,6 +462,7 @@ def api_initial():
         codec_stats = get_codec_stats(latest['run_id'])
     return jsonify({
         'latest': latest,
+        'latest_scan': get_latest_scan_run(),
         'runs': runs,
         'channel_summary': channel_summary,
         'codec_stats': codec_stats,
@@ -582,6 +583,14 @@ def api_get_run(run_id):
     if not detail:
         return jsonify({'error': '未找到该轮记录'}), 404
     return jsonify(detail)
+
+
+@app.route('/api/run/<run_id>/channels', methods=['GET'])
+def api_get_run_channels(run_id):
+    """获取单轮测试按频道分组的详情，含数据来源平台。"""
+    from database import get_channel_summary_with_source
+    summary = get_channel_summary_with_source(run_id)
+    return jsonify(summary)
 
 
 @app.route('/api/run/<run_id>', methods=['DELETE'])

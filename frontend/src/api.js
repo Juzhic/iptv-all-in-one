@@ -91,6 +91,9 @@ export function apiGetRuns(start, end) {
 export function apiGetRun(runId) {
   return fetchJSON(`/api/run/${runId}`)
 }
+export function apiGetRunChannels(runId) {
+  return fetchJSON(`/api/run/${runId}/channels`)
+}
 export function apiDeleteRun(runId) {
   return deleteJSON(`/api/run/${runId}`)
 }

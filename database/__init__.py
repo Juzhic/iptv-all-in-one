@@ -30,6 +30,7 @@ from database.db import (  # noqa: F401
     get_run_detail,
     delete_run,
     get_channel_summary,
+    get_channel_summary_with_source,
     get_codec_stats,
     # 测速进度/日志
     clear_run_progress,
