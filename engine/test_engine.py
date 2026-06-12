@@ -6,8 +6,8 @@ import logging
 import os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from alias import load_aliases, match_channel_name
-from FFmpegTest import (
+from engine.alias import load_aliases, match_channel_name
+from engine.ffmpeg_test import (
     analyze_iptv_with_ffmpeg,
     register_timeout as _reg_timeout,
     clear_timeouts as _clear_timeouts,
@@ -15,7 +15,7 @@ from FFmpegTest import (
     http_get,
     detect_non_live_media_url,
 )
-from db import init_db, insert_run, migrate_from_json, now_str, timestamp_str
+from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str
 
 try:
     import psutil
@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
 
 def load_config(filepath=None):
     """从数据库加载配置，缺失项使用默认值。首次启动自动从 config.json 迁移。"""
-    from db import get_config, migrate_config_from_file
+    from database import get_config, migrate_config_from_file
     # 首次启动：尝试从 config.json 迁移
     migrate_config_from_file('config.json', DEFAULT_CONFIG)
     return get_config(DEFAULT_CONFIG)
@@ -285,7 +285,7 @@ class _DBLogHandler(logging.Handler):
         if not self.run_id:
             return
         try:
-            from db import insert_log
+            from database import insert_log
             insert_log(self.run_id, record.levelname, self.format(record))
         except Exception:
             pass
@@ -934,7 +934,7 @@ def filter_and_save_playlist(
 
 def load_subscribe_urls():
     """从数据库读取订阅源地址，每行一个，忽略空行和 # 注释行。"""
-    from db import get_config_data
+    from database import get_config_data
     content = get_config_data('subscribe')
     urls = []
     for line in content.split('\n'):
@@ -946,7 +946,7 @@ def load_subscribe_urls():
 
 def parse_demo_file():
     """从数据库读取 demo 模板，返回 [(genre, [channel_name, ...]), ...]。"""
-    from db import get_config_data
+    from database import get_config_data
     content = get_config_data('demo')
     structure = []
     current_genre = None
@@ -1069,7 +1069,7 @@ def save_run_result(run_data, filepath='output/history.json'):
 def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
                    progress_source=None, test_list=None, scan_id=None):
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
-    from db import clear_run_progress, update_run_progress
+    from database import clear_run_progress, update_run_progress
     _clear_timeouts()
     run_start_time = time.time()
     run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
@@ -1080,7 +1080,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     def _log(msg):
         # 始终写入数据库
         try:
-            from db import insert_log as _db_insert_log
+            from database import insert_log as _db_insert_log
             _db_insert_log(run_id, 'INFO', msg)
         except Exception:
             pass
@@ -1164,7 +1164,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
         # 融合扫描源：将已验证的持久化扫描结果作为额外订阅源
         if cfg.get('include_scan_results_in_test', False):
             try:
-                from db import get_persistent_for_test
+                from database import get_persistent_for_test
                 scan_items = get_persistent_for_test()
                 if scan_items:
                     existing_urls = {url for _, url in test_list}

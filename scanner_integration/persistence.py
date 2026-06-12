@@ -17,13 +17,13 @@ logger = logging.getLogger('scanner.persistence')
 
 async def merge_scan_to_persistent(scan_id):
     """将某次扫描的结果合并到持久化结果表，然后立即验证所有 pending 行。"""
-    import db as _db
+    import database as _db
 
-    # 1. 读取该次扫描的所有结果
+    # 1. 读取该次扫描的所有结果（包含 per-channel platform）
     conn = _db._get_conn()
     rows = conn.execute(
         """SELECT name, url, category, province, city, source_ip,
-                  resolution, codec, delay, bandwidth, stability
+                  platform, resolution, codec, delay, bandwidth, stability
            FROM scan_results WHERE scan_id = ?""",
         (scan_id,)
     ).fetchall()
@@ -32,19 +32,7 @@ async def merge_scan_to_persistent(scan_id):
         logger.info(f"[Persistence] scan {scan_id} 无结果可合并")
         return
 
-    # 2. 从 scan_runs 获取平台信息
-    run_row = conn.execute(
-        "SELECT platforms_used FROM scan_runs WHERE scan_id = ?",
-        (scan_id,)
-    ).fetchone()
-    platform_str = ''
-    if run_row and run_row['platforms_used']:
-        platform_str = run_row['platforms_used']
-
-    # 提取主平台名称（取第一个）
-    main_platform = _extract_main_platform(platform_str)
-
-    # 3. 批量 UPSERT
+    # 2. 批量 UPSERT（使用每条记录自身的 platform）
     merge_rows = []
     for r in rows:
         merge_rows.append({
@@ -54,7 +42,7 @@ async def merge_scan_to_persistent(scan_id):
             'province': r['province'] or '',
             'city': r['city'] or '',
             'source_ip': r['source_ip'] or '',
-            'platform': main_platform,
+            'platform': r['platform'] or '未知',
             'resolution': r['resolution'] or '',
             'codec': r['codec'] or '',
             'delay': r['delay'],
@@ -72,27 +60,9 @@ async def merge_scan_to_persistent(scan_id):
         logger.warning(f"[Persistence] 验证过程出错（数据已保留）: {e}")
 
 
-def _extract_main_platform(platforms_used_str):
-    """从 platforms_used 字符串提取主平台名。"""
-    if not platforms_used_str:
-        return '未知'
-    # 格式可能是 "['quake', 'hunter']" 或 "quake,hunter"
-    s = platforms_used_str.strip("[]'\" ")
-    first = s.split(',')[0].strip().strip("'\"")
-    platform_map = {
-        'quake': 'Quake 360',
-        'hunter': 'Hunter',
-        'daydaymap': 'DayDayMap',
-        'zhgx': 'ZHGX',
-        'jsmpeg': 'JSMpeg',
-        'tvheadend': 'Tvheadend',
-    }
-    return platform_map.get(first.lower(), first or '未知')
-
-
 async def _validate_pending():
     """对所有 pending 的持久化结果执行快速验证。"""
-    import db as _db
+    import database as _db
 
     pending = _db.get_pending_persistent()
     if not pending:
@@ -100,28 +70,30 @@ async def _validate_pending():
         return
 
     logger.info(f"[Persistence] 开始验证 {len(pending)} 条待验证记录...")
-    sem = asyncio.Semaphore(30)
+    sem = asyncio.Semaphore(20)
     verified = 0
     good = 0
     poor = 0
     failed = 0
+    fail_reasons = {}
 
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with get_session(limit=30, timeout=timeout) as session:
+    async with get_session(limit=20, timeout=6) as session:
         async def check_one(item):
             nonlocal verified, good, poor, failed
-            url = item['url']
-            if not url.startswith(('http://', 'https://')):
-                _db.update_persistent_check(url, ok=False)
-                failed += 1
-                return
+            async with sem:  # 统一限流：含非 http 分支，避免一次性铺开大量协程同步写 DB
+                url = item['url']
+                if not url.startswith(('http://', 'https://')):
+                    _db.update_persistent_check(url, ok=False)
+                    failed += 1
+                    fail_reasons['non_http'] = fail_reasons.get('non_http', 0) + 1
+                    return
 
-            async with sem:
                 # 快速连接检查
                 ok = await _quick_check(session, url)
                 if not ok:
                     _db.update_persistent_check(url, ok=False)
                     failed += 1
+                    fail_reasons['http_check_failed'] = fail_reasons.get('http_check_failed', 0) + 1
                     return
 
                 # 使用扫描时已有的指标判定质量
@@ -144,7 +116,10 @@ async def _validate_pending():
 
         await asyncio.gather(*[check_one(item) for item in pending])
 
-    logger.info(f"[Persistence] 验证完成: 通过={verified}, good={good}, poor={poor}, 失败={failed}")
+    logger.info(
+        f"[Persistence] 验证完成: 通过={verified} (good={good}, poor={poor}), "
+        f"失败={failed} {fail_reasons if fail_reasons else ''}"
+    )
 
 
 async def _quick_check(session, url):

@@ -113,7 +113,7 @@ def _normalize_scan_config(raw_cfg):
 def get_scan_config():
     """从数据库读取扫描配置，合并默认值后返回 dict。"""
     global _CONFIG_CACHE
-    from db import get_config_data
+    from database import get_config_data
     raw = get_config_data('scan_config')
     if raw:
         try:
@@ -130,7 +130,7 @@ def get_scan_config():
 def save_scan_config(cfg):
     """保存扫描配置到数据库。"""
     global _CONFIG_CACHE
-    from db import set_config_data
+    from database import set_config_data
     current = get_scan_config()
     merged = dict(current)
     if isinstance(cfg, dict):

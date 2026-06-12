@@ -1,12 +1,30 @@
 // ─── 统一 API 请求封装 ───
 
+// 默认请求超时（毫秒）。网络不好时，避免 fetch 无限挂起、
+// 耗尽浏览器对单一域名的并发连接数（约 6 个），导致页面“卡死”。
+const DEFAULT_TIMEOUT = 20000
+
 function checkStatus(r) {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r
 }
 
+// 给 fetch 套上超时控制：到时自动 abort，释放连接。
+function fetchWithTimeout(url, opts = {}) {
+  const { timeout = DEFAULT_TIMEOUT, signal, ...rest } = opts
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  // 兼容调用方自带的 signal
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+  return fetch(url, { credentials: 'same-origin', signal: controller.signal, ...rest })
+    .finally(() => clearTimeout(timer))
+}
+
 export function fetchJSON(url, opts = {}) {
-  return fetch(url, { credentials: 'same-origin', ...opts }).then(checkStatus).then(r => r.json())
+  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json())
 }
 
 export function postJSON(url, data) {
@@ -26,16 +44,16 @@ export function putJSON(url, data) {
 }
 
 export function deleteJSON(url, data) {
-  const opts = { method: 'DELETE', credentials: 'same-origin' }
+  const opts = { method: 'DELETE' }
   if (data !== undefined) {
     opts.headers = { 'Content-Type': 'application/json' }
     opts.body = JSON.stringify(data)
   }
-  return fetch(url, opts).then(checkStatus).then(r => r.json())
+  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json())
 }
 
 export function fetchText(url) {
-  return fetch(url, { credentials: 'same-origin' }).then(checkStatus).then(r => r.text())
+  return fetchWithTimeout(url).then(checkStatus).then(r => r.text())
 }
 
 // ─── 初始数据 ───
@@ -106,6 +124,9 @@ export function apiScanTrigger(provinces) {
 export function apiScanStop() {
   return postJSON('/api/scan/stop')
 }
+export function apiScanForceClear() {
+  return postJSON('/api/scan/force-clear')
+}
 export function apiScanStatus() {
   return fetchJSON('/api/scan/status')
 }
@@ -155,17 +176,8 @@ export function apiPersistentStats() {
 export function apiPersistentManualCheck() {
   return postJSON('/api/scan/persistent/manual-check')
 }
-export function apiPersistentExportUrl() {
-  return '/api/scan/persistent/export'
-}
-export function apiPersistentDelete(id) {
-  return deleteJSON(`/api/scan/persistent/${id}`)
-}
 export function apiDetectionLogs(limit = 200) {
   return fetchJSON('/api/scan/detection/logs?limit=' + limit)
-}
-export function apiDetectionResults() {
-  return fetchJSON('/api/scan/detection/results')
 }
 export function apiDetectionRuns(start, end, limit = 100) {
   const params = new URLSearchParams()

@@ -58,6 +58,7 @@
       <t-tabs v-model="activeTab" @change="onTabChange" class="main-tabs">
         <t-tab-panel value="overview" label="总览" :destroy-on-hide="false">
           <OverviewTab
+            v-if="visitedTabs.has('overview')"
             ref="overviewRef"
             :latest="latestRun"
             :runs="runs"
@@ -66,25 +67,25 @@
           />
         </t-tab-panel>
         <t-tab-panel value="history" label="历史明细" :destroy-on-hide="false">
-          <HistoryTab ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
+          <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
         </t-tab-panel>
         <t-tab-panel value="channels" label="按频道" :destroy-on-hide="false">
-          <ChannelsTab :channel-summary="channelSummary" />
+          <ChannelsTab v-if="visitedTabs.has('channels')" :channel-summary="channelSummary" />
         </t-tab-panel>
         <t-tab-panel value="testing" label="系统测试" :destroy-on-hide="false">
-          <TestingTab @test-finished="onTestFinished" />
+          <TestingTab v-if="visitedTabs.has('testing')" @test-finished="onTestFinished" />
         </t-tab-panel>
         <t-tab-panel value="settings" label="系统配置" :destroy-on-hide="false">
-          <SettingsTab />
+          <SettingsTab v-if="visitedTabs.has('settings')" />
         </t-tab-panel>
         <t-tab-panel value="scanner" label="频道扫描" :destroy-on-hide="false">
-          <ScannerTab />
+          <ScannerTab v-if="visitedTabs.has('scanner')" />
         </t-tab-panel>
         <t-tab-panel value="scan-config" label="扫描配置" :destroy-on-hide="false">
-          <ScanConfigTab />
+          <ScanConfigTab v-if="visitedTabs.has('scan-config')" />
         </t-tab-panel>
         <t-tab-panel value="scan-results" label="扫描结果" :destroy-on-hide="false">
-          <ScanResultsTab />
+          <ScanResultsTab v-if="visitedTabs.has('scan-results')" />
         </t-tab-panel>
       </t-tabs>
     </div>
@@ -92,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, provide, nextTick } from 'vue'
+import { ref, computed, onMounted, provide, nextTick, reactive } from 'vue'
 import { useTheme } from './composables/useTheme.js'
 import { apiGetInitial, apiGetProgress } from './api.js'
 import { usePolling } from './composables/usePolling.js'
@@ -114,6 +115,10 @@ const isDark = computed({
 })
 
 const activeTab = ref('overview')
+// 懒加载标签页：只有访问过的标签才挂载其组件，避免一进后台就并发
+// 触发所有标签的 onMounted 数据请求（网络差时会堵死浏览器并发连接）。
+// 已访问的标签保持挂载（destroy-on-hide=false），切回时不重新请求。
+const visitedTabs = reactive(new Set(['overview']))
 const latestRun = ref(null)
 const runs = ref([])
 const channelSummary = ref({})
@@ -196,7 +201,10 @@ async function loadInitialData() {
     runs.value = data.runs || []
     channelSummary.value = data.channel_summary || {}
     codecStats.value = data.codec_stats || {}
-    if (!data.latest) activeTab.value = 'testing'
+    if (!data.latest) {
+      activeTab.value = 'testing'
+      visitedTabs.add('testing')
+    }
   } catch (error) {
     console.error('加载初始数据失败:', error)
   }
@@ -245,6 +253,7 @@ function refreshOverview(runsData) {
 }
 
 function onTabChange(value) {
+  visitedTabs.add(value)
   if (value === 'overview') {
     nextTick(() => overviewRef.value?.refreshCharts?.())
   }

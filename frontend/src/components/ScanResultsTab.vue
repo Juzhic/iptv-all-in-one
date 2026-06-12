@@ -171,7 +171,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import {
   apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
-  apiPersistentManualCheck, apiPersistentExportUrl,
+  apiPersistentManualCheck,
 } from '../api.js'
 
 // ─── 视图模式 ───
@@ -304,19 +304,27 @@ function formatDate(s) {
 async function loadGrouped() {
   groupedLoading.value = true
   try {
-    const [grouped, stats] = await Promise.all([
+    // allSettled：grouped 与 stats 互不拖累，任一失败不会清空另一个
+    const [groupedRes, statsRes] = await Promise.allSettled([
       apiPersistentGrouped(),
       apiPersistentStats(),
     ])
-    groupedData.value = Array.isArray(grouped) ? grouped : []
-    persistentStats.value = stats || {}
-    // 默认展开第一个平台
-    if (groupedData.value.length && !expandedPlatforms.value.length) {
-      expandedPlatforms.value = [groupedData.value[0].platform]
+    if (groupedRes.status === 'fulfilled') {
+      groupedData.value = Array.isArray(groupedRes.value) ? groupedRes.value : []
+      // 默认展开第一个平台
+      if (groupedData.value.length && !expandedPlatforms.value.length) {
+        expandedPlatforms.value = [groupedData.value[0].platform]
+      }
+    } else {
+      console.error('加载分组数据失败', groupedRes.reason)
+      groupedData.value = []
+      MessagePlugin.error('加载分组数据失败')
     }
-  } catch (e) {
-    console.error('加载分组数据失败', e)
-    groupedData.value = []
+    if (statsRes.status === 'fulfilled') {
+      persistentStats.value = statsRes.value || {}
+    } else {
+      console.error('加载统计数据失败', statsRes.reason)
+    }
   } finally {
     groupedLoading.value = false
   }

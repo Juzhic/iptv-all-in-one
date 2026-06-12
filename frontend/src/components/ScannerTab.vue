@@ -8,7 +8,11 @@
         <t-button v-if="scanRunning" theme="danger" :disabled="scanStopping" @click="stopScan">
           {{ scanStopping ? '终止中...' : '停止扫描' }}
         </t-button>
+        <t-button variant="outline" theme="warning" :disabled="scanClearing" @click="forceClear">
+          {{ scanClearing ? '清除中...' : '强制清除状态' }}
+        </t-button>
       </t-space>
+      <p class="section-subtitle clear-hint">扫描卡死、点“开始”却提示“正在进行中”时，用此按钮强制清除残留状态。</p>
     </t-card>
 
     <t-card size="small" :bordered="false" class="panel-card">
@@ -66,12 +70,13 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import { apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
+import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
 
 const scanRunning = ref(false)
 const scanStarting = ref(false)
 const scanStopping = ref(false)
+const scanClearing = ref(false)
 const currentPhase = ref('idle')
 const phaseText = ref('空闲')
 const progressVisible = ref(false)
@@ -155,7 +160,9 @@ function appendLogs(lines) {
 
 function applyStatus(data = {}) {
   const running = Boolean(data.running)
-  if (!running && triggerPending && !wasRunning) return
+  // 刚点“开始扫描”后，后端可能还没把 running 翻成 true。
+  // triggerPending 期间（10s 内）忽略 running=false，避免把刚启动的扫描误判为已完成。
+  if (!running && triggerPending) return
 
   scanRunning.value = running
   currentPhase.value = data.phase || 'idle'
@@ -315,6 +322,27 @@ async function stopScan() {
   }
 }
 
+async function forceClear() {
+  scanClearing.value = true
+  try {
+    const res = await apiScanForceClear()
+    if (res.ok) {
+      MessagePlugin.success(res.message || '扫描状态已清除')
+      // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
+      triggerPending = false
+      wasRunning = false
+      stopPoll()
+      await refreshStatus()
+    } else {
+      MessagePlugin.error(res.error || '清除失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('清除失败')
+  } finally {
+    scanClearing.value = false
+  }
+}
+
 onMounted(async () => {
   await refreshStatus()
   if (scanRunning.value) {
@@ -343,6 +371,12 @@ onMounted(async () => {
   margin-bottom: 12px;
   font-size: 13px;
   color: var(--td-text-color-placeholder, #6b7280);
+}
+
+.clear-hint {
+  margin-top: 10px;
+  margin-bottom: 0;
+  font-size: 12px;
 }
 
 .phase-text {

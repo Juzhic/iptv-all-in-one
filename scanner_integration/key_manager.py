@@ -353,7 +353,6 @@ async def check_all_hunter_credits():
     results = []
     for key in keys:
         info = await check_hunter_credit(key)
-        print(info)
         credit = _safe_number(info.get('points')) if info.get('ok') else None
         if credit is not None:
             km.update_credit('hunter', key, credit)

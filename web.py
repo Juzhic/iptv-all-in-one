@@ -24,7 +24,8 @@ if not hasattr(pkgutil, 'get_loader'):
     pkgutil.get_loader = _compat_get_loader
 
 from flask import Flask, request, jsonify, send_file, send_from_directory, Response
-from db import (
+import database as db
+from database import (
     init_db, migrate_from_json,
     get_latest_run, get_latest_passed_results,
     get_run_history, get_run_detail, get_channel_summary,
@@ -34,7 +35,7 @@ from db import (
     get_scheduler_state, update_scheduler_state, clear_scheduler_state,
     now_str,
 )
-from test_engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
+from engine import load_config, DEFAULT_CONFIG, resolve_output_update_time
 
 # 启动时即导入扫描模块，避免请求内并发 import 导致死锁（Python 3.14+）
 try:
@@ -259,7 +260,7 @@ def _finite_number_or_none(value):
 init_db()
 migrate_from_json()
 try:
-    from db import clear_run_progress
+    from database import clear_run_progress
     clear_run_progress()
 except Exception:
     pass
@@ -594,7 +595,7 @@ def api_delete_run(run_id):
 def api_get_run_logs(run_id):
     """获取指定轮次的运行日志。"""
     limit = request.args.get('limit', 0, type=int)
-    from db import get_run_logs
+    from database import get_run_logs
     payload = get_run_logs(run_id, limit=limit if limit and limit > 0 else None)
     return jsonify(payload)
 
@@ -643,7 +644,7 @@ def _group_passed_results(passed_results):
 def _results_for_channel(ch, channels, name_to_canonical=None, regex_aliases=None):
     results = channels.get(ch, [])
     if not results and name_to_canonical:
-        from alias import match_channel_name
+        from engine.alias import match_channel_name
         canonical = match_channel_name(ch, name_to_canonical, regex_aliases)
         if canonical and canonical != ch:
             results = channels.get(canonical, [])
@@ -662,8 +663,8 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
 
     # 按 demo.txt 的分类结构输出
     try:
-        from test_engine import parse_demo_file
-        from alias import load_aliases
+        from engine.test_engine import parse_demo_file
+        from engine.alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
@@ -707,8 +708,8 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
     body_lines = []
 
     try:
-        from test_engine import parse_demo_file
-        from alias import load_aliases
+        from engine.test_engine import parse_demo_file
+        from engine.alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
         demo = parse_demo_file()
         for genre, ch_list in demo:
@@ -828,7 +829,7 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             'msg': msg,
         })
         try:
-            from db import insert_log
+            from database import insert_log
             insert_log(_run_id, 'INFO', msg)
         except Exception:
             pass
@@ -836,7 +837,7 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
     def _run():
         global _test_running, _test_active_token
         try:
-            from test_engine import run_test_cycle
+            from engine.test_engine import run_test_cycle
             run_test_cycle(
                 progress_callback=_on_progress,
                 log_callback=_on_log,
@@ -869,7 +870,7 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                     _test_active_token = None
             if is_current_run:
                 try:
-                    from db import clear_run_progress
+                    from database import clear_run_progress
                     clear_run_progress()
                 except Exception:
                     pass
@@ -897,7 +898,7 @@ def _scheduler_loop():
     _scheduler_running = True
     _write_scheduler_state(True, _next_scheduled_run)
     # 导入 app 模块的调度函数
-    from test_engine import _next_run_datetime
+    from engine.test_engine import _next_run_datetime
 
     try:
         while True:
@@ -987,7 +988,7 @@ def api_status():
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
         })
-    from db import get_run_progress
+    from database import get_run_progress
     db_progress = get_run_progress()
     if db_progress and db_progress.get('running'):
         return jsonify({
@@ -1043,7 +1044,7 @@ def api_progress():
         })
 
     # 检查 SQLite 中的定时任务进度
-    from db import get_run_progress
+    from database import get_run_progress
     db_progress = get_run_progress()
     if db_progress and db_progress.get('running'):
         return jsonify({
@@ -1165,18 +1166,6 @@ def api_scan_force_clear():
     return jsonify(result)
 
 
-@app.route('/api/scan/health', methods=['POST'])
-def api_scan_health():
-    """触发健康检查。"""
-    scanner, err, code = _ensure_scan_bridge()
-    if err:
-        return err, code
-    result = scanner.trigger_health_check()
-    if 'error' in result:
-        return jsonify(result), 409
-    return jsonify({'ok': True, 'message': '健康检查已启动'})
-
-
 @app.route('/api/scan/status', methods=['GET'])
 def api_scan_status():
     """获取扫描实时进度。"""
@@ -1223,17 +1212,6 @@ def api_scan_history():
         return jsonify([])
     limit = int(request.args.get('limit', 50))
     return jsonify(scanner.get_scan_history(limit=limit))
-
-
-@app.route('/api/scan/run/<scan_id>', methods=['DELETE'])
-def api_scan_delete(scan_id):
-    """删除扫描记录。"""
-    scanner = _get_scanner()
-    if scanner is None:
-        return jsonify({'error': '扫描模块未安装'}), 503
-    scanner.delete_scan(scan_id)
-    return jsonify({'ok': True})
-
 
 
 @app.route('/api/scan/config', methods=['GET'])
@@ -1415,19 +1393,6 @@ def api_scan_keys_update():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/scan/quake-credits', methods=['GET'])
-def api_scan_quake_credits():
-    """查询所有 Quake key 的积分。"""
-    try:
-        import asyncio
-        from scanner_integration.key_manager import check_all_quake_credits, init_key_manager
-        init_key_manager()
-        results = asyncio.run(check_all_quake_credits())
-        return jsonify({'ok': True, 'keys': results})
-    except Exception as e:
-        return jsonify({'error': f'查询失败: {e}'})
-
-
 @app.route('/api/scan/stats', methods=['GET'])
 def api_scan_stats():
     """获取扫描结果统计。"""
@@ -1479,26 +1444,6 @@ def api_persistent_manual_check():
     return jsonify(scanner.trigger_persistent_manual_check())
 
 
-@app.route('/api/scan/persistent/export', methods=['GET'])
-def api_persistent_export():
-    """导出持久化结果为 M3U。"""
-    scanner, err, code = _ensure_scan_bridge()
-    if err:
-        return err, code
-    results = scanner.get_persistent_for_export()
-    if not results:
-        return Response('#EXTM3U\n', mimetype='audio/x-mpegurl',
-                        headers={'Content-Disposition': 'attachment; filename=persistent.m3u'})
-    lines = ['#EXTM3U']
-    for r in results:
-        status_tag = f"[{r.get('quality_status', '')}]"
-        lines.append(f"#EXTINF:-1,{r['name']} {status_tag}")
-        lines.append(r['url'])
-    m3u_content = '\n'.join(lines) + '\n'
-    return Response(m3u_content, mimetype='audio/x-mpegurl',
-                    headers={'Content-Disposition': 'attachment; filename=persistent.m3u'})
-
-
 @app.route('/api/scan/persistent/<int:row_id>', methods=['DELETE'])
 def api_persistent_delete(row_id):
     """删除单条持久化结果。"""
@@ -1511,7 +1456,7 @@ def api_persistent_delete(row_id):
 @app.route('/api/scan/detection/logs', methods=['GET'])
 def api_detection_logs():
     """获取定期检测日志。"""
-    from db import get_detection_logs
+    from database import get_detection_logs
     limit = request.args.get('limit', 200, type=int)
     return jsonify(get_detection_logs(limit=limit))
 

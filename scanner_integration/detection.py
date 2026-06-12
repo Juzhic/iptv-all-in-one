@@ -60,7 +60,7 @@ class DetectionManager:
         else:
             logger.info(message)
         try:
-            import db as _db
+            import database as _db
             _db.insert_detection_log(level, message)
         except Exception:
             pass
@@ -83,7 +83,7 @@ class DetectionManager:
 
     async def _run_detection_cycle(self, trigger_source='auto'):
         """执行一次完整的检测周期，结果持久化到数据库。"""
-        import db as _db
+        import database as _db
         from datetime import datetime
 
         cfg = config_bridge.get_scan_config()
@@ -108,26 +108,25 @@ class DetectionManager:
         fail_count = 0
         results_list = []
 
-        sem = asyncio.Semaphore(30)
-        timeout = aiohttp.ClientTimeout(total=5)
-        async with get_session(limit=30, timeout=timeout) as session:
+        sem = asyncio.Semaphore(20)
+        async with get_session(limit=20, timeout=6) as session:
             async def check_one(item):
                 nonlocal ok_count, fail_count
-                url = item['url']
-                name = item.get('name', '')
+                async with sem:  # 统一限流：含非 http 分支，避免一次性铺开数千协程同步写 DB
+                    url = item['url']
+                    name = item.get('name', '')
 
-                if not url.startswith(('http://', 'https://')):
-                    _db.update_persistent_check(url, ok=False)
-                    fail_count += 1
-                    results_list.append({
-                        'url': url, 'name': name, 'check_ok': False,
-                        'http_status': 0, 'response_time_ms': 0,
-                        'response_size_bytes': 0, 'consecutive_failures': 0,
-                        'quality_status': 'unreachable',
-                    })
-                    return
+                    if not url.startswith(('http://', 'https://')):
+                        _db.update_persistent_check(url, ok=False)
+                        fail_count += 1
+                        results_list.append({
+                            'url': url, 'name': name, 'check_ok': False,
+                            'http_status': 0, 'response_time_ms': 0,
+                            'response_size_bytes': 0, 'consecutive_failures': 0,
+                            'quality_status': 'unreachable',
+                        })
+                        return
 
-                async with sem:
                     result = await _quick_check(session, url)
                     if result['alive']:
                         _db.update_persistent_check(url, ok=True)

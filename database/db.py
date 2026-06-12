@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 
-DB_PATH = 'iptv.db'
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'iptv.db')
 MAX_RUNS = 50
 CONFIG_DATA = 'config'  # config_data 表中存储系统配置的 key
 LOCAL_TZ = timezone(timedelta(hours=8))
@@ -297,6 +297,9 @@ def _get_conn():
         _local.conn.row_factory = sqlite3.Row
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=ON")
+        # 多线程并发写（深度检测/检测循环/Flask 请求共用 DB）时，
+        # 遇到锁等待最多 5 秒而非立即抛 database is locked。
+        _local.conn.execute("PRAGMA busy_timeout=5000")
     return _local.conn
 
 
@@ -1235,8 +1238,6 @@ def get_scan_results(scan_id=None, page=1, size=50, category=None,
     ).fetchall()
     return total, [dict(r) for r in rows]
 
-    conn.commit()
-
 
 def get_scan_run(scan_id):
     """获取单条扫描记录。"""
@@ -1674,6 +1675,18 @@ def update_persistent_check(url, ok, stability=None, delay=None,
     now = now_str()
     if ok:
         # 连接成功：重置失败计数，根据指标更新质量状态
+        # 若未传入指标（如检测轮次），使用数据库中已有的值
+        if stability is None:
+            row = conn.execute(
+                "SELECT stability, delay, bandwidth FROM persistent_scan_results WHERE url=?",
+                (url,)
+            ).fetchone()
+            if row:
+                stability = row['stability']
+                if delay is None:
+                    delay = row['delay']
+                if bandwidth is None:
+                    bandwidth = row['bandwidth']
         quality = _evaluate_quality(stability, delay, bandwidth)
         conn.execute(
             """UPDATE persistent_scan_results
@@ -1703,6 +1716,19 @@ def _evaluate_quality(stability, delay, bandwidth):
     """根据检测指标判定质量等级。"""
     if stability is None:
         return 'unreachable'
+    # 确保数值类型（数据库可能存储为字符串）
+    try:
+        stability = float(stability) if stability else 0
+    except (TypeError, ValueError):
+        return 'unreachable'
+    try:
+        delay = float(delay) if delay not in (None, '') else None
+    except (TypeError, ValueError):
+        delay = None
+    try:
+        bandwidth = float(bandwidth) if bandwidth not in (None, '') else None
+    except (TypeError, ValueError):
+        bandwidth = None
     if stability >= 60 and (delay is None or delay < 2000) and (bandwidth is None or bandwidth >= 300):
         return 'good'
     if stability >= 30:

@@ -98,7 +98,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiGetRuns, apiGetRun, apiDeleteRun, apiGetRunLogs } from '../api.js'
 
 const props = defineProps({ initialRuns: Array })
@@ -173,12 +173,16 @@ function resetAll() {
   queryHistory()
 }
 
-async function onExpandChange(keys, { row }) {
-  if (keys.includes(row.run_id) && !detailCache[row.run_id]) {
+async function onExpandChange(keys, extra) {
+  const row = extra?.row
+  // 当 extra 或 row 缺失时，回退到 historyRuns 中查找新展开的 run
+  const target = row || historyRuns.value.find(r => keys.includes(r.run_id) && !detailCache[r.run_id])
+  if (!target) return
+  if (keys.includes(target.run_id) && !detailCache[target.run_id]) {
     try {
-      const data = await apiGetRun(row.run_id)
-      detailCache[row.run_id] = data.results || []
-      detailSearch[row.run_id] = ''
+      const data = await apiGetRun(target.run_id)
+      detailCache[target.run_id] = data.results || []
+      detailSearch[target.run_id] = ''
     } catch (e) { MessagePlugin.error('加载详情失败') }
   }
 }
@@ -191,12 +195,21 @@ function filteredDetail(runId) {
 }
 
 async function deleteRun(runId) {
-  try {
-    await apiDeleteRun(runId)
-    historyRuns.value = historyRuns.value.filter(r => r.run_id !== runId)
-    emit('update-overview', historyRuns.value)
-    MessagePlugin.success('已删除')
-  } catch (e) { MessagePlugin.error('删除失败: ' + e.message) }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '删除测速记录',
+    body: '删除后该轮次及其日志将永久移除，无法恢复。确认删除？',
+    theme: 'warning',
+    confirmBtn: { content: '删除', theme: 'danger' },
+    onConfirm: async () => {
+      try {
+        await apiDeleteRun(runId)
+        historyRuns.value = historyRuns.value.filter(r => r.run_id !== runId)
+        emit('update-overview', historyRuns.value)
+        MessagePlugin.success('已删除')
+      } catch (e) { MessagePlugin.error('删除失败: ' + e.message) }
+      confirmDialog.hide()
+    },
+  })
 }
 
 async function openLogModal(runId) {

@@ -17,7 +17,7 @@ def load_aliases():
     返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
     """
     global _name_to_canonical, _regex_aliases, _canonical_to_aliases
-    from db import get_config_data
+    from database import get_config_data
     content = get_config_data('alias')
     canonical_to_aliases = {}
     name_to_canonical = {}

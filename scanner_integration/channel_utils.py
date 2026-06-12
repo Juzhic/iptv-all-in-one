@@ -4,7 +4,7 @@ import os
 from collections import OrderedDict
 from .geo_data import extract_province_from_name, CITY_TO_PROVINCE, normalize_province, PROVINCES, PROVINCE_CHANNEL_PATTERNS
 from .logger_bridge import logger
-import alias as _alias_module
+import engine.alias as _alias_module
 
 # ---- 黑名单 ----
 CHANNEL_BLACKLIST = [

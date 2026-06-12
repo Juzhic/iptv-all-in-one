@@ -10,6 +10,8 @@ __pycache__/
 output/
 logs/
 *.db
+*.db-shm
+*.db-wal
 
 # IDE
 .idea/

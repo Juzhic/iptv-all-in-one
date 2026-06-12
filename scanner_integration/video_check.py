@@ -136,6 +136,10 @@ async def get_video_info(url):
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=STREAM_CHECK_TIMEOUT + 2)
             except asyncio.TimeoutError:
                 proc.kill()
+                try:
+                    await proc.wait()  # 回收子进程，避免僵尸进程与未关闭管道堆积
+                except Exception:
+                    pass
                 return ("未知", "unknown")
             if proc.returncode == 0 and stdout:
                 parts = stdout.decode().strip().split(',')
@@ -447,7 +451,7 @@ async def health_check():
 async def trigger_refill():
     global QUICK_CHANNELS, LATEST_CHANNELS
     from .platforms import collect_all
-    new_entries = await collect_all(size=AUTO_REFILL_QUAKE_SIZE)
+    new_entries, _ = await collect_all(size=AUTO_REFILL_QUAKE_SIZE)
     if not new_entries:
         return
     existing = {c['url'] for c in QUICK_CHANNELS}

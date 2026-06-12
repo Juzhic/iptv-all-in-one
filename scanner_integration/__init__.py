@@ -22,7 +22,7 @@ def _init_log_seq():
     """从数据库恢复日志序号（防止服务重启后序号冲突）。"""
     global _scan_log_seq
     try:
-        import db as _db
+        import database as _db
         conn = _db._get_conn()
         row = conn.execute("SELECT MAX(seq) as max_seq FROM scan_logs").fetchone()
         if row and row['max_seq']:
@@ -37,7 +37,7 @@ def _scan_log(msg):
     _scan_log_seq += 1
     time_str = datetime.now().strftime('%H:%M:%S')
     try:
-        import db as _db
+        import database as _db
         _db.insert_scan_log(_scan_log_seq, time_str, msg)
     except Exception:
         pass  # DB 写入失败不影响扫描流程
@@ -125,7 +125,7 @@ def init_bridge():
     bridge.start()
     # 通过共享 alias.py 模块加载别名
     try:
-        import alias as _alias
+        import engine.alias as _alias
         _alias.load_aliases()
         logger.info("[Bridge] 别名已从数据库加载")
     except Exception as e:
@@ -153,7 +153,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     from .platforms import collect_all, deduplicate
     from .video_check import fast_filter, background_deep_update
     from .channel_utils import resolve_name
-    import db as _db
+    import database as _db
 
     cfg = config_bridge.get_scan_config()
     scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -303,7 +303,7 @@ async def _do_health_check():
     """执行健康检查。"""
     from .video_check import health_check
     from . import video_check as _vc
-    import db as _db
+    import database as _db
 
     # 确保 video_check 的模块级状态与 scan_state 同步
     if scan_state.channels:
@@ -350,7 +350,7 @@ def trigger_scan(platforms=None, provinces=None):
             _scan_log(f"[Trigger] 扫描执行异常: {e}")
         finally:
             # 无论成功失败，确保进度状态不卡在 running
-            import db as _db
+            import database as _db
             _db.clear_scan_progress()
 
     _scan_log("[Trigger] 正在启动扫描...")
@@ -361,7 +361,7 @@ def trigger_scan(platforms=None, provinces=None):
 
 def trigger_stop():
     """请求停止扫描。如果扫描已死则直接清除状态。"""
-    import db as _db
+    import database as _db
     progress = _db.get_scan_progress()
     if progress and progress.get('running'):
         scan_state.request_stop()
@@ -374,7 +374,7 @@ def trigger_stop():
 
 def force_clear_scan():
     """强制清除扫描状态（用于恢复卡死的扫描）。"""
-    import db as _db
+    import database as _db
     scan_state.request_stop()
     _db.clear_scan_progress()
     return {'ok': True, 'message': '扫描状态已清除'}
@@ -392,7 +392,7 @@ def trigger_health_check():
         except BaseException as e:
             _scan_log(f"[Health] 健康检查异常: {e}")
         finally:
-            import db as _db
+            import database as _db
             _db.clear_scan_progress()
 
     _scan_log("[Health] 正在启动健康检查...")
@@ -403,7 +403,7 @@ def trigger_health_check():
 
 def get_scan_status():
     """获取扫描进度，附带增量日志行（从数据库读取，关闭浏览器再回来也能看到）。"""
-    import db as _db
+    import database as _db
     progress = db_get_scan_progress()
     latest_run = _db.get_latest_scan_run() or {}
 
@@ -442,33 +442,33 @@ def get_scan_status():
 def get_scan_results(scan_id=None, page=1, size=50, category=None,
                      province=None, search=None):
     """分页查询扫描结果。"""
-    import db as _db
+    import database as _db
     return _db.get_scan_results(scan_id=scan_id, page=page, size=size,
                                 category=category, province=province, search=search)
 
 
 def get_latest_scan():
     """获取最新扫描记录。"""
-    import db as _db
+    import database as _db
     return _db.get_latest_scan_run()
 
 
 def get_scan_history(limit=50):
     """获取扫描历史。"""
-    import db as _db
+    import database as _db
     return _db.get_scan_history(limit=limit)
 
 
 def delete_scan(scan_id):
     """删除扫描记录。"""
-    import db as _db
+    import database as _db
     _db.delete_scan_run(scan_id)
     return {'status': 'deleted'}
 
 
 def get_scan_stats(scan_id=None):
     """获取扫描结果统计。"""
-    import db as _db
+    import database as _db
     return _db.get_scan_stats(scan_id=scan_id)
 
 
@@ -487,37 +487,37 @@ def save_scan_config(cfg):
 
 def get_persistent_grouped():
     """获取持久化结果的两级分组汇总。"""
-    import db as _db
+    import database as _db
     return _db.get_persistent_grouped()
 
 
 def get_persistent_details(source_ip):
     """获取某个来源 IP 的频道明细。"""
-    import db as _db
+    import database as _db
     return _db.get_persistent_details_by_ip(source_ip)
 
 
 def get_persistent_stats():
     """获取持久化结果的质量统计。"""
-    import db as _db
+    import database as _db
     return _db.get_persistent_stats()
 
 
 def get_all_persistent_for_detection_table():
     """获取所有持久化结果用于检测概览表格。"""
-    import db as _db
+    import database as _db
     return _db.get_all_persistent_for_detection_table()
 
 
 def get_detection_runs(start=None, end=None, limit=100):
     """获取检测轮次记录。"""
-    import db as _db
+    import database as _db
     return _db.get_detection_runs(start, end, limit)
 
 
 def get_detection_results(cycle_id):
     """获取某轮检测的 URL 结果明细。"""
-    import db as _db
+    import database as _db
     return _db.get_detection_results(cycle_id)
 
 
@@ -532,23 +532,9 @@ def trigger_persistent_manual_check():
     return {'ok': True, 'status': 'started'}
 
 
-def get_persistent_for_export():
-    """获取所有持久化结果用于导出 M3U。"""
-    import db as _db
-    conn = _db._get_conn()
-    rows = conn.execute(
-        """SELECT name, url, category, province, source_ip,
-                  stability, quality_status
-           FROM persistent_scan_results
-           WHERE quality_status != 'unreachable'
-           ORDER BY category, name, stability DESC"""
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def delete_persistent_item(row_id):
     """删除单条持久化结果。"""
-    import db as _db
+    import database as _db
     _db.delete_persistent_by_id(row_id)
     return {'status': 'deleted'}
 
@@ -561,7 +547,7 @@ def get_detection_status():
 
 def db_get_scan_progress():
     """读取扫描进度。"""
-    import db as _db
+    import database as _db
     return _db.get_scan_progress()
 
 
@@ -619,7 +605,7 @@ async def _daily_update_task():
             await asyncio.sleep(wait_seconds)
 
             # 到达目标时间，检查是否有正在进行的扫描
-            import db as _db
+            import database as _db
             progress = _db.get_scan_progress()
             if progress and progress.get('running'):
                 logger.info("[Scheduler] 已有扫描在运行，跳过本次")

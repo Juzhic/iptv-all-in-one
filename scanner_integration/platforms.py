@@ -56,14 +56,14 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
                         resolved_name, cat = resolve_name(raw_name)
                         detected_prov = extract_province_from_name(resolved_name)
                         if not detected_prov and raw_name:
-                            for city, p in CITY_TO_PROVINCE.items():
-                                if city in raw_name:
+                            for _city_name, p in CITY_TO_PROVINCE.items():
+                                if _city_name in raw_name:
                                     detected_prov = p
                                     break
                             if not detected_prov:
                                 for i in range(len(raw_name)):
-                                    for j in range(i+2, min(i+5, len(raw_name)+1)):
-                                        sub = raw_name[i:j]
+                                    for k in range(i+2, min(i+5, len(raw_name)+1)):
+                                        sub = raw_name[i:k]
                                         if sub in CITY_TO_PROVINCE:
                                             detected_prov = CITY_TO_PROVINCE[sub]
                                             break
@@ -88,7 +88,7 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
                         })
                     if result:
                         return result
-            except:
+            except Exception:
                 continue
     return []
 
@@ -233,10 +233,11 @@ async def quake_scan(api_key=None, query=None, target_size=None, session=None):
                         if len(items) < size: break
                 elif r.status == 403:
                     raise KeyDepletedError("Quake key 积分耗尽")
-                    break
                 else:
                     logger.warning(f"[Quake] 请求失败 HTTP {r.status}")
                     break
+        except KeyDepletedError:
+            raise  # 让 key 耗尽冒泡到 _run_with_key_rotation 触发轮换
         except asyncio.TimeoutError:
             logger.warning(f"[Quake] 批次 {start} 超时")
             break
@@ -284,7 +285,8 @@ async def hunter_scan(api_key, query, target_size, session=None):
                 if r.status == 200:
                     j = await r.json()
                     if j.get("code") in (200, 0):
-                        items = j["data"]["arr"]
+                        data = j.get("data") or {}
+                        items = data.get("arr") or []
                         if not items:
                             break
                         logger.info(f"[Hunter] 第{page}页，{len(items)} 条")
@@ -307,10 +309,11 @@ async def hunter_scan(api_key, query, target_size, session=None):
                         break
                 elif r.status == 403:
                     raise KeyDepletedError("Hunter key 积分耗尽")
-                    break
                 else:
                     logger.warning(f"[Hunter] 请求失败 HTTP {r.status}, 响应: {await r.text()}")
                     break
+        except KeyDepletedError:
+            raise  # 让 key 耗尽冒泡到 _run_with_key_rotation 触发轮换
         except asyncio.TimeoutError:
             logger.warning(f"[Hunter] 第{page}页超时")
             break
@@ -353,8 +356,12 @@ async def daydaymap_scan(api_key, query, target_size, session=None):
                         for item in items:
                             ip = item.get("ip")
                             if ip:
+                                try:
+                                    port = int(item.get("port", 8080))
+                                except (TypeError, ValueError):
+                                    port = 8080  # 脏数据跳过端口转换，用默认值而非中断分页
                                 all_items.append({
-                                    "ip": ip, "port": int(item.get("port", 8080)),
+                                    "ip": ip, "port": port,
                                     "province": (item.get("province", "") or (item.get("location", {}) or {}).get("province_cn", "")), "city": (item.get("city", "") or (item.get("location", {}) or {}).get("city_cn", ""))
                                 })
                         if len(items) < size: break
@@ -364,10 +371,11 @@ async def daydaymap_scan(api_key, query, target_size, session=None):
                         break
                 elif resp.status == 403:
                     raise KeyDepletedError("DayDayMap key 积分耗尽")
-                    break
                 else:
                     logger.warning(f"[DayDayMap] 请求失败 HTTP {resp.status}")
                     break
+        except KeyDepletedError:
+            raise  # 让 key 耗尽冒泡到 _run_with_key_rotation 触发轮换
         except asyncio.TimeoutError:
             logger.warning(f"[DayDayMap] 第{page}页超时")
             break
@@ -431,11 +439,12 @@ async def zhgx_scan(size=10, session=None):
         return []
     logger.info(f"[ZHGX] {len(ips)} IP")
     entries, success = [], []
+    if session is None:
+        session = new_scan_session()
     async def f(ip, port):
         base = f"http://{ip}:{port}"
         async with global_sem:
             try:
-                if session is None: session = new_scan_session()
                 async with session.get(f"{base}/ZHGXTV/Public/json/live_interface.txt", timeout=aiohttp.ClientTimeout(5)) as r:
                     if r.status == 200:
                         text = await r.text()
@@ -638,14 +647,14 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                         resolved_name, cat = resolve_name(norm_name)
                         detected_prov = extract_province_from_name(resolved_name)
                         if not detected_prov and raw_name:
-                            for city, p in CITY_TO_PROVINCE.items():
-                                if city in raw_name:
+                            for _city_name, p in CITY_TO_PROVINCE.items():
+                                if _city_name in raw_name:
                                     detected_prov = p
                                     break
                             if not detected_prov:
                                 for i in range(len(raw_name)):
-                                    for j in range(i+2, min(i+5, len(raw_name)+1)):
-                                        sub = raw_name[i:j]
+                                    for k in range(i+2, min(i+5, len(raw_name)+1)):
+                                        sub = raw_name[i:k]
                                         if sub in CITY_TO_PROVINCE:
                                             detected_prov = CITY_TO_PROVINCE[sub]
                                             break
@@ -790,7 +799,8 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
                 if r.status == 200:
                     j = await r.json()
                     if j.get("code") in (200, 0):
-                        items = j["data"]["arr"]
+                        data = j.get("data") or {}
+                        items = data.get("arr") or []
                         if not items:
                             break
                         logger.info(f"[Tvheadend] 第{page}页，{len(items)} 个IP")
@@ -937,7 +947,8 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
                 if r.status == 200:
                     j = await r.json()
                     if j.get("code") in (200, 0):
-                        items = j["data"]["arr"]
+                        data = j.get("data") or {}
+                        items = data.get("arr") or []
                         if not items:
                             break
                         logger.info(f"[IPTV互动] 第{page}页，{len(items)} 个IP")
@@ -1213,7 +1224,7 @@ async def collect_all(size=None):
 
     if not enabled_platforms and not ddgs_enabled and not km.get_all_keys('hunter'):
         logger.warning("[平台] 未启用任何平台且无 Hunter Key，请检查配置")
-        return []
+        return [], []
 
     target_size = size or config_bridge.get_scan_config().get("quake_size", 200)
     selected_provs = config_bridge.get_scan_config().get("selected_provinces", []) or [config_bridge.get_scan_config().get("province", "") or ""]

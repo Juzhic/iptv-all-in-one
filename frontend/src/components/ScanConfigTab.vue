@@ -427,7 +427,9 @@ async function loadDetRuns() {
     const end = detDateRange.value?.[1] || null
     const data = await apiDetectionRuns(start, end)
     if (Array.isArray(data)) detRuns.value = data
-  } catch (_) { /* ignore */ }
+  } catch (e) {
+    MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
+  }
 }
 
 // ─── 检测明细弹窗 ───
@@ -473,7 +475,10 @@ async function openDetDetail(row) {
   try {
     const data = await apiDetectionRunResults(row.cycle_id)
     if (Array.isArray(data)) detRunDetails.value = data
-  } catch (_) { detRunDetails.value = [] }
+  } catch (e) {
+    detRunDetails.value = []
+    MessagePlugin.error('加载检测明细失败: ' + (e?.message || ''))
+  }
 }
 
 function detStatusTheme(status) {
