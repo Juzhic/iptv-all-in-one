@@ -322,7 +322,7 @@ def fetch_m3u_playlist(url):
     """从指定 URL 获取订阅源内容。"""
     max_bytes = 20 * 1024 * 1024
     try:
-        with http_get(url, timeout=10, stream=True) as response:
+        with http_get(url, timeout=30, stream=True) as response:
             response.raise_for_status()
             chunks = []
             total = 0

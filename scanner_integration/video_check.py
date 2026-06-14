@@ -206,12 +206,16 @@ async def fast_check_with_fallback(session, url):
         except:
             return False
 
-async def fast_filter(sources):
+async def fast_filter(sources, log_fn=None):
+    def _log(msg):
+        logger.info(msg)
+        if log_fn:
+            log_fn(msg)
     start = time.time()
     sem = asyncio.Semaphore(CONCURRENT_FAST)
     total = len(sources)
     done = [0]
-    logger.info(f"[快速检测] {total} 源，并发={CONCURRENT_FAST}")
+    _log(f"[快速检测] {total} 源，并发={CONCURRENT_FAST}")
     async with get_session(limit=CONCURRENT_FAST, timeout=HEAD_TIMEOUT + 3) as session:
         async def run(src):
             if urlparse(src['url']).scheme not in ('http', 'https'):
@@ -223,7 +227,7 @@ async def fast_filter(sources):
                 if done[0] % 200 == 0 or done[0] == total:
                     elapsed = time.time() - start
                     speed = done[0] / elapsed if elapsed > 0 else 0
-                    logger.info(f"[快速检测] {done[0]}/{total}  {speed:.1f}/s")
+                    _log(f"[快速检测] {done[0]}/{total}  {speed:.1f}/s")
                 if ok:
                     entry = {**src, 'protocol': 'http', 'delay': '', 'bandwidth': '', 'resolution': '', 'codec': '', 'stability': 0}
                     if entry.get('ip_province') and not entry.get('name_province'):
@@ -236,10 +240,10 @@ async def fast_filter(sources):
         results = await asyncio.gather(*tasks)
     valid = [r for r in results if r]
     elapsed = time.time() - start
-    logger.info(f"[快速检测] 成功 {len(valid)}/{total}，耗时 {elapsed:.1f}s")
+    _log(f"[快速检测] 完成，{len(valid)}/{total} 存活，耗时 {elapsed:.1f}s")
     return valid
 
-async def deep_check(session, url, check_duration=6):   # 测速时长增至 6 秒
+async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测速时长由配置常量控制
     async with global_sem:
         try:
             start = time.time()
@@ -348,18 +352,25 @@ async def deep_filter_batch(batch, sem, session):
     results = await asyncio.gather(*[work(s) for s in batch])
     return [r for r in results if r is not None]
 
-async def background_deep_update(initial_list):
+async def background_deep_update(initial_list, log_fn=None):
+    def _log(msg):
+        logger.info(msg)
+        if log_fn:
+            log_fn(msg)
     global LATEST_CHANNELS, QUICK_CHANNELS, LAST_UPDATE_TIME, failure_count, update_progress
     working = initial_list.copy()
     total = len(working)
     if total == 0:
         return
-    BATCH = 30
-    sem = asyncio.Semaphore(CONCURRENT_DEEP)
-    logger.info(f"🔍 深度测速（并发={CONCURRENT_DEEP}），总数 {total}")
+    # 从配置读取并发和批次大小（允许运行时调整）
+    _cfg = config_bridge.get_scan_config()
+    deep_concurrent = _cfg.get('deep_concurrent', CONCURRENT_DEEP)
+    BATCH = _cfg.get('deep_batch_size', 30)
+    sem = asyncio.Semaphore(deep_concurrent)
+    _log(f"[深度测速] 开始，总数 {total}，并发={deep_concurrent}，批次={BATCH}")
     start_time = time.time()
     stats = {'stable': 0, 'low_bw': 0, 'dead': 0}
-    async with get_session(limit=CONCURRENT_DEEP, timeout=12, force_close=True) as session:
+    async with get_session(limit=deep_concurrent, timeout=12, force_close=True) as session:
         new_list = []
         for i in range(0, total, BATCH):
             batch = working[i:i+BATCH]
@@ -389,10 +400,12 @@ async def background_deep_update(initial_list):
             update_progress["message"] = f"深度测速 {progress}% (稳定:{stats['stable']})"
             bar = '█' * (progress // 3) + '░' * (30 - progress // 3)
             print(f"\r🔄 [{bar}] {progress}% 有效:{len(new_list)} 稳定:{stats['stable']}", end='', flush=True)
+            if (i // BATCH) % 2 == 0 or i + len(batch) >= total:
+                _log(f"[深度测速] 批次 {i // BATCH + 1}/{(total + BATCH - 1) // BATCH} 完成，有效:{len(new_list)} 稳定:{stats['stable']} 进度:{progress}%")
             await asyncio.sleep(0)
     print()
     elapsed = time.time() - start_time
-    logger.info(f"✅ 深度测速完成，稳定:{stats['stable']} 总有效:{len(QUICK_CHANNELS)} 耗时:{elapsed:.1f}s")
+    _log(f"[深度测速] 完成，稳定:{stats['stable']} 低带宽:{stats['low_bw']} 失效:{stats['dead']} 总有效:{len(QUICK_CHANNELS)} 耗时:{elapsed:.1f}s")
     unknown = [
         c for c in QUICK_CHANNELS
         if c.get('province') == '未知' and c.get('category') not in (
@@ -420,6 +433,9 @@ async def quick_stream_check(session, url):
     except:
         return False
 
+# NOTE: health_check() 目前为死代码——没有任何 Flask 路由调用 trigger_health_check()。
+# 实际的健康检测由 detection.py 的 DetectionManager 执行（使用 deletion_threshold 配置）。
+# 保留此函数供将来可能的独立健康检查功能使用。
 async def health_check():
     global QUICK_CHANNELS, LATEST_CHANNELS, failure_count, LAST_UPDATE_TIME
     channels = QUICK_CHANNELS.copy() or []

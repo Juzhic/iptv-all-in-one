@@ -256,7 +256,14 @@ watch(detLogLines, () => {
 }, { deep: true })
 
 // ─── 检测轮次记录 ───
-const detDateRange = ref([])
+const daysAgo = (n) => new Date(Date.now() - n * 86400000)
+const fmt = (d) => {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const detDateRange = ref([fmt(daysAgo(3)), fmt(new Date())])
 const detRuns = ref([])
 
 const detRunColumns = [

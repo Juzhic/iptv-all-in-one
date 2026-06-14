@@ -395,7 +395,7 @@ function logMsgClass(l) {
 }
 
 onMounted(() => {
-  if (!historyRuns.value.length) queryHistory()
+  queryHistory()
 })
 </script>
 

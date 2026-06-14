@@ -141,6 +141,25 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
+                <label>DDGS 搜索</label>
+                <span>通过 DuckDuckGo 搜索引擎发现 IPTV 源站，作为 API 平台之外的补充来源。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.ddgs_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.ddgs_enabled ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.ddgs_enabled ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+                <div class="field-inline-hint">
+                  {{ scanCfg.ddgs_enabled ? '将通过搜索引擎查找公开 IPTV 源，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台（Quake/Hunter/DayDayMap）进行采集。' }}
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
                 <label>定时扫描</label>
                 <span>设置自动扫描的星期和时间，适合夜间低峰期定时补源。</span>
               </div>
@@ -224,11 +243,12 @@ const { theme } = useTheme()
 const scanCfg = reactive({
   selected_provinces: [],
   operator: '',
-  quake_size: 100,
-  enable_c_scan: false,
+  quake_size: 200,
+  enable_c_scan: true,
   update_time: '03:00',
   update_days: [0, 1, 2, 3, 4, 5, 6],
-  daily_full_update: false,
+  daily_full_update: true,
+  ddgs_enabled: false,
 })
 
 const platformLabelMap = {
@@ -404,11 +424,12 @@ async function loadConfig() {
     const cfg = await apiScanConfig()
     scanCfg.selected_provinces = Array.isArray(cfg.selected_provinces) ? cfg.selected_provinces : []
     scanCfg.operator = cfg.operator || ''
-    scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 100
+    scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 200
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
+    scanCfg.ddgs_enabled = !!cfg.ddgs_enabled
     updateCountdown()
   } catch (_) {
     MessagePlugin.error('加载扫描配置失败')

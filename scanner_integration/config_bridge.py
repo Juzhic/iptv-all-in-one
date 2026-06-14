@@ -9,7 +9,7 @@ import json
 # ==================== 静态常量（不可运行时修改） ====================
 HEAD_TIMEOUT = 1
 STREAM_CHECK_TIMEOUT = 4
-DEEP_CHECK_DURATION = 3
+DEEP_CHECK_DURATION = 6
 CONCURRENT_FAST = 50
 CONCURRENT_DEEP = 8
 GLOBAL_CONCURRENCY = 80

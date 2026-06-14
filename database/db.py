@@ -1959,7 +1959,7 @@ def get_persistent_grouped():
                   SUM(CASE WHEN quality_status='unreachable' THEN 1 ELSE 0 END) as unreachable_count,
                   SUM(CASE WHEN quality_status='pending' THEN 1 ELSE 0 END) as pending_count,
                   MIN(first_seen_at) as first_seen,
-                  MAX(last_updated_at) as last_updated
+                  MAX(COALESCE(last_checked_at, last_updated_at)) as last_updated
            FROM persistent_scan_results
            GROUP BY platform, source_ip
            ORDER BY platform, channel_count DESC"""

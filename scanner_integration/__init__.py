@@ -190,7 +190,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     try:
         # 阶段1：采集
         _scan_log(f"[Scan:{scan_id}] 开始采集...")
-        raw, actual_platforms = await collect_all()
+        raw, actual_platforms = await collect_all(log_fn=_scan_log)
         # 用实际启用的平台覆盖 platforms_used
         if actual_platforms:
             _db.update_scan_run(scan_id, platforms_used=str(actual_platforms))
@@ -223,7 +223,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
 
         # 阶段2：快速过滤
         _scan_log(f"[Scan:{scan_id}] 开始快速过滤 {len(uniq)} 个频道...")
-        quick = await fast_filter(uniq)
+        quick = await fast_filter(uniq, log_fn=_scan_log)
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
@@ -252,7 +252,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                                  percent=0, message=f'深度检测 {len(quick)} 个频道...')
 
         _scan_log(f"[Scan:{scan_id}] 启动后台深度检测...")
-        await background_deep_update(quick)
+        await background_deep_update(quick, log_fn=_scan_log)
 
         # 从 video_check 模块级状态读取深度检测结果
         from . import video_check as _vc
@@ -307,6 +307,9 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     return scan_id
 
 
+# NOTE: 以下函数为死代码——web.py 中没有路由调用 trigger_health_check()。
+# 实际的健康检测由 detection.py 的 DetectionManager 负责。
+# 保留供将来可能的独立健康检查 UI 功能使用。
 async def _do_health_check():
     """执行健康检查。"""
     from .video_check import health_check
@@ -388,6 +391,7 @@ def force_clear_scan():
     return {'ok': True, 'message': '扫描状态已清除'}
 
 
+# NOTE: 死代码——web.py 中没有路由调用此函数，见 _do_health_check 注释。
 def trigger_health_check():
     """启动健康检查（后台执行）。"""
     progress = db_get_scan_progress()
