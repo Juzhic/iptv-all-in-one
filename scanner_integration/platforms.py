@@ -51,7 +51,11 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
                         raw_name = ch.get('name', '未知')
                         if is_blacklisted(raw_name):
                             continue
+                        if not is_valid_channel_name(raw_name):
+                            continue
                         ch_url = ch['url']
+                        if not is_valid_stream_url(ch_url):
+                            continue
                         full = ch_url if ch_url.startswith('http') else urljoin(f"http://{ip}:{port}/", ch_url)
                         resolved_name, cat = resolve_name(raw_name)
                         detected_prov = extract_province_from_name(resolved_name)
@@ -448,10 +452,13 @@ async def zhgx_scan(size=10, session=None):
                             if len(parts) < 2: continue
                             name, url_part = parts[0].strip(), parts[1].strip()
                             if not name or not url_part or is_blacklisted(name): continue
+                            if not is_valid_channel_name(name): continue
                             if url_part.startswith('http://') or url_part.startswith('https://'):
                                 full = url_part
                             else:
                                 full = url_part if url_part.startswith('http') else urljoin(base + '/', url_part)
+                            if not is_valid_stream_url(full):
+                                continue
                             resolved, cat = resolve_name(name)
                             detected = extract_province_from_name(resolved)
                             if not detected and name:
@@ -1130,6 +1137,22 @@ def resolve_iptv_interactive_channel(name):
     return std_name, cat
 
 # ---------- 辅助函数 ----------
+# 检测 URL 中是否混入了 HTTP 响应头（如 WWW-Authenticate: Digest）
+_HTTP_HEADER_URL_PATTERNS = (
+    'www-authenticate', 'qop="auth', 'qop="none',
+    'nonce="', 'opaque="', 'realm="', 'algorithm="md5',
+    'algorithm="sha', 'stale="',
+)
+
+
+def is_valid_stream_url(url):
+    """检查 URL 是否是合法的流地址（排除含 HTTP 认证头的畸形 URL）"""
+    if not isinstance(url, str):
+        return False
+    lowered = url.lower()
+    return not any(pat in lowered for pat in _HTTP_HEADER_URL_PATTERNS)
+
+
 def remove_duplicate_national_channels(channels):
     nat_names = {c['name'] for c in channels if c.get('category') in ('央视频道','央视付费频道','卫视频道')}
     return [c for c in channels if c.get('category') in ('央视频道','央视付费频道','卫视频道') or c['name'] not in nat_names]
@@ -1137,22 +1160,44 @@ def remove_duplicate_national_channels(channels):
 def clean_url(u):
     if not isinstance(u, str): return ""
     u = u.strip()
-    if u.startswith(('http://', 'https://')): return u
+    if u.startswith(('http://', 'https://')):
+        if is_valid_stream_url(u): return u
     if u.startswith('//'): return f"http:{u}"
     return ""
 
 def is_valid_channel_name(name):
     if not isinstance(name, str) or not name.strip(): return False
     s = name.strip()
-    if '{' in s or '}' in s: return False
+    if len(s) > 60: return False
     if s.startswith(('{','[','<')): return False
     if re.search(r'^(data|javascript|vbscript):', s, re.I): return False
     lowered = s.lower()
     if any(kw in lowered for kw in ['data:text/plain', 'base64,', '"status":', 'null', 'undefined', 'session']): return False
     if any(k in lowered for k in ['api_request','metrics','prometheus','method=','status=']): return False
     if '::' in s or re.search(r'\.[A-Z]', s): return False
-    if re.match(r'^[a-zA-Z0-9 _\-.]+$', s) and (len(s)<4 or len(s)>20): return False
-    return len(s) <= 60
+    # HTML 实体（如 &copy; &amp;）
+    if re.search(r'&[a-z]+;', lowered) or re.search(r'&#\d+;', lowered):
+        return False
+    # 频道名不应含有的特殊字符
+    if re.search(r'[\'"(){}<>\\|^~`]', s):
+        return False
+    # 纯 ASCII 字符（无中文）时进一步检查
+    if not re.search(r'[一-鿿]', s):
+        # 含冒号、分号、等号、斜杠 → 非频道名（如 ": Linux", "14:01:07"）
+        if re.search(r'[:/;=]', s):
+            return False
+        # 纯 ASCII 且像普通英文单词（小写字母开头或全小写）→ 非频道名
+        # 合法纯 ASCII 频道名通常是全大写缩写（CCTV、BBC）或含数字（CCTV1）
+        if re.match(r'^[a-zA-Z][a-z]+$', s):
+            return False
+        # 纯数字
+        if s.isdigit():
+            return False
+    # 常见系统输出模式
+    if re.search(r'\d{2}:\d{2}:\d{2}', s): return False
+    if re.search(r'up \d+ day', lowered): return False
+    if re.search(r'mapping\(', lowered): return False
+    return True
 
 def deduplicate(sources):
     seen, uniq = set(), []

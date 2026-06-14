@@ -16,6 +16,7 @@ from engine.ffmpeg_test import (
     detect_non_live_media_url,
 )
 from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer
+from scanner_integration.platforms import is_valid_stream_url
 
 try:
     import psutil
@@ -390,6 +391,9 @@ def parse_iptv_addresses(m3u_content):
             continue
 
         if is_url(line):
+            if not is_valid_stream_url(line):
+                current_channel = {}
+                continue
             if detect_non_live_media_url(line):
                 current_channel = {}
                 continue
@@ -406,6 +410,8 @@ def parse_iptv_addresses(m3u_content):
             name = name.strip()
             url = url.strip()
             if name and is_url(url) and not detect_non_live_media_url(url):
+                if not is_valid_stream_url(url):
+                    continue
                 channel_info = {'name': name}
                 if current_group:
                     channel_info['group'] = current_group

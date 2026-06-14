@@ -481,7 +481,7 @@ function platformLabel(platform) {
 
 function formatDate(s) {
   if (!s) return '-'
-  return s.substring(0, 10)
+  return s.substring(0, 19)
 }
 
 // ─── 分组视图加载 ───
