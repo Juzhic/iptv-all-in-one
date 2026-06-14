@@ -81,6 +81,9 @@
         <t-tab-panel value="scan-config" label="扫描配置" :destroy-on-hide="false">
           <ScanConfigTab v-if="visitedTabs.has('scan-config')" />
         </t-tab-panel>
+        <t-tab-panel value="detection" label="检测监控" :destroy-on-hide="false">
+          <DetectionTab v-if="visitedTabs.has('detection')" />
+        </t-tab-panel>
         <t-tab-panel value="scan-results" label="扫描结果" :destroy-on-hide="false">
           <ScanResultsTab v-if="visitedTabs.has('scan-results')" />
         </t-tab-panel>
@@ -100,6 +103,7 @@ import TestingTab from './components/TestingTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import ScannerTab from './components/ScannerTab.vue'
 import ScanConfigTab from './components/ScanConfigTab.vue'
+import DetectionTab from './components/DetectionTab.vue'
 import ScanResultsTab from './components/ScanResultsTab.vue'
 
 const globalConfig = {}

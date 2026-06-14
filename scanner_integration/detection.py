@@ -170,7 +170,12 @@ class DetectionManager:
             len(all_items), ok_count, fail_count, deleted,
             round(elapsed, 1),
         )
-        _db.cleanup_old_detection_runs(50)
+        _db.cleanup_old_detection_runs(keep=20)
+        # 兜底清理过期的测速日志
+        try:
+            _db.cleanup_old_run_logs(days=30)
+        except Exception:
+            pass
 
         self._log(
             'INFO',
@@ -178,6 +183,10 @@ class DetectionManager:
             f"通过={ok_count}, 失败={fail_count}, 删除={deleted}, "
             f"耗时={elapsed:.1f}s"
         )
+        try:
+            _db.flush_log_buffer()
+        except Exception:
+            pass
         try:
             _db.clear_detection_logs()
         except Exception:

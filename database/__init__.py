@@ -32,6 +32,10 @@ from database.db import (  # noqa: F401
     get_channel_summary,
     get_channel_summary_with_source,
     get_codec_stats,
+    cleanup_old_run_logs,
+    vacuum_database,
+    auto_vacuum_if_needed,
+    flush_log_buffer,
     # 测速进度/日志
     clear_run_progress,
     update_run_progress,

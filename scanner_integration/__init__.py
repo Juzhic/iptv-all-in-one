@@ -138,6 +138,8 @@ def init_bridge():
         logger.warning(f"[Bridge] KeyManager 初始化失败: {e}")
     # 启动定时扫描任务
     start_daily_task()
+    # 启动每日数据库维护任务
+    start_daily_db_maintenance()
     # 启动定期检测任务
     try:
         from .detection import detection_manager
@@ -295,6 +297,12 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         except Exception:
             pass
         _db.update_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
+
+    # 刷新日志缓冲区
+    try:
+        _db.flush_log_buffer()
+    except Exception:
+        pass
 
     return scan_id
 
@@ -624,4 +632,70 @@ async def _daily_update_task():
             break
         except Exception as e:
             logger.exception(f"[Scheduler] 定时任务异常: {e}")
+            await asyncio.sleep(60)
+
+
+# ==================== 每日数据库维护 ====================
+
+def start_daily_db_maintenance():
+    """在异步事件循环中启动每日数据库维护任务（每天凌晨 4 点）。"""
+    if bridge._loop is None:
+        logger.warning("[DBMaint] 异步循环未启动，无法启动维护任务")
+        return
+    asyncio.run_coroutine_threadsafe(_daily_db_maintenance_task(), bridge._loop)
+    logger.info("[DBMaint] 每日数据库维护任务已启动")
+
+
+async def _daily_db_maintenance_task():
+    """每天凌晨执行：清理过期日志 + VACUUM 压缩数据库。"""
+    from datetime import datetime as _dt, timedelta as _td
+
+    MAINT_HOUR, MAINT_MINUTE = 4, 0  # 凌晨 4:00 执行
+
+    while True:
+        try:
+            now = _dt.now()
+            target = now.replace(hour=MAINT_HOUR, minute=MAINT_MINUTE, second=0, microsecond=0)
+            if target <= now:
+                target += _td(days=1)
+            wait_seconds = (target - now).total_seconds()
+            logger.info(f"[DBMaint] 下次维护: {target.strftime('%Y-%m-%d %H:%M')} "
+                        f"(等待 {wait_seconds:.0f} 秒)")
+            await asyncio.sleep(wait_seconds)
+
+            import database as _db
+            logger.info("[DBMaint] 开始每日数据库维护...")
+
+            # 1. 清理过期日志
+            try:
+                deleted = _db.cleanup_old_run_logs(days=30)
+                logger.info(f"[DBMaint] 清理过期 run_logs: {deleted} 条")
+            except Exception as e:
+                logger.warning(f"[DBMaint] 清理 run_logs 失败: {e}")
+
+            # 2. VACUUM 压缩数据库（扫描运行时跳过，防止并发写入损坏数据库）
+            try:
+                import os
+                progress = _db.get_scan_progress()
+                if progress.get('running'):
+                    logger.info("[DBMaint] 扫描正在进行中，跳过 VACUUM 以避免并发写入风险")
+                else:
+                    size_before = os.path.getsize(_db.DB_PATH)
+                    _db.vacuum_database()
+                    size_after = os.path.getsize(_db.DB_PATH)
+                    saved_mb = (size_before - size_after) / (1024 * 1024)
+                    logger.info(f"[DBMaint] VACUUM 完成: {size_before / 1024 / 1024:.1f}MB → "
+                                f"{size_after / 1024 / 1024:.1f}MB (释放 {saved_mb:.1f}MB)")
+            except Exception as e:
+                logger.warning(f"[DBMaint] VACUUM 失败: {e}")
+
+            logger.info("[DBMaint] 每日维护完成")
+            # 防止同一天重复触发
+            await asyncio.sleep(60)
+
+        except asyncio.CancelledError:
+            logger.info("[DBMaint] 维护任务被取消")
+            break
+        except Exception as e:
+            logger.exception(f"[DBMaint] 维护任务异常: {e}")
             await asyncio.sleep(60)

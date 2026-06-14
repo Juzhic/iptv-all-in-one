@@ -15,7 +15,7 @@ from engine.ffmpeg_test import (
     http_get,
     detect_non_live_media_url,
 )
-from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str
+from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer
 
 try:
     import psutil
@@ -1281,6 +1281,11 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     }
     history_path = os.path.join(os.path.dirname(cfg['output_txt']) or '.', 'history.json')
     save_run_result(run_data, history_path)
+    # 刷新日志缓冲区，确保所有日志写入数据库
+    try:
+        flush_log_buffer()
+    except Exception:
+        pass
 
     print(f"\n{'=' * 60}")
     print(f"完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址")

@@ -1,14 +1,23 @@
 """IPTV 测速结果 SQLite 数据库模块。"""
 import json
+import logging
 import os
+import shutil
 import sqlite3
 import threading
+import time as _time
+from collections import deque
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger('database')
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'iptv.db')
 MAX_RUNS = 50
 CONFIG_DATA = 'config'  # config_data 表中存储系统配置的 key
 LOCAL_TZ = timezone(timedelta(hours=8))
+
+# VACUUM 互斥锁：防止 VACUUM 期间其他连接写入导致数据库损坏
+_vacuum_lock = threading.Lock()
 
 
 def now_str():
@@ -17,6 +26,75 @@ def now_str():
 
 def timestamp_str(ts):
     return datetime.fromtimestamp(ts, LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+# ─── 日志批量写入 ───
+
+class LogBatcher:
+    """线程安全的日志批量写入器，减少 commit 次数。"""
+
+    def __init__(self, flush_interval=3.0, max_size=200):
+        self._buffer = deque()
+        self._lock = threading.Lock()
+        self._flush_interval = flush_interval
+        self._max_size = max_size
+        self._last_flush = _time.monotonic()
+        self._timer = None
+        self._active = False
+
+    def add(self, table, row):
+        """添加一行日志到缓冲区。table: 'run_logs'|'scan_logs'|'detection_logs'"""
+        with self._lock:
+            self._buffer.append((table, row))
+            if len(self._buffer) >= self._max_size:
+                self._do_flush()
+                return
+        # 定时刷新：如果距上次 flush 超过间隔，提交一次
+        if _time.monotonic() - self._last_flush > self._flush_interval:
+            self.flush()
+
+    def flush(self):
+        with self._lock:
+            self._do_flush()
+
+    def _do_flush(self):
+        """调用时必须持有 self._lock。"""
+        if not self._buffer:
+            return
+        items = list(self._buffer)
+        self._buffer.clear()
+        # 按表分组
+        grouped = {}
+        for table, row in items:
+            grouped.setdefault(table, []).append(row)
+        conn = _get_conn()
+        for table, rows in grouped.items():
+            if table == 'run_logs':
+                conn.executemany(
+                    "INSERT INTO run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)",
+                    rows
+                )
+            elif table == 'scan_logs':
+                conn.executemany(
+                    "INSERT INTO scan_logs (seq, time, msg) VALUES (?, ?, ?)",
+                    rows
+                )
+            elif table == 'detection_logs':
+                conn.executemany(
+                    "INSERT INTO detection_logs (ts, level, message) VALUES (?, ?, ?)",
+                    rows
+                )
+        conn.commit()
+        self._last_flush = _time.monotonic()
+
+
+# 模块级单例
+_log_batcher = LogBatcher()
+
+
+def flush_log_buffer():
+    """手动刷新日志缓冲区，确保所有缓冲日志写入数据库。"""
+    _log_batcher.flush()
 
 # ─── 内置默认 demo 模板 ───
 DEFAULT_DEMO = """📢公告,#genre#
@@ -290,8 +368,147 @@ CETV-4,CETV4,CETV4中国教育,中国教育4
 _local = threading.local()
 
 
+def check_and_recover_db():
+    """
+    启动时检查数据库完整性。
+    如果发现损坏，备份损坏文件并用空库替代。
+    返回 True 表示数据库正常，False 表示已执行恢复。
+    """
+    if not os.path.exists(DB_PATH):
+        return True
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        result = conn.execute('PRAGMA integrity_check').fetchone()
+        conn.close()
+        if result and result[0] == 'ok':
+            return True
+    except sqlite3.DatabaseError as e:
+        logger.error(f"[DB] 数据库完整性检查异常: {e}")
+
+    # 数据库已损坏，执行恢复
+    logger.warning("[DB] 数据库已损坏，开始自动恢复...")
+    try:
+        # 备份损坏文件
+        backup_path = DB_PATH + f'.corrupted.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        shutil.copy2(DB_PATH, backup_path)
+        logger.info(f"[DB] 已备份损坏数据库到: {backup_path}")
+
+        # 尝试恢复数据
+        recovered = _recover_database(backup_path, DB_PATH)
+        if recovered:
+            logger.info(f"[DB] 数据恢复成功")
+        else:
+            logger.warning("[DB] 数据恢复失败，已用空库替代")
+        return recovered
+    except Exception as e:
+        logger.exception(f"[DB] 数据库恢复过程异常: {e}")
+        # 最后手段：删除损坏文件，让 init_db 重建
+        try:
+            os.remove(DB_PATH)
+            for suffix in ('-wal', '-shm'):
+                p = DB_PATH + suffix
+                if os.path.exists(p):
+                    os.remove(p)
+        except OSError:
+            pass
+        return False
+
+
+def _recover_database(corrupted_path, target_path):
+    """
+    尝试从损坏的数据库中恢复数据到新数据库。
+    返回 True 表示恢复成功。
+    """
+    try:
+        old_conn = sqlite3.connect(corrupted_path)
+        old_conn.row_factory = sqlite3.Row
+
+        # 获取表结构和索引
+        schemas = [r[0] for r in old_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
+        ).fetchall()]
+        indexes = [r[0] for r in old_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+        ).fetchall()]
+
+        # 创建新数据库
+        new_path = target_path + '.recovering'
+        if os.path.exists(new_path):
+            os.remove(new_path)
+        new_conn = sqlite3.connect(new_path)
+        new_conn.execute('PRAGMA journal_mode=WAL')
+        new_conn.execute('PRAGMA foreign_keys=OFF')
+
+        # 建表
+        for sql in schemas:
+            try:
+                new_conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # sqlite_sequence 等系统表
+
+        # 逐表恢复数据
+        tables = [r[0] for r in old_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        total = 0
+        for table in tables:
+            if table == 'sqlite_sequence':
+                continue
+            try:
+                rows = old_conn.execute(f'SELECT * FROM [{table}]').fetchall()
+                if not rows:
+                    continue
+                cols = [d[0] for d in old_conn.execute(
+                    f'SELECT * FROM [{table}] LIMIT 0'
+                ).description]
+                placeholders = ','.join(['?' for _ in cols])
+                col_names = ','.join([f'[{c}]' for c in cols])
+                sql = f'INSERT OR IGNORE INTO [{table}] ({col_names}) VALUES ({placeholders})'
+                new_conn.executemany(sql, [tuple(r) for r in rows])
+                new_conn.commit()
+                total += len(rows)
+                logger.info(f"[DB] 恢复表 {table}: {len(rows)} 行")
+            except sqlite3.DatabaseError as e:
+                logger.warning(f"[DB] 恢复表 {table} 失败: {e}")
+
+        # 创建索引
+        for sql in indexes:
+            try:
+                new_conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+
+        new_conn.commit()
+        new_conn.close()
+        old_conn.close()
+
+        # 验证新数据库
+        check_conn = sqlite3.connect(new_path)
+        result = check_conn.execute('PRAGMA integrity_check').fetchone()
+        check_conn.close()
+
+        if result and result[0] == 'ok':
+            # 替换目标文件
+            for suffix in ('-wal', '-shm'):
+                p = target_path + suffix
+                if os.path.exists(p):
+                    os.remove(p)
+            os.replace(new_path, target_path)
+            logger.info(f"[DB] 数据恢复完成，共恢复 {total} 行")
+            return True
+        else:
+            logger.error("[DB] 恢复后的数据库未通过完整性检查")
+            os.remove(new_path)
+            return False
+
+    except Exception as e:
+        logger.exception(f"[DB] _recover_database 异常: {e}")
+        return False
+
+
 def _get_conn():
-    """每个线程获取独立的数据库连接。"""
+    """每个线程获取独立的数据库连接。检测到数据库损坏时自动重连恢复后的库。"""
     if not hasattr(_local, 'conn') or _local.conn is None:
         _local.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
@@ -303,8 +520,20 @@ def _get_conn():
     return _local.conn
 
 
+def _reset_thread_conn():
+    """重置当前线程的数据库连接（损坏恢复后调用）。"""
+    if hasattr(_local, 'conn') and _local.conn is not None:
+        try:
+            _local.conn.close()
+        except Exception:
+            pass
+        _local.conn = None
+
+
 def init_db():
-    """创建表结构（幂等）。"""
+    """检查数据库完整性，必要时恢复，然后创建表结构（幂等）。"""
+    # 启动时完整性检查，损坏则自动恢复
+    check_and_recover_db()
     conn = _get_conn()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS runs (
@@ -509,6 +738,16 @@ def init_db():
     _ensure_scan_results_columns(conn)
     conn.commit()
     _init_default_data()
+    # 启动时兜底清理超期日志
+    try:
+        cleanup_old_run_logs(days=30)
+    except Exception:
+        pass
+    # 启动时自动压缩过大的数据库
+    try:
+        auto_vacuum_if_needed()
+    except Exception:
+        pass
 
 
 def _ensure_run_results_columns(conn):
@@ -594,16 +833,51 @@ def insert_run(run_data):
 
 
 def _cleanup_old_runs(conn):
-    """保留最近 MAX_RUNS 轮，删除多余的。"""
+    """保留最近 MAX_RUNS 轮，删除多余的（含日志）。"""
     rows = conn.execute(
         "SELECT run_id FROM runs ORDER BY id DESC LIMIT -1 OFFSET ?",
         (MAX_RUNS,)
     ).fetchall()
     for row in rows:
+        conn.execute("DELETE FROM run_logs WHERE run_id = ?", (row['run_id'],))
         conn.execute("DELETE FROM run_results WHERE run_id = ?", (row['run_id'],))
         conn.execute("DELETE FROM runs WHERE run_id = ?", (row['run_id'],))
     if rows:
         conn.commit()
+
+
+def cleanup_old_run_logs(days=30):
+    """删除 N 天前的测速日志（兜底清理）。"""
+    conn = _get_conn()
+    cutoff = (datetime.now(LOCAL_TZ) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    deleted = conn.execute("DELETE FROM run_logs WHERE ts < ?", (cutoff,)).rowcount
+    if deleted:
+        conn.commit()
+    return deleted
+
+
+def vacuum_database():
+    """执行 VACUUM 回收 SQLite 碎片空间，缩小数据库文件。加锁防止并发写入。"""
+    with _vacuum_lock:
+        conn = _get_conn()
+        conn.execute("VACUUM")
+        conn.commit()
+
+
+# VACUUM 阈值：数据库文件超过此大小（字节）时自动触发
+_VACUUM_THRESHOLD = 50 * 1024 * 1024  # 50 MB
+
+
+def auto_vacuum_if_needed():
+    """检查数据库文件大小，超过阈值则自动 VACUUM。"""
+    try:
+        db_size = os.path.getsize(DB_PATH)
+        if db_size > _VACUUM_THRESHOLD:
+            vacuum_database()
+            return True
+    except OSError:
+        pass
+    return False
 
 
 def get_latest_run():
@@ -1077,14 +1351,8 @@ def get_scheduler_state():
 
 
 def insert_log(run_id, level, message):
-    """写入一条日志到数据库。线程安全，每个线程独立连接。"""
-    conn = _get_conn()
-    now = now_str()
-    conn.execute(
-        "INSERT INTO run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)",
-        (run_id, now, level, message)
-    )
-    conn.commit()
+    """写入一条日志到数据库（缓冲批量提交）。"""
+    _log_batcher.add('run_logs', (run_id, now_str(), level, message))
 
 
 def get_run_logs(run_id, limit=None):
@@ -1393,13 +1661,8 @@ def clear_scan_progress():
 
 
 def insert_scan_log(seq, time_str, msg):
-    """写入一条扫描日志到数据库。"""
-    conn = _get_conn()
-    conn.execute(
-        "INSERT INTO scan_logs (seq, time, msg) VALUES (?, ?, ?)",
-        (seq, time_str, msg)
-    )
-    conn.commit()
+    """写入一条扫描日志到数据库（缓冲批量提交）。"""
+    _log_batcher.add('scan_logs', (seq, time_str, msg))
 
 
 def get_scan_logs(after_seq=0, limit=300):
@@ -1423,13 +1686,8 @@ def clear_scan_logs():
 
 
 def insert_detection_log(level, message):
-    """写入一条定期检测日志。"""
-    conn = _get_conn()
-    conn.execute(
-        "INSERT INTO detection_logs (ts, level, message) VALUES (?, ?, ?)",
-        (now_str(), level, message)
-    )
-    conn.commit()
+    """写入一条定期检测日志（缓冲批量提交）。"""
+    _log_batcher.add('detection_logs', (now_str(), level, message))
 
 
 def get_detection_logs(limit=200):
@@ -1548,13 +1806,32 @@ def cleanup_old_detection_runs(keep=50):
         "SELECT cycle_id FROM detection_runs ORDER BY started_at DESC LIMIT -1 OFFSET ?",
         (keep,)
     ).fetchall()
-    if not old_ids:
-        return
-    ids = [r['cycle_id'] for r in old_ids]
-    placeholders = ','.join('?' * len(ids))
-    conn.execute(f"DELETE FROM detection_results WHERE cycle_id IN ({placeholders})", ids)
-    conn.execute(f"DELETE FROM detection_runs WHERE cycle_id IN ({placeholders})", ids)
-    conn.commit()
+    if old_ids:
+        ids = [r['cycle_id'] for r in old_ids]
+        placeholders = ','.join('?' * len(ids))
+        conn.execute(f"DELETE FROM detection_results WHERE cycle_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM detection_runs WHERE cycle_id IN ({placeholders})", ids)
+        conn.commit()
+    # 硬上限：detection_results 总行数超过 50000 时，删除最旧的 cycle
+    total = conn.execute("SELECT COUNT(*) AS cnt FROM detection_results").fetchone()['cnt']
+    if total > 50000:
+        overflow = total - 50000
+        old_cycles = conn.execute(
+            """SELECT cycle_id FROM detection_runs ORDER BY started_at ASC"""
+        ).fetchall()
+        deleted = 0
+        for row in old_cycles:
+            if deleted >= overflow:
+                break
+            n = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM detection_results WHERE cycle_id = ?",
+                (row['cycle_id'],)
+            ).fetchone()['cnt']
+            conn.execute("DELETE FROM detection_results WHERE cycle_id = ?", (row['cycle_id'],))
+            conn.execute("DELETE FROM detection_runs WHERE cycle_id = ?", (row['cycle_id'],))
+            deleted += n
+        if deleted:
+            conn.commit()
 
 
 def get_scan_stats(scan_id=None):
