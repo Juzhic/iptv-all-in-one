@@ -12,6 +12,7 @@ import aiohttp
 
 from . import config_bridge
 from .network import get_session
+from .video_check import deep_check
 
 logger = logging.getLogger('scanner.detection')
 
@@ -108,8 +109,8 @@ class DetectionManager:
         fail_count = 0
         results_list = []
 
-        sem = asyncio.Semaphore(20)
-        async with get_session(limit=20, timeout=6) as session:
+        sem = asyncio.Semaphore(10)
+        async with get_session(limit=10, timeout=6) as session:
             async def check_one(item):
                 nonlocal ok_count, fail_count
                 async with sem:  # 统一限流：含非 http 分支，避免一次性铺开数千协程同步写 DB
@@ -127,25 +128,35 @@ class DetectionManager:
                         })
                         return
 
-                    result = await _quick_check(session, url)
-                    if result['alive']:
-                        _db.update_persistent_check(url, ok=True)
+                    perf = await deep_check(session, url)
+                    if perf is not None:
+                        _db.update_persistent_check(
+                            url, ok=True,
+                            stability=perf['stability'],
+                            delay=perf['delay'],
+                            bandwidth=perf['bandwidth'],
+                        )
                         ok_count += 1
+                        psr = _db.get_persistent_by_url(url)
+                        results_list.append({
+                            'url': url, 'name': name, 'check_ok': True,
+                            'http_status': 200,
+                            'response_time_ms': perf['delay'],
+                            'response_size_bytes': 0,
+                            'consecutive_failures': 0,
+                            'quality_status': psr['quality_status'] if psr else 'good',
+                        })
                     else:
                         _db.update_persistent_check(url, ok=False)
                         fail_count += 1
-
-                    # 获取更新后的 consecutive_failures 和 quality_status
-                    psr = _db.get_persistent_by_url(url)
-                    results_list.append({
-                        'url': url, 'name': name,
-                        'check_ok': result['alive'],
-                        'http_status': result['status'],
-                        'response_time_ms': round(result['time_ms'], 1),
-                        'response_size_bytes': result['bytes'],
-                        'consecutive_failures': psr['consecutive_failures'] if psr else 0,
-                        'quality_status': psr['quality_status'] if psr else 'unreachable',
-                    })
+                        psr = _db.get_persistent_by_url(url)
+                        results_list.append({
+                            'url': url, 'name': name, 'check_ok': False,
+                            'http_status': 0, 'response_time_ms': 0,
+                            'response_size_bytes': 0,
+                            'consecutive_failures': psr['consecutive_failures'] if psr else 0,
+                            'quality_status': psr['quality_status'] if psr else 'unreachable',
+                        })
 
             await asyncio.gather(*[check_one(item) for item in all_items])
 
