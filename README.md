@@ -136,6 +136,216 @@ python -m engine.test_engine
 
 命令行同样会从 `database/data/iptv.db` 读取配置，不再读取 `subscribe.txt`、`alias.txt`、`demo.txt`。
 
+## 生产部署
+
+### 方式一：直接运行（开发/测试环境）
+
+```bash
+python web.py
+```
+
+适合个人使用或小规模部署。Flask 自带的开发服务器仅用于调试，不建议在生产环境使用。
+
+### 方式二：Gunicorn（Linux 推荐）
+
+1. 安装 Gunicorn：
+
+```bash
+pip install gunicorn
+```
+
+2. 启动服务：
+
+```bash
+gunicorn -w 4 -b 0.0.0.0:58080 --timeout 120 web:app
+```
+
+参数说明：
+- `-w 4`：4 个工作进程（建议 CPU 核心数 × 2 + 1）
+- `-b 0.0.0.0:58080`：监听所有网卡的 58080 端口
+- `--timeout 120`：请求超时 120 秒（测速任务耗时较长）
+
+3. 使用 Systemd 打包为服务（可选）：
+
+创建 `/etc/systemd/system/iptv-test.service`：
+
+```ini
+[Unit]
+Description=IPTV Test Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/path/to/IPTV-Test
+ExecStart=/path/to/venv/bin/gunicorn -w 4 -b 127.0.0.1:58080 --timeout 120 web:app
+Restart=always
+RestartSec=5
+Environment="FFMPEG_BIN=/usr/bin/ffmpeg"
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用并启动：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable iptv-test
+sudo systemctl start iptv-test
+```
+
+### 方式三：Nginx 反向代理
+
+在 `/etc/nginx/conf.d/iptv-test.conf` 中添加：
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # 基本认证（可选，推荐配合 basic_auth.json 使用）
+    # auth_basic "IPTV Test";
+    # auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:58080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 60;
+    }
+
+    # WebSocket 支持（开发模式热更新）
+    location /ws {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### 方式四：Docker 部署（推荐）
+
+1. 创建 Dockerfile：
+
+```dockerfile
+FROM python:3.11-slim
+
+# 安装 FFmpeg
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装 Python 依赖
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
+
+# 复制项目文件
+COPY . .
+
+# 构建前端
+RUN apt-get update && apt-get install -y nodejs npm && \
+    cd frontend && npm install && npm run build && \
+    apt-get purge -y nodejs npm && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# 暴露端口
+EXPOSE 58080
+
+# 启动命令
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]
+```
+
+2. 构建并运行：
+
+```bash
+docker build -t iptv-test .
+docker run -d \
+  --name iptv-test \
+  -p 58080:58080 \
+  -v $(pwd)/database/data:/app/database/data \
+  -v $(pwd)/output:/app/output \
+  -v $(pwd)/basic_auth.json:/app/basic_auth.json \
+  iptv-test
+```
+
+3. 或使用 Docker Compose（推荐）：
+
+创建 `docker-compose.yml`：
+
+```yaml
+version: '3.8'
+
+services:
+  iptv-test:
+    build: .
+    container_name: iptv-test
+    ports:
+      - "58080:58080"
+    volumes:
+      - ./database/data:/app/database/data
+      - ./output:/app/output
+      - ./basic_auth.json:/app/basic_auth.json
+    environment:
+      - FFMPEG_BIN=/usr/bin/ffmpeg
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+```
+
+启动：
+
+```bash
+docker-compose up -d
+```
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `FFMPEG_BIN` | FFmpeg 可执行文件路径 | `ffmpeg`（从 PATH 查找） |
+| `PYTHONUNBUFFERED` | 禁用 Python 输出缓冲 | 未设置 |
+
+### 安全建议
+
+1. **修改默认密码**：编辑 `basic_auth.json`，修改 `username` 和 `password`
+2. **限制访问**：通过防火墙或 Nginx 限制来源 IP
+3. **HTTPS**：生产环境务必使用 HTTPS（可通过 Nginx + Let's Encrypt 配置）
+4. **数据库备份**：定期备份 `database/data/iptv.db`
+5. **凭证管理**：`basic_auth.json` 包含敏感信息，生产环境建议：
+   - 通过环境变量传递凭证（可修改 `web.py` 支持）
+   - 将 `basic_auth.json` 加入 `.gitignore` 避免泄露
+   - 使用 Docker volumes 挂载而非复制到镜像中
+
+### 目录结构要求
+
+部署时需确保以下目录可写：
+
+```text
+database/data/     # SQLite 数据库（运行时自动创建）
+output/            # 测速结果输出（运行时自动创建）
+dist/              # 前端构建产物（需提前 npm run build）
+```
+
+### 常见部署问题
+
+**Q: 启动后页面 404？**
+确保已构建前端：`cd frontend && npm run build`，`dist/` 目录存在且包含 `index.html`。
+
+**Q: 端口被占用？**
+使用 `lsof -i :58080`（Linux）或 `netstat -ano | findstr :58080`（Windows）查看占用进程并结束。
+
+**Q: Gunicorn 启动失败？**
+检查 Python 路径是否正确，确保虚拟环境已激活。可先用 `python web.py` 测试基础功能。
+
+**Q: 数据库锁定？**
+多进程部署时确保只有一个写入进程，或使用 SQLite WAL 模式（默认已启用）。
+
 ## 系统参数
 
 默认参数定义在 `engine/test_engine.py` 的 `DEFAULT_CONFIG` 中，保存后会写入数据库。
