@@ -41,7 +41,8 @@
 ### 扫描模块（新增）
 
 - 通过搜索引擎 API（Quake 360、Hunter 鹰图、DayDayMap）自动发现酒店 IPTV 服务器。
-- 支持 ZHGXTV、JSMpeg 等多种 IPTV 系统的频道提取。
+- 三平台默认搜索使用 OR 组合查询，一次扫描覆盖多个 IPTV 系统特征（`/iptv/live/zh_cn.js`、`1000.json?key=txiptv`、`ZHGXTV`、`jsmpeg-streamer`、`IPTV互动电视系统`）。
+- 支持 ZHGXTV、JSMpeg、Tvheadend、IPTV互动等多种 IPTV 系统的独立扫描和频道提取。
 - C 段扫描：对已发现的 IP 所在 /24 子网进行扩展扫描。
 - 快速过滤（HEAD 请求验证）+ 深度检测（带宽/延迟/稳定性/分辨率）。
 - 自动频道名归一和分类（央视频道、卫视频道、各省频道）。
@@ -555,6 +556,28 @@ IPTV-Test/
 | `update_days` | `[0,1,2,3,4,5,6]` | 定时扫描的星期几（0=周一, 6=周日） |
 | `deep_concurrent` | `15` | 深度检测并发数 |
 | `auto_refill` | `true` | 频道数量不足时自动补充扫描 |
+
+### 搜索查询说明
+
+三平台的默认搜索查询定义在 `scanner_integration/config_bridge.py` 中，使用 OR 组合覆盖常见 IPTV 特征：
+
+| 平台 | 默认查询语法 | 说明 |
+| --- | --- | --- |
+| Quake 360 | `body="..."` | 使用 `body` 搜索页面内容 |
+| Hunter 鹰图 | `web.body="..."` | 使用 `web.body` 搜索网页正文 |
+| DayDayMap | `body="..."` | 使用 `body` 搜索页面内容 |
+
+默认查询特征覆盖：
+
+| 特征字符串 | 说明 |
+| --- | --- |
+| `/iptv/live/zh_cn.js` | 常见 IPTV 系统 JS 文件路径 |
+| `1000.json?key=txiptv` | IPTV JSON 接口特征 |
+| `ZHGXTV` | ZHGX IPTV 系统特征 |
+| `jsmpeg-streamer` | JSMpeg 流媒体系统特征 |
+| `IPTV互动电视系统` | IPTV 互动电视系统标题特征 |
+
+省份和运营商过滤条件会自动追加到默认查询之后（使用 `AND` / `&&` 连接）。
 
 ## 别名系统
 

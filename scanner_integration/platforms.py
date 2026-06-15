@@ -11,7 +11,7 @@ import aiohttp
 import socket
 
 from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, DAYDAYMAP_QUERY
+from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, HUNTER_QUERY, DAYDAYMAP_QUERY
 from .channel_utils import resolve_name, auto_classify, is_blacklisted, is_cctv_paid, normalize_cctv_name
 from .geo_data import extract_province_from_name, CITY_TO_PROVINCE, normalize_province
 from .network import global_sem, new_scan_session
@@ -1280,7 +1280,7 @@ async def collect_all(size=None, log_fn=None):
             if len(selected_provs) > 1:
                 _log(f"[采集] === 省份 ({prov_idx}/{len(selected_provs)}): {prov or '全国'} ===")
             qq = QUAKE_QUERY
-            hq = 'web.body="/iptv/live/zh_cn.js"'
+            hq = HUNTER_QUERY
             ddm_q = DAYDAYMAP_QUERY
             if operator:
                 qq += f' AND isp="{operator}"'

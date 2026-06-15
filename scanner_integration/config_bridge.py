@@ -21,8 +21,9 @@ AUTO_REFILL_QUAKE_SIZE = 10
 STABILITY_THRESHOLD_NATIONAL = 60
 STABILITY_THRESHOLD_LOCAL = 40
 MIN_BANDWIDTH = 20
-QUAKE_QUERY = 'body="/iptv/live/zh_cn.js"'
-DAYDAYMAP_QUERY = 'body="/iptv/live/zh_cn.js"'
+QUAKE_QUERY = 'body="/iptv/live/zh_cn.js" || body="1000.json?key=txiptv" || body="ZHGXTV" || body="jsmpeg-streamer" || title:"IPTV互动电视系统"'
+HUNTER_QUERY = 'web.body="/iptv/live/zh_cn.js" || web.body="1000.json?key=txiptv" || web.body="ZHGXTV" || web.body="jsmpeg-streamer" || web.title:"IPTV互动电视系统"'
+DAYDAYMAP_QUERY = 'body="/iptv/live/zh_cn.js" || body="1000.json?key=txiptv" || body="ZHGXTV" || body="jsmpeg-streamer" || title:"IPTV互动电视系统"'
 MIN_WIDTH, MIN_HEIGHT = 1280, 720
 MAX_DELAY_MS = 3000
 MAX_LINES_PER_CHANNEL = 10
