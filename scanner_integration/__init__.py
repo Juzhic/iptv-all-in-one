@@ -503,10 +503,10 @@ def get_persistent_grouped():
     return _db.get_persistent_grouped()
 
 
-def get_persistent_details(source_ip):
+def get_persistent_details(source_ip, page=None, size=50):
     """获取某个来源 IP 的频道明细。"""
     import database as _db
-    return _db.get_persistent_details_by_ip(source_ip)
+    return _db.get_persistent_details_by_ip(source_ip, page=page, size=size)
 
 
 def get_persistent_stats():
@@ -527,10 +527,10 @@ def get_detection_runs(start=None, end=None, limit=100):
     return _db.get_detection_runs(start, end, limit)
 
 
-def get_detection_results(cycle_id):
+def get_detection_results(cycle_id, page=None, size=100):
     """获取某轮检测的 URL 结果明细。"""
     import database as _db
-    return _db.get_detection_results(cycle_id)
+    return _db.get_detection_results(cycle_id, page=page, size=size)
 
 
 def trigger_persistent_manual_check():

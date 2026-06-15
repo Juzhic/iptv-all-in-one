@@ -16,7 +16,10 @@ from engine.ffmpeg_test import (
     detect_non_live_media_url,
 )
 from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer
-from scanner_integration.platforms import is_valid_stream_url
+try:
+    from scanner_integration.platforms import is_valid_stream_url
+except ImportError:
+    is_valid_stream_url = None
 
 try:
     import psutil

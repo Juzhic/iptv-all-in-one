@@ -15,11 +15,14 @@ from engine.alias import (  # noqa: F401
     strip_quality_suffix,
     normalize_cctv_variant,
 )
-from engine.ffmpeg_test import (  # noqa: F401
-    analyze_iptv_with_ffmpeg,
-    register_timeout,
-    clear_timeouts,
-    set_ffmpeg_max_workers,
-    http_get,
-    detect_non_live_media_url,
-)
+try:
+    from engine.ffmpeg_test import (  # noqa: F401
+        analyze_iptv_with_ffmpeg,
+        register_timeout,
+        clear_timeouts,
+        set_ffmpeg_max_workers,
+        http_get,
+        detect_non_live_media_url,
+    )
+except ImportError:
+    pass

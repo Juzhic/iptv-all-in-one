@@ -91,8 +91,12 @@ export function apiGetRuns(start, end) {
 export function apiGetRun(runId) {
   return fetchJSON(`/api/run/${runId}`)
 }
-export function apiGetRunChannels(runId) {
-  return fetchJSON(`/api/run/${runId}/channels`)
+export function apiGetRunChannels(runId, page, size) {
+  const params = new URLSearchParams()
+  if (page != null) params.set('page', page)
+  if (size != null) params.set('size', size)
+  const qs = params.toString()
+  return fetchJSON(`/api/run/${runId}/channels` + (qs ? '?' + qs : ''))
 }
 export function apiDeleteRun(runId) {
   return deleteJSON(`/api/run/${runId}`)
@@ -170,8 +174,11 @@ export function apiScanKeyDelete(platform, key) {
 export function apiPersistentGrouped() {
   return fetchJSON('/api/scan/persistent/grouped')
 }
-export function apiPersistentDetails(sourceIp) {
-  return fetchJSON('/api/scan/persistent/details?source_ip=' + encodeURIComponent(sourceIp))
+export function apiPersistentDetails(sourceIp, page, size) {
+  const params = new URLSearchParams({ source_ip: sourceIp })
+  if (page != null) params.set('page', page)
+  if (size != null) params.set('size', size)
+  return fetchJSON('/api/scan/persistent/details?' + params.toString())
 }
 export function apiPersistentStats() {
   return fetchJSON('/api/scan/persistent/stats')
@@ -189,7 +196,11 @@ export function apiDetectionRuns(start, end, limit = 100) {
   params.set('limit', limit)
   return fetchJSON('/api/scan/detection/runs?' + params.toString())
 }
-export function apiDetectionRunResults(cycleId) {
-  return fetchJSON('/api/scan/detection/run/' + encodeURIComponent(cycleId) + '/results')
+export function apiDetectionRunResults(cycleId, page, size) {
+  const params = new URLSearchParams()
+  if (page != null) params.set('page', page)
+  if (size != null) params.set('size', size)
+  const qs = params.toString()
+  return fetchJSON('/api/scan/detection/run/' + encodeURIComponent(cycleId) + '/results' + (qs ? '?' + qs : ''))
 }
 

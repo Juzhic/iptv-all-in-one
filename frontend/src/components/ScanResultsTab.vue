@@ -48,7 +48,7 @@
             <div>
               <div style="font-size:16px;font-weight:600">{{ detailSourceIp }}</div>
               <div style="font-size:12px;color:var(--td-text-color-placeholder);margin-top:4px">
-                共 {{ allDetailData.length }} 个频道
+                共 {{ detailTotal }} 个频道
               </div>
             </div>
           </div>
@@ -309,7 +309,8 @@ function filteredSources(plat) {
 // ─── 详情弹窗状态 ───
 const detailDialogVisible = ref(false)
 const detailSourceIp = ref('')
-const allDetailData = ref([])
+const allDetailData = ref([])       // 当前页数据
+const detailTotal = ref(0)          // 服务端返回的总条数
 const selectedDetailKeys = ref([])
 const detailPage = ref(1)
 const detailPerPage = ref(50)
@@ -319,34 +320,13 @@ const detailCategoryFilter = ref('')
 const detailProvinceFilter = ref('')
 const detailSortInfo = ref({})
 
-const detailCategories = computed(() => {
-  const cats = new Set()
-  allDetailData.value.forEach(r => { if (r.category) cats.add(r.category) })
-  return [...cats].sort()
-})
+const detailCategories = ref([])
+const detailProvinces = ref([])
 
-const detailProvinces = computed(() => {
-  const provs = new Set()
-  allDetailData.value.forEach(r => { if (r.province) provs.add(r.province) })
-  return [...provs].sort()
-})
-
-const filteredDetailAll = computed(() => {
-  const q = detailSearch.value.toLowerCase()
-  const qf = detailQualityFilter.value
-  const cat = detailCategoryFilter.value
-  const prov = detailProvinceFilter.value
-  return allDetailData.value.filter(r => {
-    if (q && !(r.name || '').toLowerCase().includes(q)) return false
-    if (qf && r.quality_status !== qf) return false
-    if (cat && r.category !== cat) return false
-    if (prov && r.province !== prov) return false
-    return true
-  })
-})
-
-const filteredDetailSorted = computed(() => {
-  let data = [...filteredDetailAll.value]
+const filteredDetailData = computed(() => {
+  // 服务端已分页，allDetailData 即当前页数据
+  // 客户端排序仍在当前页内生效
+  let data = [...allDetailData.value]
   const { sortBy, descending } = detailSortInfo.value
   if (sortBy) {
     data.sort((a, b) => {
@@ -359,28 +339,40 @@ const filteredDetailSorted = computed(() => {
   return data
 })
 
-const filteredDetailData = computed(() => {
-  const start = (detailPage.value - 1) * detailPerPage.value
-  return filteredDetailSorted.value.slice(start, start + detailPerPage.value)
-})
-
 const detailPagination = computed(() => ({
   current: detailPage.value,
   pageSize: detailPerPage.value,
-  total: filteredDetailSorted.value.length,
+  total: detailTotal.value,
   showJumper: true,
   pageSizeOptions: [20, 50, 100, 200],
 }))
 
 function onDetailSortChange(sort) {
   detailSortInfo.value = sort
-  detailPage.value = 1
 }
 
 function onDetailPageChange(info) {
   detailPage.value = info.current
   detailPerPage.value = info.pageSize
   selectedDetailKeys.value = []
+  loadDetailPage()
+}
+
+async function loadDetailPage() {
+  try {
+    const data = await apiPersistentDetails(detailSourceIp.value, detailPage.value, detailPerPage.value)
+    if (data && data.items) {
+      allDetailData.value = data.items
+      detailTotal.value = data.total || 0
+    } else {
+      // 兼容旧格式（直接返回数组）
+      allDetailData.value = Array.isArray(data) ? data : []
+      detailTotal.value = allDetailData.value.length
+    }
+  } catch (e) {
+    allDetailData.value = []
+    detailTotal.value = 0
+  }
 }
 
 // ─── Legacy 视图状态 ───
@@ -516,6 +508,7 @@ async function loadGrouped() {
 async function openSourceDetail(sourceIp) {
   detailSourceIp.value = sourceIp
   detailPage.value = 1
+  detailPerPage.value = 50
   selectedDetailKeys.value = []
   detailSearch.value = ''
   detailQualityFilter.value = ''
@@ -524,10 +517,26 @@ async function openSourceDetail(sourceIp) {
   detailSortInfo.value = {}
   detailDialogVisible.value = true
   try {
-    const data = await apiPersistentDetails(sourceIp)
-    allDetailData.value = Array.isArray(data) ? data : (data.items || [])
+    const data = await apiPersistentDetails(sourceIp, 1, 50)
+    if (data && data.items) {
+      allDetailData.value = data.items
+      detailTotal.value = data.total || 0
+    } else {
+      allDetailData.value = Array.isArray(data) ? data : []
+      detailTotal.value = allDetailData.value.length
+    }
+    // 提取筛选选项（从当前页数据）
+    const cats = new Set()
+    const provs = new Set()
+    allDetailData.value.forEach(r => {
+      if (r.category) cats.add(r.category)
+      if (r.province) provs.add(r.province)
+    })
+    detailCategories.value = [...cats].sort()
+    detailProvinces.value = [...provs].sort()
   } catch (e) {
     allDetailData.value = []
+    detailTotal.value = 0
   }
 }
 
@@ -541,8 +550,8 @@ function selectAllDetail() {
 
 function exportDetailM3U() {
   const items = selectedDetailKeys.value.length
-    ? filteredDetailSorted.value.filter(r => selectedDetailKeys.value.includes(r.id))
-    : filteredDetailSorted.value
+    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
+    : filteredDetailData.value
   if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
   downloadM3U(items, `scan_${detailSourceIp.value}.m3u`)
 }

@@ -54,7 +54,7 @@
           <div v-if="!filteredChannelCount(row.run_id)" class="empty-hint">暂无匹配频道</div>
 
           <div class="detail-summary" v-if="filteredChannelCount(row.run_id)">
-            共 {{ filteredChannelCount(row.run_id) }} 个频道，第 {{ detailPage[row.run_id] || 1 }}/{{ detailTotalPages(row.run_id) }} 页
+            共 {{ getTotalChannels(row.run_id) }} 个频道，第 {{ detailPage[row.run_id] || 1 }}/{{ detailTotalPages(row.run_id) }} 页
           </div>
 
           <t-collapse expand-mutex v-if="filteredChannelCount(row.run_id)">
@@ -131,15 +131,15 @@
             </t-collapse-panel>
           </t-collapse>
 
-          <div class="detail-pagination" v-if="filteredChannelCount(row.run_id) > DETAIL_PAGE_SIZE">
+          <div class="detail-pagination" v-if="getTotalChannels(row.run_id) > DETAIL_PAGE_SIZE">
             <t-pagination
-              :total="filteredChannelCount(row.run_id)"
+              :total="getTotalChannels(row.run_id)"
               :pageSize="DETAIL_PAGE_SIZE"
               :current="detailPage[row.run_id] || 1"
               :showPageSize="false"
               :showJumper="true"
               size="small"
-              @current-change="(page) => { detailPage[row.run_id] = page }"
+              @current-change="(page) => onDetailPageChange(row.run_id, page)"
             />
           </div>
         </div>
@@ -204,7 +204,7 @@ const historyRuns = ref(props.initialRuns || [])
 const startDate = ref('')
 const endDate = ref('')
 const expandedKeys = ref([])
-const channelCache = reactive({})
+const channelCache = reactive({})     // { [runId]: { channels, total_channels, page, page_size } }
 const detailSearch = reactive({})
 const detailFilter = reactive({})
 const detailPage = reactive({})
@@ -283,14 +283,33 @@ async function onExpandChange(keys, extra) {
   const target = row || historyRuns.value.find(r => keys.includes(r.run_id) && !channelCache[r.run_id])
   if (!target) return
   if (keys.includes(target.run_id) && !channelCache[target.run_id]) {
-    try {
-      const data = await apiGetRunChannels(target.run_id)
-      channelCache[target.run_id] = data || {}
-      detailSearch[target.run_id] = ''
-      detailFilter[target.run_id] = 'all'
-      detailPage[target.run_id] = 1
-    } catch (e) { MessagePlugin.error('加载详情失败') }
+    await loadChannelPage(target.run_id, 1)
   }
+}
+
+async function loadChannelPage(runId, page) {
+  try {
+    const data = await apiGetRunChannels(runId, page, DETAIL_PAGE_SIZE)
+    // 服务端分页格式：{ channels: {}, total_channels, page, page_size }
+    channelCache[runId] = data || {}
+    detailSearch[runId] = detailSearch[runId] || ''
+    detailFilter[runId] = detailFilter[runId] || 'all'
+    detailPage[runId] = page
+  } catch (e) { MessagePlugin.error('加载详情失败') }
+}
+
+function getChannelData(runId) {
+  const cached = channelCache[runId]
+  if (!cached) return {}
+  // 兼容新格式 { channels, total_channels } 和旧格式（直接是频道字典）
+  return cached.channels || cached
+}
+
+function getTotalChannels(runId) {
+  const cached = channelCache[runId]
+  if (!cached) return 0
+  if (cached.total_channels != null) return cached.total_channels
+  return Object.keys(cached).length
 }
 
 function hasH265(info) {
@@ -309,7 +328,7 @@ function platformTheme(platform) {
 function filteredChannels(runId) {
   const q = (detailSearch[runId] || '').toLowerCase()
   const f = detailFilter[runId] || 'all'
-  const src = channelCache[runId] || {}
+  const src = getChannelData(runId)
   const result = {}
   for (const [name, info] of Object.entries(src)) {
     if (q && !name.toLowerCase().includes(q)) {
@@ -320,10 +339,6 @@ function filteredChannels(runId) {
     if (f === 'fail' && info.passed > 0) continue
     result[name] = info
   }
-  // 搜索/筛选变化时重置页码，避免页码越界
-  const total = Object.keys(result).length
-  const maxPage = Math.max(1, Math.ceil(total / DETAIL_PAGE_SIZE))
-  if ((detailPage[runId] || 1) > maxPage) detailPage[runId] = maxPage
   return result
 }
 
@@ -336,18 +351,23 @@ function filteredChannelCount(runId) {
 }
 
 function detailTotalPages(runId) {
-  return Math.max(1, Math.ceil(filteredChannelCount(runId) / DETAIL_PAGE_SIZE))
+  return Math.max(1, Math.ceil(getTotalChannels(runId) / DETAIL_PAGE_SIZE))
 }
 
+// 服务端分页后，当前页频道已是分页结果，直接返回过滤后的名称
 function paginatedChannelNames(runId) {
-  const page = detailPage[runId] || 1
-  const names = filteredChannelNames(runId)
-  return names.slice((page - 1) * DETAIL_PAGE_SIZE, page * DETAIL_PAGE_SIZE)
+  return filteredChannelNames(runId)
 }
 
 function paginatedChannelInfo(runId, name) {
-  const src = channelCache[runId] || {}
+  const src = getChannelData(runId)
   return src[name] || { passed: 0, total: 0, sources: [], urls: [] }
+}
+
+// 切换页码时请求服务端
+async function onDetailPageChange(runId, page) {
+  detailPage[runId] = page
+  await loadChannelPage(runId, page)
 }
 
 async function deleteRun(runId) {

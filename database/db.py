@@ -572,6 +572,9 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_results_run_id ON run_results(run_id);
         CREATE INDEX IF NOT EXISTS idx_results_channel ON run_results(channel);
+        CREATE INDEX IF NOT EXISTS idx_results_run_passed ON run_results(run_id, passed);
+        CREATE INDEX IF NOT EXISTS idx_results_quality ON run_results(quality_score);
+        CREATE INDEX IF NOT EXISTS idx_runs_finished_at ON runs(finished_at);
 
         CREATE TABLE IF NOT EXISTS config_data (
             key TEXT PRIMARY KEY,
@@ -649,6 +652,8 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id);
         CREATE INDEX IF NOT EXISTS idx_scan_results_category ON scan_results(category);
         CREATE INDEX IF NOT EXISTS idx_scan_results_province ON scan_results(province);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_name ON scan_results(name);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at);
 
         CREATE TABLE IF NOT EXISTS scan_progress (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -695,6 +700,8 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_psr_src ON persistent_scan_results(source_ip);
         CREATE INDEX IF NOT EXISTS idx_psr_quality ON persistent_scan_results(quality_status);
         CREATE INDEX IF NOT EXISTS idx_psr_platform ON persistent_scan_results(platform);
+        CREATE INDEX IF NOT EXISTS idx_psr_validated ON persistent_scan_results(validated);
+        CREATE INDEX IF NOT EXISTS idx_psr_name ON persistent_scan_results(name);
 
         CREATE TABLE IF NOT EXISTS detection_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -733,6 +740,7 @@ def init_db():
             FOREIGN KEY (cycle_id) REFERENCES detection_runs(cycle_id)
         );
         CREATE INDEX IF NOT EXISTS idx_det_results_cycle ON detection_results(cycle_id);
+        CREATE INDEX IF NOT EXISTS idx_det_results_cycle_ok ON detection_results(cycle_id, check_ok);
     """)
     _ensure_run_results_columns(conn)
     _ensure_scan_results_columns(conn)
@@ -971,23 +979,14 @@ def get_run_history(limit=50, start_date=None, end_date=None):
     return runs
 
 
-def get_run_detail(run_id):
-    """获取指定轮次的完整信息（含结果）。"""
+def get_run_detail(run_id, page=None, size=50):
+    """获取指定轮次的完整信息（含结果）。page 为 None 时返回全部结果。"""
     conn = _get_conn()
     run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     if not run:
         return None
-    results = conn.execute(
-        """SELECT * FROM run_results WHERE run_id = ?
-           ORDER BY channel,
-                    passed DESC,
-                    COALESCE(quality_score, 0) DESC,
-                    COALESCE(bandwidth_MBps, 0) DESC,
-                    COALESCE(connection_latency_ms, 999999999) ASC,
-                    id""",
-        (run_id,)
-    ).fetchall()
-    return {
+
+    base = {
         'run_id': run['run_id'],
         'started_at': run['started_at'],
         'finished_at': run['finished_at'],
@@ -1000,8 +999,36 @@ def get_run_detail(run_id):
             'unique_channels_passed': run['unique_channels_passed'],
             'unique_channels_total': run['unique_channels_total'],
         },
-        'results': [dict(r) for r in results],
     }
+
+    order = """ORDER BY channel,
+                    passed DESC,
+                    COALESCE(quality_score, 0) DESC,
+                    COALESCE(bandwidth_MBps, 0) DESC,
+                    COALESCE(connection_latency_ms, 999999999) ASC,
+                    id"""
+
+    if page is not None:
+        total = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM run_results WHERE run_id = ?", (run_id,)
+        ).fetchone()['cnt']
+        offset = (page - 1) * size
+        results = conn.execute(
+            f"SELECT * FROM run_results WHERE run_id = ? {order} LIMIT ? OFFSET ?",
+            (run_id, size, offset)
+        ).fetchall()
+        base['results'] = [dict(r) for r in results]
+        base['total_results'] = total
+        base['page'] = page
+        base['page_size'] = size
+    else:
+        results = conn.execute(
+            f"SELECT * FROM run_results WHERE run_id = ? {order}",
+            (run_id,)
+        ).fetchall()
+        base['results'] = [dict(r) for r in results]
+
+    return base
 
 
 def get_channel_summary(run_id):
@@ -1045,37 +1072,67 @@ def get_channel_summary(run_id):
     return summary
 
 
-def get_channel_summary_with_source(run_id):
-    """按频道聚合某轮测试结果，并关联数据来源平台（Quake/Hunter/DayDayMap 等）。"""
+def get_channel_summary_with_source(run_id, page=None, size=20):
+    """按频道聚合某轮测试结果，并关联数据来源平台。page 为 None 时返回全部频道。"""
     conn = _get_conn()
 
-    # 1. 按频道聚合统计
-    rows = conn.execute(
-        """SELECT channel,
-                  COUNT(*) as total,
-                  SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed
-           FROM run_results WHERE run_id = ?
-           GROUP BY channel ORDER BY channel""",
-        (run_id,)
-    ).fetchall()
+    order_detail = """ORDER BY channel,
+                         passed DESC,
+                         COALESCE(quality_score, 0) DESC,
+                         COALESCE(bandwidth_MBps, 0) DESC,
+                         COALESCE(connection_latency_ms, 999999999) ASC,
+                         id"""
 
-    # 2. 获取所有结果明细
-    detail_rows = conn.execute(
-        """SELECT * FROM run_results WHERE run_id = ?
-           ORDER BY channel,
-                    passed DESC,
-                    COALESCE(quality_score, 0) DESC,
-                    COALESCE(bandwidth_MBps, 0) DESC,
-                    COALESCE(connection_latency_ms, 999999999) ASC,
-                    id""",
-        (run_id,)
-    ).fetchall()
+    if page is not None:
+        # 计算总频道数
+        total_channels = conn.execute(
+            "SELECT COUNT(DISTINCT channel) as cnt FROM run_results WHERE run_id = ?",
+            (run_id,)
+        ).fetchone()['cnt']
 
-    # 3. 收集所有 URL，批量查询 persistent_scan_results 获取平台来源
+        # 获取当前页的频道列表
+        offset = (page - 1) * size
+        channel_rows = conn.execute(
+            """SELECT channel,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed
+               FROM run_results WHERE run_id = ?
+               GROUP BY channel ORDER BY channel
+               LIMIT ? OFFSET ?""",
+            (run_id, size, offset)
+        ).fetchall()
+
+        channel_names = [r['channel'] for r in channel_rows]
+        if not channel_names:
+            return {'channels': {}, 'total_channels': total_channels, 'page': page, 'page_size': size}
+
+        # 仅获取当前页频道的明细
+        placeholders = ','.join(['?'] * len(channel_names))
+        detail_rows = conn.execute(
+            f"SELECT * FROM run_results WHERE run_id = ? AND channel IN ({placeholders}) {order_detail}",
+            [run_id] + channel_names
+        ).fetchall()
+    else:
+        # 原有行为：全部频道
+        channel_rows = conn.execute(
+            """SELECT channel,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed
+               FROM run_results WHERE run_id = ?
+               GROUP BY channel ORDER BY channel""",
+            (run_id,)
+        ).fetchall()
+
+        detail_rows = conn.execute(
+            f"SELECT * FROM run_results WHERE run_id = ? {order_detail}",
+            (run_id,)
+        ).fetchall()
+        total_channels = len(channel_rows)
+
+    # 收集所有 URL，批量查询 persistent_scan_results 获取平台来源
     all_urls = [r['url'] for r in detail_rows]
     url_platform = {}
     if all_urls:
-        # 分批查询，避免 SQLite 参数数量限制
         batch_size = 500
         for i in range(0, len(all_urls), batch_size):
             batch = all_urls[i:i + batch_size]
@@ -1087,7 +1144,7 @@ def get_channel_summary_with_source(run_id):
             for pr in platform_rows:
                 url_platform[pr['url']] = pr['platform'] or '未知'
 
-    # 4. 按频道组装结果
+    # 按频道组装结果
     details_by_channel = {}
     sources_by_channel = {}
     for r in detail_rows:
@@ -1103,7 +1160,7 @@ def get_channel_summary_with_source(run_id):
             sources_by_channel[ch].add(platform)
 
     summary = {}
-    for r in rows:
+    for r in channel_rows:
         ch = r['channel']
         sources = sorted(sources_by_channel.get(ch, set()))
         summary[ch] = {
@@ -1112,7 +1169,12 @@ def get_channel_summary_with_source(run_id):
             'sources': sources,
             'urls': details_by_channel.get(ch, []),
         }
-    return summary
+
+    result = {'channels': summary, 'total_channels': total_channels}
+    if page is not None:
+        result['page'] = page
+        result['page_size'] = size
+    return result
 
 
 def get_codec_stats(run_id):
@@ -1786,17 +1848,34 @@ def get_detection_runs(start=None, end=None, limit=100):
     return [dict(r) for r in rows]
 
 
-def get_detection_results(cycle_id):
-    """查询某轮检测的所有 URL 结果明细。"""
+def get_detection_results(cycle_id, page=None, size=100):
+    """查询某轮检测的所有 URL 结果明细。page 为 None 时返回全部结果。"""
     conn = _get_conn()
-    rows = conn.execute(
-        """SELECT url, name, check_ok, http_status,
-                  response_time_ms, response_size_bytes,
-                  consecutive_failures, quality_status
-           FROM detection_results WHERE cycle_id = ? ORDER BY id""",
-        (cycle_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+
+    if page is not None:
+        total = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM detection_results WHERE cycle_id = ?",
+            (cycle_id,)
+        ).fetchone()['cnt']
+        offset = (page - 1) * size
+        rows = conn.execute(
+            """SELECT url, name, check_ok, http_status,
+                      response_time_ms, response_size_bytes,
+                      consecutive_failures, quality_status
+               FROM detection_results WHERE cycle_id = ? ORDER BY id
+               LIMIT ? OFFSET ?""",
+            (cycle_id, size, offset)
+        ).fetchall()
+        return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
+    else:
+        rows = conn.execute(
+            """SELECT url, name, check_ok, http_status,
+                      response_time_ms, response_size_bytes,
+                      consecutive_failures, quality_status
+               FROM detection_results WHERE cycle_id = ? ORDER BY id""",
+            (cycle_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def cleanup_old_detection_runs(keep=50):
@@ -1900,20 +1979,40 @@ def upsert_persistent_results(rows):
     conn.commit()
 
 
-def get_persistent_details_by_ip(source_ip):
-    """查询某个来源 IP 下的所有频道明细。"""
+def get_persistent_details_by_ip(source_ip, page=None, size=50):
+    """查询某个来源 IP 下的所有频道明细。page 为 None 时返回全部结果。"""
     conn = _get_conn()
-    rows = conn.execute(
-        """SELECT id, url, name, category, province, city, source_ip, platform,
-                  resolution, codec, delay, bandwidth, stability,
-                  quality_status, consecutive_failures,
-                  last_checked_at, first_seen_at, last_updated_at, validated
-           FROM persistent_scan_results
-           WHERE source_ip = ?
-           ORDER BY stability DESC, bandwidth DESC""",
-        (source_ip,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+
+    if page is not None:
+        total = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM persistent_scan_results WHERE source_ip = ?",
+            (source_ip,)
+        ).fetchone()['cnt']
+        offset = (page - 1) * size
+        rows = conn.execute(
+            """SELECT id, url, name, category, province, city, source_ip, platform,
+                      resolution, codec, delay, bandwidth, stability,
+                      quality_status, consecutive_failures,
+                      last_checked_at, first_seen_at, last_updated_at, validated
+               FROM persistent_scan_results
+               WHERE source_ip = ?
+               ORDER BY stability DESC, bandwidth DESC
+               LIMIT ? OFFSET ?""",
+            (source_ip, size, offset)
+        ).fetchall()
+        return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
+    else:
+        rows = conn.execute(
+            """SELECT id, url, name, category, province, city, source_ip, platform,
+                      resolution, codec, delay, bandwidth, stability,
+                      quality_status, consecutive_failures,
+                      last_checked_at, first_seen_at, last_updated_at, validated
+               FROM persistent_scan_results
+               WHERE source_ip = ?
+               ORDER BY stability DESC, bandwidth DESC""",
+            (source_ip,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_all_persistent_for_detection_table():
