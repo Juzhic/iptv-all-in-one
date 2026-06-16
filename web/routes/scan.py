@@ -3,7 +3,7 @@
 from flask import Blueprint, request, jsonify
 
 import database as db
-from web.state import _scanner_module
+import web.state as _state
 from web.app import _finite_number_or_none
 
 scan_bp = Blueprint('scan', __name__)
@@ -11,7 +11,7 @@ scan_bp = Blueprint('scan', __name__)
 
 def _get_scanner():
     """获取 scanner_integration 模块（启动时已导入，直接返回缓存引用）。"""
-    return _scanner_module
+    return _state._scanner_module
 
 
 def _ensure_scan_bridge():

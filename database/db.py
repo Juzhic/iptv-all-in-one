@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger('database')
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'iptv.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'iptv.db')
 MAX_RUNS = 50
 CONFIG_DATA = 'config'  # config_data 表中存储系统配置的 key
 LOCAL_TZ = timezone(timedelta(hours=8))

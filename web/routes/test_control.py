@@ -2,14 +2,7 @@
 """web 包 — 测试控制 API 蓝图。"""
 from flask import Blueprint, request, jsonify
 
-from web.state import (
-    _test_progress,
-    _test_log_lines,
-    _test_log_seq,
-    _test_running,
-    _test_lock,
-    _test_stop_event,
-)
+import web.state as _state
 from web.test_runner import _start_test_background
 from web.scheduler import _scheduler_status
 
@@ -29,11 +22,11 @@ def api_stop():
     """请求终止当前测试运行。"""
     data = request.get_json(silent=True) or {}
     msg = data.get('message', '用户手动终止')
-    with _test_lock:
-        if not _test_running:
+    with _state._test_lock:
+        if not _state._test_running:
             return jsonify({'error': '当前没有正在运行的测试'}), 409
-        _test_stop_event.set()
-        _test_progress['error'] = msg
+        _state._test_stop_event.set()
+        _state._test_progress['error'] = msg
     return jsonify({'ok': True, 'message': msg})
 
 
@@ -41,13 +34,13 @@ def api_stop():
 def api_status():
     """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
     scheduler_running, next_run_str = _scheduler_status()
-    if _test_progress['running']:
+    if _state._test_progress['running']:
         return jsonify({
             'running': True,
-            'processed': _test_progress['processed'],
-            'total': _test_progress['total'],
-            'elapsed': _test_progress['elapsed'],
-            'source': _test_progress.get('source', 'web'),
+            'processed': _state._test_progress['processed'],
+            'total': _state._test_progress['total'],
+            'elapsed': _state._test_progress['elapsed'],
+            'source': _state._test_progress.get('source', 'web'),
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
         })
@@ -84,21 +77,21 @@ def api_progress():
         'scheduler_running': scheduler_running,
     }
 
-    if _test_progress['running']:
-        new_lines = [l for l in _test_log_lines if l['seq'] > after]
+    if _state._test_progress['running']:
+        new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
         return jsonify({
             'running': True,
-            'started_at': _test_progress['started_at'],
-            'total': _test_progress['total'],
-            'processed': _test_progress['processed'],
-            'passed': _test_progress['passed'],
-            'failed': _test_progress['failed'],
-            'elapsed': _test_progress['elapsed'],
-            'finished_at': _test_progress['finished_at'],
-            'error': _test_progress['error'],
+            'started_at': _state._test_progress['started_at'],
+            'total': _state._test_progress['total'],
+            'processed': _state._test_progress['processed'],
+            'passed': _state._test_progress['passed'],
+            'failed': _state._test_progress['failed'],
+            'elapsed': _state._test_progress['elapsed'],
+            'finished_at': _state._test_progress['finished_at'],
+            'error': _state._test_progress['error'],
             'lines': new_lines,
-            'last_seq': _test_log_seq,
-            'source': _test_progress.get('source', 'web'),
+            'last_seq': _state._test_log_seq,
+            'source': _state._test_progress.get('source', 'web'),
             **sched_info,
         })
 
@@ -121,21 +114,21 @@ def api_progress():
             **sched_info,
         })
 
-    if _test_progress.get('finished_at'):
-        new_lines = [l for l in _test_log_lines if l['seq'] > after]
+    if _state._test_progress.get('finished_at'):
+        new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
         return jsonify({
             'running': False,
-            'started_at': _test_progress.get('started_at'),
-            'total': _test_progress.get('total', 0),
-            'processed': _test_progress.get('processed', 0),
-            'passed': _test_progress.get('passed', 0),
-            'failed': _test_progress.get('failed', 0),
-            'elapsed': _test_progress.get('elapsed', 0),
-            'finished_at': _test_progress.get('finished_at'),
-            'error': _test_progress.get('error'),
+            'started_at': _state._test_progress.get('started_at'),
+            'total': _state._test_progress.get('total', 0),
+            'processed': _state._test_progress.get('processed', 0),
+            'passed': _state._test_progress.get('passed', 0),
+            'failed': _state._test_progress.get('failed', 0),
+            'elapsed': _state._test_progress.get('elapsed', 0),
+            'finished_at': _state._test_progress.get('finished_at'),
+            'error': _state._test_progress.get('error'),
             'lines': new_lines,
-            'last_seq': _test_log_seq,
-            'source': _test_progress.get('source', ''),
+            'last_seq': _state._test_log_seq,
+            'source': _state._test_progress.get('source', ''),
             **sched_info,
         })
 
@@ -147,7 +140,7 @@ def api_progress():
         'passed': 0,
         'failed': 0,
         'elapsed': 0,
-        'finished_at': _test_progress.get('finished_at'),
+        'finished_at': _state._test_progress.get('finished_at'),
         'error': None,
         'lines': [],
         'last_seq': 0,

@@ -11,18 +11,7 @@ from datetime import datetime
 from engine import load_config
 from database import now_str, get_scheduler_state, update_scheduler_state, clear_scheduler_state
 
-from web.state import (
-    _scheduler_thread_lock,
-    _scheduler_owner,
-    _next_scheduled_run,
-    _scheduler_running,
-    _scheduler_thread,
-    _scheduler_lock_handle,
-    set_scheduler_running,
-    set_scheduler_thread,
-    set_next_scheduled_run,
-    set_scheduler_lock_handle,
-)
+import web.state as _state
 
 
 def _format_schedule_time(value):
@@ -36,7 +25,7 @@ def _write_scheduler_state(running, next_run=None):
         update_scheduler_state(
             running=running,
             next_run=_format_schedule_time(next_run),
-            owner=_scheduler_owner if running else '',
+            owner=_state._scheduler_owner if running else '',
         )
     except Exception:
         pass
@@ -44,7 +33,7 @@ def _write_scheduler_state(running, next_run=None):
 
 def _acquire_scheduler_lock():
     """跨进程抢占调度器锁，避免 gunicorn/uWSGI 多 worker 重复定时执行。"""
-    if _scheduler_lock_handle is not None:
+    if _state._scheduler_lock_handle is not None:
         return True
 
     os.makedirs('output', exist_ok=True)
@@ -63,14 +52,14 @@ def _acquire_scheduler_lock():
 
     lock_handle.seek(0)
     lock_handle.truncate()
-    lock_handle.write(f'{_scheduler_owner} {now_str()}\n')
+    lock_handle.write(f'{_state._scheduler_owner} {now_str()}\n')
     lock_handle.flush()
-    set_scheduler_lock_handle(lock_handle)
+    _state.set_scheduler_lock_handle(lock_handle)
     return True
 
 
 def _release_scheduler_lock():
-    handle = _scheduler_lock_handle
+    handle = _state._scheduler_lock_handle
     if handle is None:
         return
     try:
@@ -86,7 +75,7 @@ def _release_scheduler_lock():
     try:
         handle.close()
     finally:
-        set_scheduler_lock_handle(None)
+        _state.set_scheduler_lock_handle(None)
 
 
 def _ensure_scheduler_started(cfg=None):
@@ -99,26 +88,26 @@ def _ensure_scheduler_started(cfg=None):
     if cfg.get('run_mode', 'once') == 'once':
         return False
 
-    with _scheduler_thread_lock:
-        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+    with _state._scheduler_thread_lock:
+        if _state._scheduler_thread is not None and _state._scheduler_thread.is_alive():
             return True
         if not _acquire_scheduler_lock():
             return False
-        set_scheduler_running(True)
-        _write_scheduler_state(True, _next_scheduled_run)
+        _state.set_scheduler_running(True)
+        _write_scheduler_state(True, _state._next_scheduled_run)
         t = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
-        set_scheduler_thread(t)
+        _state.set_scheduler_thread(t)
         t.start()
         return True
 
 
 def _scheduler_status():
     """返回页面展示用的调度状态，兼容多进程请求落到非调度 worker。"""
-    if not _scheduler_running:
+    if not _state._scheduler_running:
         _ensure_scheduler_started()
 
-    next_run_str = _format_schedule_time(_next_scheduled_run)
-    scheduler_running = _scheduler_running
+    next_run_str = _format_schedule_time(_state._next_scheduled_run)
+    scheduler_running = _state._scheduler_running
     if next_run_str and scheduler_running:
         return scheduler_running, next_run_str
 
@@ -133,8 +122,8 @@ def _scheduler_status():
 
 def _scheduler_loop():
     """后台调度循环：按配置的 run_mode 定时触发测试。"""
-    set_scheduler_running(True)
-    _write_scheduler_state(True, _next_scheduled_run)
+    _state.set_scheduler_running(True)
+    _write_scheduler_state(True, _state._next_scheduled_run)
     from engine.test_engine import _next_run_datetime
     from web.test_runner import _start_test_background, _is_run_token_active
 
@@ -143,18 +132,18 @@ def _scheduler_loop():
             cfg = load_config()
             run_mode = cfg.get('run_mode', 'once')
             if run_mode == 'once':
-                set_next_scheduled_run(None)
+                _state.set_next_scheduled_run(None)
                 _write_scheduler_state(False, None)
                 break
 
             next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
             if next_run is None:
-                set_next_scheduled_run(None)
+                _state.set_next_scheduled_run(None)
                 _write_scheduler_state(True, None)
                 time.sleep(60)
                 continue
 
-            set_next_scheduled_run(next_run)
+            _state.set_next_scheduled_run(next_run)
             _write_scheduler_state(True, next_run)
             wait_sec = (next_run - datetime.now()).total_seconds()
             if wait_sec > 0:
@@ -188,9 +177,9 @@ def _scheduler_loop():
         import logging
         logging.getLogger(__name__).error(f"调度器异常退出: {e}")
     finally:
-        set_scheduler_running(False)
-        set_next_scheduled_run(None)
-        set_scheduler_thread(None)
+        _state.set_scheduler_running(False)
+        _state.set_next_scheduled_run(None)
+        _state.set_scheduler_thread(None)
         try:
             clear_scheduler_state()
         except Exception:
