@@ -62,11 +62,6 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             'time': now,
             'msg': msg,
         })
-        try:
-            from database import insert_log
-            insert_log(_run_id, 'INFO', msg)
-        except Exception:
-            pass
 
     def _run():
         try:

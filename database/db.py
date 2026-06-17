@@ -1959,9 +1959,15 @@ def upsert_persistent_results(rows):
                resolution=excluded.resolution, codec=excluded.codec,
                delay=excluded.delay, bandwidth=excluded.bandwidth,
                stability=excluded.stability,
-               quality_status='pending', consecutive_failures=0,
-               last_checked_at=NULL, last_updated_at=excluded.last_updated_at,
-               validated=0""",
+               quality_status=CASE WHEN excluded.stability > persistent_scan_results.stability
+                                   THEN 'pending' ELSE persistent_scan_results.quality_status END,
+               consecutive_failures=CASE WHEN excluded.stability > persistent_scan_results.stability
+                                         THEN 0 ELSE persistent_scan_results.consecutive_failures END,
+               last_checked_at=CASE WHEN excluded.stability > persistent_scan_results.stability
+                                    THEN NULL ELSE persistent_scan_results.last_checked_at END,
+               last_updated_at=excluded.last_updated_at,
+               validated=CASE WHEN excluded.stability > persistent_scan_results.stability
+                              THEN 0 ELSE persistent_scan_results.validated END""",
         [
             (
                 r.get('url', ''), r.get('name', ''),

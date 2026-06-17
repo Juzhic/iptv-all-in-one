@@ -1215,16 +1215,29 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
     """
     用 KeyManager 轮换 key 执行扫描函数。
     scan_func 的第一个参数必须是 api_key。
-    403 时自动切换下一个 key 重试。
+    按积分余额降序使用 key，跳过已耗尽的 key，403 时自动切换下一个 key 重试。
     """
     from .key_manager import KeyManager
     km = KeyManager.instance()
-    keys = km.get_all_keys(platform)
-    if not keys:
+    all_keys = km.get_all_keys(platform)
+    if not all_keys:
         return []
 
+    credits = km.get_credits_info(platform)
+    sorted_keys = sorted(all_keys, key=lambda k: credits.get(k, 0) or 0, reverse=True)
+    usable = [k for k in sorted_keys if (credits.get(k, 0) or 0) > 0]
+
+    if not usable:
+        logger.warning(f"[{platform}] 所有 key 积分耗尽，跳过扫描")
+        return []
+
+    skipped = len(all_keys) - len(usable)
+    if skipped:
+        logger.info(f"[{platform}] 跳过 {skipped} 个已耗尽的 key，"
+                    f"剩余 {len(usable)} 个可用")
+
     last_error = None
-    for key in keys:
+    for key in usable:
         try:
             result = await scan_func(key, *args, session=session, **kwargs)
             return result

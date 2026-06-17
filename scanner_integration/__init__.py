@@ -286,9 +286,9 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             from .persistence import merge_scan_to_persistent
             await merge_scan_to_persistent(scan_id)
             _scan_log(f"[Scan:{scan_id}] 已合并到持久化结果集")
-        except Exception as e:
-            _scan_log(f"[Scan:{scan_id}] 合并到持久化结果集失败: {e}")
-            logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {e}")
+        except BaseException as e:
+            _scan_log(f"[Scan:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
+            logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
 
     except BaseException as e:
         _scan_log(f"[Scan:{scan_id}] 扫描异常: {e}")
