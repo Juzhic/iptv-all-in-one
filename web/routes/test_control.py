@@ -26,6 +26,7 @@ def api_stop():
         if not _state._test_running:
             return jsonify({'error': '当前没有正在运行的测试'}), 409
         _state._test_stop_event.set()
+    with _state._progress_lock:
         _state._test_progress['error'] = msg
     return jsonify({'ok': True, 'message': msg})
 
@@ -34,13 +35,20 @@ def api_stop():
 def api_status():
     """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
     scheduler_running, next_run_str = _scheduler_status()
-    if _state._test_progress['running']:
+    with _state._progress_lock:
+        running = _state._test_progress['running']
+        if running:
+            processed = _state._test_progress['processed']
+            total = _state._test_progress['total']
+            elapsed = _state._test_progress['elapsed']
+            source = _state._test_progress.get('source', 'web')
+    if running:
         return jsonify({
             'running': True,
-            'processed': _state._test_progress['processed'],
-            'total': _state._test_progress['total'],
-            'elapsed': _state._test_progress['elapsed'],
-            'source': _state._test_progress.get('source', 'web'),
+            'processed': processed,
+            'total': total,
+            'elapsed': elapsed,
+            'source': source,
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
         })
@@ -77,21 +85,33 @@ def api_progress():
         'scheduler_running': scheduler_running,
     }
 
-    if _state._test_progress['running']:
+    with _state._progress_lock:
+        prog_running = _state._test_progress['running']
+        if prog_running:
+            prog_started_at = _state._test_progress['started_at']
+            prog_total = _state._test_progress['total']
+            prog_processed = _state._test_progress['processed']
+            prog_passed = _state._test_progress['passed']
+            prog_failed = _state._test_progress['failed']
+            prog_elapsed = _state._test_progress['elapsed']
+            prog_finished_at = _state._test_progress['finished_at']
+            prog_error = _state._test_progress['error']
+            prog_source = _state._test_progress.get('source', 'web')
+    if prog_running:
         new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
         return jsonify({
             'running': True,
-            'started_at': _state._test_progress['started_at'],
-            'total': _state._test_progress['total'],
-            'processed': _state._test_progress['processed'],
-            'passed': _state._test_progress['passed'],
-            'failed': _state._test_progress['failed'],
-            'elapsed': _state._test_progress['elapsed'],
-            'finished_at': _state._test_progress['finished_at'],
-            'error': _state._test_progress['error'],
+            'started_at': prog_started_at,
+            'total': prog_total,
+            'processed': prog_processed,
+            'passed': prog_passed,
+            'failed': prog_failed,
+            'elapsed': prog_elapsed,
+            'finished_at': prog_finished_at,
+            'error': prog_error,
             'lines': new_lines,
             'last_seq': _state._test_log_seq,
-            'source': _state._test_progress.get('source', 'web'),
+            'source': prog_source,
             **sched_info,
         })
 
@@ -114,24 +134,37 @@ def api_progress():
             **sched_info,
         })
 
-    if _state._test_progress.get('finished_at'):
+    with _state._progress_lock:
+        finished_at = _state._test_progress.get('finished_at')
+    if finished_at:
         new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
+        with _state._progress_lock:
+            started_at = _state._test_progress.get('started_at')
+            total = _state._test_progress.get('total', 0)
+            processed = _state._test_progress.get('processed', 0)
+            passed = _state._test_progress.get('passed', 0)
+            failed = _state._test_progress.get('failed', 0)
+            elapsed = _state._test_progress.get('elapsed', 0)
+            error = _state._test_progress.get('error')
+            source = _state._test_progress.get('source', '')
         return jsonify({
             'running': False,
-            'started_at': _state._test_progress.get('started_at'),
-            'total': _state._test_progress.get('total', 0),
-            'processed': _state._test_progress.get('processed', 0),
-            'passed': _state._test_progress.get('passed', 0),
-            'failed': _state._test_progress.get('failed', 0),
-            'elapsed': _state._test_progress.get('elapsed', 0),
-            'finished_at': _state._test_progress.get('finished_at'),
-            'error': _state._test_progress.get('error'),
+            'started_at': started_at,
+            'total': total,
+            'processed': processed,
+            'passed': passed,
+            'failed': failed,
+            'elapsed': elapsed,
+            'finished_at': finished_at,
+            'error': error,
             'lines': new_lines,
             'last_seq': _state._test_log_seq,
-            'source': _state._test_progress.get('source', ''),
+            'source': source,
             **sched_info,
         })
 
+    with _state._progress_lock:
+        last_finished_at = _state._test_progress.get('finished_at')
     return jsonify({
         'running': False,
         'started_at': None,
@@ -140,7 +173,7 @@ def api_progress():
         'passed': 0,
         'failed': 0,
         'elapsed': 0,
-        'finished_at': _state._test_progress.get('finished_at'),
+        'finished_at': last_finished_at,
         'error': None,
         'lines': [],
         'last_seq': 0,

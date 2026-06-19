@@ -17,7 +17,7 @@ for prov, cities in PROVINCE_CITIES.items():
 try:
     from .province_cities import DISTRICT_CITIES
     CITY_TO_PROVINCE.update(DISTRICT_CITIES)
-except:
+except Exception:
     pass
 
 def normalize_province(prov):

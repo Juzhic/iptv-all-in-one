@@ -60,7 +60,7 @@ def _results_for_channel(ch, channels, name_to_canonical=None, regex_aliases=Non
     return results
 
 
-def _generate_result_txt(passed_results, fallback_update_time=None):
+def _generate_result_txt(passed_results, fallback_update_time=None, demo_content=None):
     """从通过的结果动态生成 result.txt 格式内容。"""
     channels = _group_passed_results(passed_results)
 
@@ -71,7 +71,7 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
         from engine.test_engine import parse_demo_file
         from engine.alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
-        demo = parse_demo_file()
+        demo = parse_demo_file(demo_content)
         for genre, ch_list in demo:
             genre_lines = []
             genre_results = []
@@ -103,11 +103,14 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
     return '\n'.join(lines)
 
 
-def _generate_result_m3u(passed_results, fallback_update_time=None):
+def _generate_result_m3u(passed_results, fallback_update_time=None, demo_content=None):
     """从通过的结果动态生成 result.m3u 格式内容。"""
     channels = _group_passed_results(passed_results)
 
-    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    from engine import load_config
+    cfg = load_config()
+    logo_base = cfg.get('logo_base_url', 'https://www.xn--rgv465a.top/tvlogo')
+    epg_url = cfg.get('epg_url', '')
     selected_results = []
     body_lines = []
 
@@ -115,7 +118,7 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
         from engine.test_engine import parse_demo_file
         from engine.alias import load_aliases
         _, name_to_canonical, regex_aliases = load_aliases()
-        demo = parse_demo_file()
+        demo = parse_demo_file(demo_content)
         for genre, ch_list in demo:
             for ch in ch_list:
                 for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
@@ -141,7 +144,10 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
                 selected_results.append(result)
 
     update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
-    lines = ['#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"']
+    if epg_url:
+        lines = [f'#EXTM3U x-tvg-url="{epg_url}"']
+    else:
+        lines = ['#EXTM3U']
     lines.append(
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
         f'group-title="🕘️更新时间",{update_time_str}'

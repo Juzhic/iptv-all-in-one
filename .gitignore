@@ -23,6 +23,9 @@ logs/
 Thumbs.db
 /.idea
 
+# 敏感配置
+basic_auth.json
+
 # 前端构建产物
 dist/
 frontend/node_modules/

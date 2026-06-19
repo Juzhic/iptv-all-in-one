@@ -80,8 +80,8 @@ def api_scan_results():
     if scanner is None:
         return jsonify({'total': 0, 'items': []})
     scan_id = request.args.get('scan_id')
-    page = int(request.args.get('page', 1))
-    size = int(request.args.get('size', 50))
+    page = request.args.get('page', 1, type=int)
+    size = request.args.get('size', 50, type=int)
     category = request.args.get('category')
     province = request.args.get('province')
     search = request.args.get('search')
@@ -107,7 +107,7 @@ def api_scan_history():
     scanner = _get_scanner()
     if scanner is None:
         return jsonify([])
-    limit = int(request.args.get('limit', 50))
+    limit = request.args.get('limit', 50, type=int)
     return jsonify(scanner.get_scan_history(limit=limit))
 
 

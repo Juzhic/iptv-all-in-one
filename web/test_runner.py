@@ -31,28 +31,30 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
         _state.set_test_active_token(run_token)
 
     # 重置进度
-    _state._test_progress.update({
-        'running': True,
-        'started_at': now_str(),
-        'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
-        'elapsed': 0, 'finished_at': None, 'error': None,
-        'source': trigger_source,
-        'last_seq': 0,
-    })
+    with _state._progress_lock:
+        _state._test_progress.update({
+            'running': True,
+            'started_at': now_str(),
+            'total': 0, 'processed': 0, 'passed': 0, 'failed': 0,
+            'elapsed': 0, 'finished_at': None, 'error': None,
+            'source': trigger_source,
+            'last_seq': 0,
+        })
     _state._test_log_lines.clear()
     _state.reset_test_log_seq()
     _start_time = time.time()
     _run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
 
     def _on_progress(info):
-        _state._test_progress.update({
-            'total': info.get('total', 0),
-            'processed': info.get('processed', 0),
-            'passed': info.get('success', 0),
-            'failed': info.get('failed', 0),
-            'elapsed': round(time.time() - _start_time, 1),
-            'last_seq': _state._test_log_seq,
-        })
+        with _state._progress_lock:
+            _state._test_progress.update({
+                'total': info.get('total', 0),
+                'processed': info.get('processed', 0),
+                'passed': info.get('success', 0),
+                'failed': info.get('failed', 0),
+                'elapsed': round(time.time() - _start_time, 1),
+                'last_seq': _state._test_log_seq,
+            })
 
     def _on_log(msg):
         seq = _state.inc_test_log_seq()
@@ -78,13 +80,14 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             import logging
             logging.getLogger(__name__).error(f"测试失败: {e}")
             _on_log(f"测试异常终止: {e}")
-            _state._test_progress['error'] = str(e)
+            with _state._progress_lock:
+                _state._test_progress['error'] = str(e)
         finally:
             with _state._test_lock:
                 is_current_run = _state._test_active_token is run_token
             if is_current_run:
                 _on_log("后台测试任务已结束")
-                with _state._test_lock:
+                with _state._test_lock, _state._progress_lock:
                     total = _state._test_progress.get('total', 0)
                     processed = _state._test_progress.get('processed', 0)
                     if total and processed < total and not _state._test_progress.get('error'):
@@ -96,6 +99,32 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                     _state._test_progress['last_seq'] = _state._test_log_seq
                     _state.set_test_running(False)
                     _state.set_test_active_token(None)
+            if is_current_run:
+                # Send webhook notification
+                try:
+                    from engine.notifications import send_webhook
+                    from database import get_latest_run
+                    from engine import load_config
+                    cfg = load_config()
+                    latest = get_latest_run()
+                    if latest:
+                        s = latest.get('summary', {})
+                        pr = s.get('pass_rate', 0)
+                        alert = ''
+                        min_pr = cfg.get('webhook_min_pass_rate', 0)
+                        if min_pr > 0 and pr < min_pr:
+                            alert = f'\n⚠️ **通过率告警**: {pr}% 低于阈值 {min_pr}%'
+                        
+                        content = (
+                            f"通过率: **{pr}%**\n"
+                            f"频道覆盖: **{s.get('unique_channels_passed', 0)}/{s.get('unique_channels_total', 0)}**\n"
+                            f"测试数: {s.get('total_tested', 0)}, 通过: {s.get('total_passed', 0)}, 失败: {s.get('total_failed', 0)}\n"
+                            f"耗时: {round(s.get('duration_seconds', 0) / 60, 1)} 分钟"
+                            f"{alert}"
+                        )
+                        send_webhook('test', '📊 IPTV 测速完成', content)
+                except Exception:
+                    pass
             if is_current_run:
                 try:
                     from database import clear_run_progress

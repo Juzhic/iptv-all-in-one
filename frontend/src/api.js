@@ -104,6 +104,12 @@ export function apiDeleteRun(runId) {
 export function apiGetRunLogs(runId) {
   return fetchJSON(`/api/run/${runId}/logs`)
 }
+export function apiCompareRuns(runA, runB) {
+  return fetchJSON(`/api/compare?run_a=${encodeURIComponent(runA)}&run_b=${encodeURIComponent(runB)}`)
+}
+export function apiGetSources() {
+  return fetchJSON('/api/sources')
+}
 
 // ─── 测试控制 ───
 export function apiTriggerTest() {
@@ -156,6 +162,25 @@ export function apiScanConfig() {
 }
 export function apiSaveScanConfig(data) {
   return postJSON('/api/scan/config', data)
+}
+
+// ─── 频道发现 ───
+export function apiDiscover() {
+  return fetchJSON('/api/discover', { timeout: 120000 })
+}
+export function apiDiscoverMerge(channels) {
+  return postJSON('/api/discover/merge', { channels })
+}
+
+// ─── 多方案管理 ───
+export function apiListProfiles() {
+  return fetchJSON('/api/profiles')
+}
+export function apiCreateProfile(data) {
+  return postJSON('/api/profiles', data)
+}
+export function apiDeleteProfile(name) {
+  return deleteJSON(`/api/profiles/${name}`)
 }
 export function apiScanKeys() {
   return fetchJSON('/api/scan/keys')

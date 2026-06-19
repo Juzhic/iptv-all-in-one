@@ -260,7 +260,6 @@ def create_app():
             'text/html' in response.content_type
             or response.content_type.startswith('application/json')
             or request.path.startswith('/api/')
-            or request.path.startswith('/static/')
         )
         if dynamic_response:
             response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0, private'

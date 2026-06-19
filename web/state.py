@@ -8,10 +8,17 @@ import os
 import threading
 
 # ─── 允许通过 Web 编辑的数据 key ───
-ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe'}
+ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe', 'profiles'}
+
+
+def is_allowed_data_key(key):
+    """检查 key 是否允许通过 Web 编辑（支持 profile:* 通配）。"""
+    if key in ALLOWED_DATA_KEYS:
+        return True
+    return key.startswith('profile:')
 
 # ─── BasicAuth 免认证路径 ───
-BASIC_AUTH_EXEMPT_PATHS = {'/api/download/txt', '/api/download/m3u'}
+BASIC_AUTH_EXEMPT_PATHS = {'/api/download/txt', '/api/download/m3u', '/api/health', '/api/subscribe.m3u'}
 
 # ─── 测试运行状态 ───
 _test_running = False
@@ -34,6 +41,7 @@ _test_progress = {
     'last_seq': 0,
 }
 _test_log_lines = collections.deque(maxlen=200)
+_progress_lock = threading.Lock()
 _test_log_seq = 0
 
 # ─── 调度器状态 ───
@@ -89,6 +97,11 @@ def set_scheduler_thread(thread):
 def set_next_scheduled_run(value):
     global _next_scheduled_run
     _next_scheduled_run = value
+
+
+def get_test_progress_snapshot():
+    with _progress_lock:
+        return dict(_test_progress)
 
 
 def set_scheduler_lock_handle(handle):

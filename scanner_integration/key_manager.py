@@ -170,10 +170,9 @@ async def check_hunter_credit(api_key):
             try:
                 url = "https://hunter.qianxin.com/openApi/userInfo"
                 async with s.get(url, params={"api-key": key}) as resp:
-                    print(f"[Hunter] userInfo status={resp.status}")
+                    logger.debug(f"[Hunter] userInfo status={resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
-                        print(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
                         d = data.get('data') or {}
                         if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
                             points = _first_number(d, (
@@ -191,11 +190,11 @@ async def check_hunter_credit(api_key):
                                 'role': role,
                             }
                         else:
-                            print(f"[Hunter] userInfo unexpected: code={data.get('code')}")
+                            logger.debug(f"[Hunter] userInfo unexpected: code={data.get('code')}")
                     else:
-                        print(f"[Hunter] userInfo HTTP {resp.status}")
+                        logger.debug(f"[Hunter] userInfo HTTP {resp.status}")
             except Exception as e:
-                print(f"[Hunter] userInfo exception: {e}")
+                logger.debug(f"[Hunter] userInfo exception: {e}")
 
             # 2) 回退：openApi/search 最小查询，从 rest_quota 解析
             try:
@@ -205,7 +204,7 @@ async def check_hunter_credit(api_key):
                                  params={"api-key": key, "search": dummy_query,
                                          "page": 1, "page_size": 1, "is_web": 1},
                                  timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    print(f"[Hunter] search fallback status={resp.status}")
+                    logger.debug(f"[Hunter] search fallback status={resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         d = data.get('data') or {}
@@ -214,19 +213,19 @@ async def check_hunter_credit(api_key):
                             import re
                             m = re.search(r'(\d+)', rq)
                             points = int(m.group(1)) if m else None
-                            print(f"[Hunter] search rest_quota={rq} -> points={points}")
+                            logger.debug(f"[Hunter] search rest_quota={rq} -> points={points}")
                             return {'ok': True, 'points': points, 'role': ''}
-                        print(f"[Hunter] search unexpected: code={data.get('code')}")
+                        logger.debug(f"[Hunter] search unexpected: code={data.get('code')}")
                         return {'error': data.get('message', 'query failed')}
                     elif resp.status == 403:
                         return {'ok': True, 'points': 0, 'role': '',
                                 'error': '积分耗尽 (HTTP 403)'}
                     return {'error': f'HTTP {resp.status}'}
             except Exception as e:
-                print(f"[Hunter] search fallback exception: {e}")
+                logger.debug(f"[Hunter] search fallback exception: {e}")
                 return {'error': f'userInfo+search both failed: {e}'}
     except Exception as e:
-        print(f"[Hunter] check_hunter_credit fatal: {e}")
+        logger.debug(f"[Hunter] check_hunter_credit fatal: {e}")
         return {'error': str(e)}
 
 

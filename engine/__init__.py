@@ -21,6 +21,7 @@ try:
         register_timeout,
         clear_timeouts,
         set_ffmpeg_max_workers,
+        set_ffmpeg_timeout,
         http_get,
         detect_non_live_media_url,
     )

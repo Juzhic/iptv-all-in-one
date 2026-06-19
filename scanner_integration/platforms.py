@@ -21,11 +21,11 @@ from .logger_bridge import logger
 def safe_decode_json(raw):
     try:
         return json.loads(raw.decode('utf-8'))
-    except:
+    except Exception:
         pass
     try:
         return json.loads(raw.decode('gbk', errors='replace'))
-    except:
+    except Exception:
         return None
 
 async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5):
@@ -411,7 +411,7 @@ async def zhgx_scan(size=10, session=None):
                         for item in j.get("data", []):
                             ip = item.get("ip"); port = item.get("port", 80)
                             if ip: ips.add((ip, port))
-        except: pass
+        except Exception: pass
     hunter_key = config_bridge.get_scan_config().get("hunter_key")
     if hunter_key:
         await asyncio.sleep(API_REQUEST_DELAY)
@@ -429,7 +429,7 @@ async def zhgx_scan(size=10, session=None):
                         for item in j.get("data", {}).get("arr", []):
                             ip = item.get("ip"); port = item.get("port", 80)
                             if ip: ips.add((ip, port))
-        except: pass
+        except Exception: pass
     if not ips:
         logger.info("[ZHGX] 未发现IP")
         return []
@@ -490,7 +490,7 @@ async def zhgx_scan(size=10, session=None):
                             })
                         if chs: success.append((ip, port))
                         return chs
-            except: pass
+            except Exception: pass
         return []
     for lst in await asyncio.gather(*[f(ip, port) for ip, port in ips]):
         if lst: entries.extend(lst)
@@ -577,6 +577,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                     raise KeyDepletedError("Hunter key 积分耗尽")
                 else:
                     logger.warning(f"[JSMpeg] Hunter HTTP {resp.status}")
+        except KeyDepletedError:
+            raise
         except Exception as e:
             logger.warning(f"[JSMpeg] Hunter 查询失败: {e}")
 
@@ -608,6 +610,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                     raise KeyDepletedError("DayDayMap key 积分耗尽")
                 else:
                     logger.warning(f"[JSMpeg] DayDayMap HTTP {resp.status}")
+        except KeyDepletedError:
+            raise
         except Exception as e:
             logger.warning(f"[JSMpeg] DayDayMap 查询失败: {e}")
 
@@ -749,7 +753,7 @@ async def ddgs_scan(query=None, target_size=30, session=None):
                 for ip_info in ips:
                     ip = ip_info[4][0]
                     ip_set.add(ip)
-            except:
+            except Exception:
                 pass
         logger.info(f"[DDGS] 解析出 {len(ip_set)} 个 IP")
         entries = []
@@ -840,7 +844,7 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
                     async with session.head(pre_url, timeout=aiohttp.ClientTimeout(total=2)) as head_resp:
                         if head_resp.status != 200:
                             return []
-                except:
+                except Exception:
                     return []
                 chs = await asyncio.wait_for(extract_tvheadend_channels(ip, port, session), timeout=5)
                 return chs
@@ -1011,7 +1015,7 @@ async def extract_iptv_interactive_channels(ip, port, session):
             text = await resp.text()
             if "IPTV互动电视系统" not in text and "互动电视" not in text:
                 return []
-    except:
+    except Exception:
         return []
 
     channels = []
@@ -1075,7 +1079,7 @@ async def extract_iptv_interactive_channels(ip, port, session):
                             async with session.head(stream_url, timeout=aiohttp.ClientTimeout(total=1.5)) as head_resp:
                                 if head_resp.status != 200:
                                     continue
-                        except:
+                        except Exception:
                             continue
                         name = f"Channel {ch_id}"
                         std_name, cat = resolve_iptv_interactive_channel(name)
@@ -1116,7 +1120,7 @@ async def extract_iptv_interactive_channels(ip, port, session):
                     })
                     if len(channels) == 0 and ch_id > 10:
                         break
-        except:
+        except Exception:
             continue
     if channels:
         logger.debug(f"[IPTV互动] {ip}:{port} 从兜底枚举提取到 {len(channels)} 个频道")
@@ -1297,11 +1301,11 @@ async def collect_all(size=None, log_fn=None):
             ddm_q = DAYDAYMAP_QUERY
             if operator:
                 qq += f' AND isp="{operator}"'
-                hq += f' AND isp="{operator}"'
+                hq += f' && isp="{operator}"'
                 ddm_q += f' && isp="{operator}"'
             if prov:
                 qq += f' AND province="{prov}"'
-                hq += f' AND province="{prov}"'
+                hq += f' && ip.province=="{prov}"'
                 ddm_q += f' && province="{prov}"'
 
             # 串行执行每个平台（带 key 轮换）

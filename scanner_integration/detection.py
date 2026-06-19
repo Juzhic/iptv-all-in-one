@@ -109,8 +109,9 @@ class DetectionManager:
         fail_count = 0
         results_list = []
 
-        sem = asyncio.Semaphore(10)
-        async with get_session(limit=10, timeout=6) as session:
+        concurrent = cfg.get('detection_concurrent', 10)
+        sem = asyncio.Semaphore(concurrent)
+        async with get_session(limit=concurrent, timeout=6) as session:
             async def check_one(item):
                 nonlocal ok_count, fail_count
                 async with sem:  # 统一限流：含非 http 分支，避免一次性铺开数千协程同步写 DB

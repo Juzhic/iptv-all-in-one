@@ -12,6 +12,7 @@ from engine.ffmpeg_test import (
     register_timeout as _reg_timeout,
     clear_timeouts as _clear_timeouts,
     set_ffmpeg_max_workers,
+    set_ffmpeg_timeout,
     http_get,
     detect_non_live_media_url,
 )
@@ -48,6 +49,24 @@ DEFAULT_CONFIG = {
     'run_times': [],
     'run_interval_minutes': 60,
     'include_scan_results_in_test': False,
+    'epg_url': '',
+    'logo_base_url': 'https://www.xn--rgv465a.top/tvlogo',
+    'ffmpeg_timeout': 5,
+    'm3u_fetch_timeout': 30,
+    'stability_threshold_national': 60,
+    'stability_threshold_local': 40,
+    'min_bandwidth_kbps': 200,
+    'max_delay_ms': 3000,
+    'detection_concurrent': 10,
+    'detection_interval_minutes': 120,
+    'deletion_threshold': 3,
+    'webhook_enabled': False,
+    'webhook_url': '',
+    'webhook_type': 'wecom',
+    'webhook_on_test': True,
+    'webhook_on_scan': True,
+    'webhook_on_detection': False,
+    'webhook_min_pass_rate': 0,
 }
 
 
@@ -301,22 +320,22 @@ _db_handler = _DBLogHandler()
 def setup_logging(run_id=''):
     """配置日志系统：控制台输出 + 数据库写入。"""
     root_logger = logging.getLogger()
-    if root_logger.handlers:
-        for handler in root_logger.handlers[:]:
+    for handler in root_logger.handlers[:]:
+        if getattr(handler, '_iptv_test_handler', False):
             handler.close()
             root_logger.removeHandler(handler)
 
     _db_handler.run_id = run_id
     _db_handler.setFormatter(logging.Formatter('%(message)s'))
+    _db_handler._iptv_test_handler = True
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            _db_handler,
-            logging.StreamHandler()
-        ]
-    )
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    console_handler._iptv_test_handler = True
+
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(_db_handler)
+    root_logger.addHandler(console_handler)
 
     logger = logging.getLogger(__name__)
     logger.info(f"日志系统已启动（数据库 + 控制台）")
@@ -394,7 +413,7 @@ def parse_iptv_addresses(m3u_content):
             continue
 
         if is_url(line):
-            if not is_valid_stream_url(line):
+            if is_valid_stream_url is not None and not is_valid_stream_url(line):
                 current_channel = {}
                 continue
             if detect_non_live_media_url(line):
@@ -413,7 +432,7 @@ def parse_iptv_addresses(m3u_content):
             name = name.strip()
             url = url.strip()
             if name and is_url(url) and not detect_non_live_media_url(url):
-                if not is_valid_stream_url(url):
+                if is_valid_stream_url is not None and not is_valid_stream_url(url):
                     continue
                 channel_info = {'name': name}
                 if current_group:
@@ -446,35 +465,34 @@ def filter_and_save_playlist(
     min_bw = cfg.get('min_bandwidth_MBps', 1.0)
     bw_comp = cfg.get('bandwidth_compensation_MBps', 2.0)
     h265_ratio = cfg.get('h265_bandwidth_ratio', 0.6)
-    global logger
     filtered_list = []
     test_results = []
     total = len(iptv_list)
     processed = 0
     failed = 0
 
-    logger = setup_logging(run_id)
+    run_logger = setup_logging(run_id)
 
-    logger.info(f"开始测试任务")
-    logger.info(f"总频道数: {total}")
-    logger.info(f"并发线程数: {max_workers}")
-    logger.info(f"单个频道测试时长: {duration}秒")
+    run_logger.info(f"开始测试任务")
+    run_logger.info(f"总频道数: {total}")
+    run_logger.info(f"并发线程数: {max_workers}")
+    run_logger.info(f"单个频道测试时长: {duration}秒")
     channel_timeout = max(duration + 15, int(duration * 1.5))
-    logger.info(f"单频道最大等待时间: {channel_timeout}秒")
+    run_logger.info(f"单频道最大等待时间: {channel_timeout}秒")
     download_limiter = SystemDownloadLimiter(bandwidth_limit_mbps)
     memory_limiter = SystemMemoryLimiter(memory_limit_percent)
     if download_limiter.enabled:
-        logger.info(f"总下行启动限速: {download_limiter.limit_mbps:.2f}MB/s")
+        run_logger.info(f"总下行启动限速: {download_limiter.limit_mbps:.2f}MB/s")
     elif bandwidth_limit_mbps and psutil is None:
-        logger.info("总下行启动限速: 未安装 psutil，已关闭")
+        run_logger.info("总下行启动限速: 未安装 psutil，已关闭")
     else:
-        logger.info("总下行启动限速: 已关闭")
+        run_logger.info("总下行启动限速: 已关闭")
     if memory_limiter.enabled:
-        logger.info(f"内存启动保护: {memory_limiter.limit_percent:.1f}%")
+        run_logger.info(f"内存启动保护: {memory_limiter.limit_percent:.1f}%")
     elif memory_limit_percent and psutil is None:
-        logger.info("内存启动保护: 未安装 psutil，已关闭")
+        run_logger.info("内存启动保护: 未安装 psutil，已关闭")
     else:
-        logger.info("内存启动保护: 已关闭")
+        run_logger.info("内存启动保护: 已关闭")
 
     if progress_callback:
         try:
@@ -488,7 +506,7 @@ def filter_and_save_playlist(
                 'last_status': '',
             })
         except Exception as e:
-            logger.warning(f"更新任务进度失败: {e}")
+            run_logger.warning(f"更新任务进度失败: {e}")
 
     def test_single_channel(args):
         """单个频道测试函数"""
@@ -704,7 +722,7 @@ def filter_and_save_playlist(
                         'output_updated_at': output_updated_at,
                     })
                 except Exception as e:
-                    logger.warning(f"实时写入回调失败: {e}")
+                    run_logger.warning(f"实时写入回调失败: {e}")
 
         else:
             if test_result:
@@ -764,7 +782,7 @@ def filter_and_save_playlist(
         })
 
         status = f"{verdict} | 原因: {reason}"
-        logger.info(
+        run_logger.info(
             "[%s/%s] %s | 频道: %s | 分辨率: %s | 带宽: %.2fMB/s%s | 延迟: %s | 评分: %.2f | 采样: %.2fs | 耗时: %.2fs | 原因: %s | URL: %s",
             processed,
             total,
@@ -793,7 +811,7 @@ def filter_and_save_playlist(
                     'last_status': status,
                 })
             except Exception as e:
-                logger.warning(f"更新任务进度失败: {e}")
+                run_logger.warning(f"更新任务进度失败: {e}")
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
     future_info = {}
@@ -835,17 +853,17 @@ def filter_and_save_playlist(
             bypass_limiter = False
 
             if memory_limiter.should_pause():
-                memory_limiter.log_pause_if_needed(logger)
+                memory_limiter.log_pause_if_needed(run_logger)
                 if not allow_idle_start:
                     break
-                logger.info("当前没有活跃频道测试，忽略内存启动保护并串行启动 1 个频道，避免进度空转")
+                run_logger.info("当前没有活跃频道测试，忽略内存启动保护并串行启动 1 个频道，避免进度空转")
                 bypass_limiter = True
 
             if download_limiter.should_pause():
-                download_limiter.log_pause_if_needed(logger)
+                download_limiter.log_pause_if_needed(run_logger)
                 if not allow_idle_start:
                     break
-                logger.info("当前没有活跃频道测试，忽略总下行启动限速并串行启动 1 个频道，避免进度空转")
+                run_logger.info("当前没有活跃频道测试，忽略总下行启动限速并串行启动 1 个频道，避免进度空转")
                 bypass_limiter = True
 
             future = submit_next()
@@ -870,7 +888,7 @@ def filter_and_save_playlist(
 
         while pending or not no_more_items:
             if stop_event and stop_event.is_set():
-                logger.info("收到终止请求，正在停止未完成任务")
+                run_logger.info("收到终止请求，正在停止未完成任务")
                 no_more_items = True
                 for future in list(pending):
                     info = future_info.pop(future, None)
@@ -938,7 +956,7 @@ def filter_and_save_playlist(
 
     # 任务结束日志
     total_elapsed = time.time() - start_time
-    logger.info(f"任务完成 | 符合条件: {len(filtered_list)} | 耗时: {total_elapsed:.2f}秒")
+    run_logger.info(f"任务完成 | 符合条件: {len(filtered_list)} | 耗时: {total_elapsed:.2f}秒")
 
     return filtered_list, test_results
 
@@ -954,14 +972,15 @@ def load_subscribe_urls():
     return urls
 
 
-def parse_demo_file():
+def parse_demo_file(demo_content=None):
     """从数据库读取 demo 模板，返回 [(genre, [channel_name, ...]), ...]。"""
-    from database import get_config_data
-    content = get_config_data('demo')
+    if demo_content is None:
+        from database import get_config_data
+        demo_content = get_config_data('demo')
     structure = []
     current_genre = None
     current_channels = []
-    for line in content.split('\n'):
+    for line in demo_content.split('\n'):
         line = line.strip()
         if not line:
             continue
@@ -1039,7 +1058,9 @@ def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex
 
 def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None):
     """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
-    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    cfg = load_config()
+    logo_base = cfg.get('logo_base_url', 'https://www.xn--rgv465a.top/tvlogo')
+    epg_url = cfg.get('epg_url', '')
     update_time_str = resolve_output_update_time(filtered_urls, update_time)
     update_entry = (
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
@@ -1048,7 +1069,10 @@ def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex
     )
 
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"\n')
+        if epg_url:
+            f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
+        else:
+            f.write('#EXTM3U\n')
 
         if show_update_time and update_time_position == 'top':
             f.write(update_entry)
@@ -1113,6 +1137,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     TEST_DURATION = cfg['test_duration']
     MAX_WORKERS = cfg['max_workers']
     MAX_FFMPEG_WORKERS = set_ffmpeg_max_workers(cfg.get('max_ffmpeg_workers', 6))
+    set_ffmpeg_timeout(cfg.get('ffmpeg_timeout', 5))
     try:
         MAX_URLS_PER_CHANNEL = max(0, int(cfg.get('max_urls_per_channel', 0) or 0))
     except (TypeError, ValueError):
@@ -1214,6 +1239,24 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
     _log("已清空旧输出文件，开始写入本轮实时结果")
 
+    _write_timer = None
+    _write_lock_inner = threading.Lock()
+
+    def _schedule_output_write():
+        nonlocal _write_timer
+        def _do_write():
+            try:
+                save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
+                save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+            except Exception:
+                pass
+        with _write_lock_inner:
+            if _write_timer is not None:
+                _write_timer.cancel()
+            _write_timer = threading.Timer(2.0, _do_write)
+            _write_timer.daemon = True
+            _write_timer.start()
+
     def _on_channel_pass(name, entry):
         """频道通过测速时立即追加并重写结果文件。"""
         url = _entry_url(entry)
@@ -1223,8 +1266,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
             if url and url not in {_entry_url(item) for item in filtered_urls[name]}:
                 filtered_urls[name].append(entry)
             filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
-            save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+        _schedule_output_write()
 
     # 测速筛选（实时写入）
     # 始终写入 SQLite 进度表，供 Web 端读取
@@ -1258,6 +1300,9 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     )
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
+    with _write_lock_inner:
+        if _write_timer is not None:
+            _write_timer.cancel()
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
     save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
 

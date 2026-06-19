@@ -220,7 +220,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
 import {
   apiSaveScanConfig,
@@ -535,13 +535,22 @@ async function submitKey() {
 }
 
 async function deleteKey(row) {
-  try {
-    await apiScanKeyDelete(row.platform, row.key)
-    MessagePlugin.success('Key 已删除')
-    loadKeys()
-  } catch (_) {
-    MessagePlugin.error('删除失败')
-  }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '删除 API Key',
+    body: '确认删除此 Key？删除后需重新添加。',
+    theme: 'warning',
+    confirmBtn: { content: '删除', theme: 'danger' },
+    onConfirm: async () => {
+      try {
+        await apiScanKeyDelete(row.platform, row.key)
+        MessagePlugin.success('Key 已删除')
+        loadKeys()
+      } catch (_) {
+        MessagePlugin.error('删除失败')
+      }
+      confirmDialog.hide()
+    },
+  })
 }
 
 onMounted(() => {

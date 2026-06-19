@@ -36,11 +36,17 @@ if __name__ == '__main__':
             frontend_dir = os.path.join(BASE_DIR, 'frontend')
             if os.path.exists(os.path.join(frontend_dir, 'package.json')):
                 print("开发模式：正在启动 Vite 开发服务器...")
-                subprocess.Popen(
-                    ['cmd', '/c', 'npm run dev'],
-                    cwd=frontend_dir,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0,
-                )
+                if sys.platform == 'win32':
+                    subprocess.Popen(
+                        ['cmd', '/c', 'npm run dev'],
+                        cwd=frontend_dir,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    )
+                else:
+                    subprocess.Popen(
+                        ['npm', 'run', 'dev'],
+                        cwd=frontend_dir,
+                    )
                 print("Vite 开发服务器: http://localhost:3000（API 代理到 Flask :58080）")
             else:
                 print("警告：frontend/ 目录不存在，请先创建 Vue 项目")

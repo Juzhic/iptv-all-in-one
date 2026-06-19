@@ -223,9 +223,11 @@ async function loadInitialData() {
 }
 
 let lastLogSeq = 0
+let pollErrorCount = 0
 const { start: startPoll, stop: stopPoll } = usePolling(async () => {
   try {
     const data = await apiGetProgress(lastLogSeq)
+    pollErrorCount = 0
     testRunning.value = !!data.running
     schedulerRunning.value = !!data.scheduler_running
     nextScheduledRun.value = data.next_scheduled_run || ''
@@ -244,7 +246,12 @@ const { start: startPoll, stop: stopPoll } = usePolling(async () => {
     } else {
       stopPoll()
     }
-  } catch (_) {}
+  } catch (e) {
+    pollErrorCount++
+    if (pollErrorCount >= 3 && pollErrorCount % 3 === 0) {
+      console.warn('[poll] consecutive failures:', pollErrorCount)
+    }
+  }
 }, 2000)
 
 provide('testRunning', testRunning)

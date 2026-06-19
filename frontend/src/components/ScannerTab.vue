@@ -69,7 +69,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
 
@@ -86,6 +86,12 @@ const scanLogLines = ref([])
 const logPanelRef = ref(null)
 const autoScroll = ref(true)
 const scanSummary = ref(createEmptySummary())
+
+function resetLocalFlags() {
+  lastLogSeq = 0
+  wasRunning = false
+  triggerPending = false
+}
 
 let lastLogSeq = 0
 let wasRunning = false
@@ -150,6 +156,9 @@ function appendLogs(lines) {
     scanLogLines.value.push(line)
     if (Number.isFinite(seq)) lastLogSeq = seq
   })
+  if (scanLogLines.value.length > 5000) {
+    scanLogLines.value.splice(0, scanLogLines.value.length - 5000)
+  }
   if (autoScroll.value) {
     nextTick(() => {
       const el = logPanelRef.value
@@ -323,27 +332,36 @@ async function stopScan() {
 }
 
 async function forceClear() {
-  scanClearing.value = true
-  try {
-    const res = await apiScanForceClear()
-    if (res.ok) {
-      MessagePlugin.success(res.message || '扫描状态已清除')
-      // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
-      triggerPending = false
-      wasRunning = false
-      stopPoll()
-      await refreshStatus()
-    } else {
-      MessagePlugin.error(res.error || '清除失败')
-    }
-  } catch (_) {
-    MessagePlugin.error('清除失败')
-  } finally {
-    scanClearing.value = false
-  }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '强制清除状态',
+    body: '确认强制清除扫描状态？此操作会中断正在进行的扫描任务。',
+    theme: 'warning',
+    confirmBtn: { content: '确认清除', theme: 'danger' },
+    onConfirm: async () => {
+      scanClearing.value = true
+      try {
+        const res = await apiScanForceClear()
+        if (res.ok) {
+          MessagePlugin.success(res.message || '扫描状态已清除')
+          triggerPending = false
+          wasRunning = false
+          stopPoll()
+          await refreshStatus()
+        } else {
+          MessagePlugin.error(res.error || '清除失败')
+        }
+      } catch (_) {
+        MessagePlugin.error('清除失败')
+      } finally {
+        scanClearing.value = false
+      }
+      confirmDialog.hide()
+    },
+  })
 }
 
 onMounted(async () => {
+  resetLocalFlags()
   await refreshStatus()
   if (scanRunning.value) {
     progressVisible.value = true
@@ -503,6 +521,31 @@ onMounted(async () => {
   color: #4b5563;
 }
 
+.dark .summary-status {
+  background: rgba(79, 70, 229, 0.2);
+  color: #a5b4fc;
+}
+
+.dark .summary-status.running {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
+
+.dark .summary-status.success {
+  background: rgba(22, 101, 52, 0.2);
+  color: #86efac;
+}
+
+.dark .summary-status.danger {
+  background: rgba(185, 28, 28, 0.2);
+  color: #fca5a5;
+}
+
+.dark .summary-status.idle {
+  background: rgba(75, 85, 99, 0.2);
+  color: #9ca3af;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -538,6 +581,24 @@ onMounted(async () => {
     linear-gradient(180deg, rgba(245, 243, 255, 0.94), rgba(255, 255, 255, 1));
 }
 
+.dark .stat-card.blue {
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.25), transparent 34%),
+    linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 1));
+}
+
+.dark .stat-card.green {
+  background:
+    radial-gradient(circle at top right, rgba(34, 197, 94, 0.25), transparent 34%),
+    linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 1));
+}
+
+.dark .stat-card.purple {
+  background:
+    radial-gradient(circle at top right, rgba(124, 58, 237, 0.25), transparent 34%),
+    linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 1));
+}
+
 .stat-top {
   display: flex;
   align-items: center;
@@ -559,6 +620,10 @@ onMounted(async () => {
   letter-spacing: 0.08em;
 }
 
+.dark .stat-badge {
+  background: var(--td-bg-color-secondarycontainer);
+}
+
 .stat-foot {
   font-size: 11px;
   color: var(--td-text-color-placeholder, #6b7280);
@@ -569,20 +634,20 @@ onMounted(async () => {
   font-size: 34px;
   font-weight: 700;
   line-height: 1;
-  color: #0f172a;
+  color: var(--td-text-color-primary, #0f172a);
 }
 
 .stat-label {
   margin-bottom: 6px;
   font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: var(--td-text-color-primary, #111827);
 }
 
 .stat-sub {
   font-size: 12px;
   line-height: 1.65;
-  color: #4b5563;
+  color: var(--td-text-color-secondary, #4b5563);
 }
 
 @media (max-width: 768px) {

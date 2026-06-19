@@ -109,10 +109,10 @@ class AsyncBridge:
         return future.result(timeout=timeout)
 
     def run_background(self, coro):
-        """在异步循环中启动后台协程，不等待结果。"""
+        """在异步循环中启动后台协程，不等待结果。返回 Future 对象。"""
         if self._loop is None or not self._loop.is_running():
             raise RuntimeError("异步事件循环未启动")
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
 
 # 全局实例
@@ -281,16 +281,32 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                                  message=f'扫描完成，{len(quick)} 个频道')
         _scan_log(f"[Scan:{scan_id}] 扫描完成，耗时 {duration:.1f}s，共 {len(quick)} 个频道")
 
+        # Send webhook notification
+        try:
+            from engine.notifications import send_webhook
+            scan_run = _db.get_scan_run(scan_id)
+            if scan_run:
+                content = (
+                    f"原始频道: {scan_run.get('total_raw', 0)}\n"
+                    f"去重后: {scan_run.get('total_deduped', 0)}\n"
+                    f"快速通过: {scan_run.get('total_fast_pass', 0)}\n"
+                    f"深度通过: {scan_run.get('total_deep_pass', 0)}\n"
+                    f"耗时: {round(scan_run.get('duration_seconds', 0) / 60, 1)} 分钟"
+                )
+                send_webhook('scan', '🔍 IPTV 扫描完成', content)
+        except Exception:
+            pass
+
         # 合并到持久化结果集
         try:
             from .persistence import merge_scan_to_persistent
             await merge_scan_to_persistent(scan_id)
             _scan_log(f"[Scan:{scan_id}] 已合并到持久化结果集")
-        except BaseException as e:
+        except Exception as e:
             _scan_log(f"[Scan:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
             logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
 
-    except BaseException as e:
+    except Exception as e:
         _scan_log(f"[Scan:{scan_id}] 扫描异常: {e}")
         try:
             _db.update_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e))
@@ -341,7 +357,7 @@ async def _do_health_check():
         _db.update_scan_progress(running=False, phase='idle', percent=100,
                                  message=f'健康检查完成，{len(_vc.QUICK_CHANNELS)} 个频道存活')
         _scan_log(f"[Health] 健康检查完成，{len(_vc.QUICK_CHANNELS)} 个频道存活")
-    except BaseException as e:
+    except Exception as e:
         logger.exception(f"[Health] 健康检查异常: {e}")
         _db.update_scan_progress(running=False, phase='idle', message=f'健康检查失败: {e}')
 
@@ -357,7 +373,7 @@ def trigger_scan(platforms=None, provinces=None):
     def _run():
         try:
             bridge.run_sync(_do_scan(platforms, provinces))
-        except BaseException as e:
+        except Exception as e:
             _scan_log(f"[Trigger] 扫描执行异常: {e}")
         finally:
             # 无论成功失败，确保进度状态不卡在 running
@@ -401,7 +417,7 @@ def trigger_health_check():
     def _run():
         try:
             bridge.run_sync(_do_health_check())
-        except BaseException as e:
+        except Exception as e:
             _scan_log(f"[Health] 健康检查异常: {e}")
         finally:
             import database as _db

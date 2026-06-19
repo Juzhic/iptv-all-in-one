@@ -56,7 +56,7 @@ async def merge_scan_to_persistent(scan_id):
     # 4. 立即验证所有 pending 行（验证失败不影响已合并的数据）
     try:
         await _validate_pending()
-    except BaseException as e:
+    except Exception as e:
         logger.warning(f"[Persistence] 验证过程出错（数据已保留）: {type(e).__name__}: {e}")
 
 

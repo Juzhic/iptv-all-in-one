@@ -49,7 +49,37 @@
           >
             恢复默认模板
           </t-button>
+          <t-button
+            v-if="currentFile === 'demo'"
+            theme="warning"
+            variant="outline"
+            size="small"
+            :loading="discovering"
+            @click="startDiscover"
+          >
+            扫描订阅源
+          </t-button>
         </t-space>
+      </div>
+
+      <div v-if="currentFile === 'subscribe' && sourceList.length" class="source-quality-section">
+        <div class="source-quality-head">
+          <div class="editor-surface-title">订阅源质量评分</div>
+          <span v-if="sourcesLastUpdated" class="source-updated">基于 {{ sourcesLastUpdated }} 的测试结果</span>
+        </div>
+        <div class="source-list">
+          <div v-for="src in sourceList" :key="src.source_url" class="source-row">
+            <div class="source-info">
+              <span class="source-url" :title="src.source_url">{{ truncateUrl(src.source_url) }}</span>
+              <span class="source-detail">{{ src.channels_passed }}/{{ src.channels_total }} 通过</span>
+            </div>
+            <div class="source-metrics">
+              <span class="source-detail">带宽 {{ src.avg_bandwidth }} MB/s</span>
+              <span class="source-detail">质量 {{ src.avg_quality }}</span>
+            </div>
+            <t-tag :theme="scoreTone(src.score)" size="small" variant="light">{{ src.score }} 分</t-tag>
+          </div>
+        </div>
       </div>
     </t-card>
 
@@ -228,6 +258,92 @@
         </section>
       </div>
 
+      <div class="config-panel-grid" style="margin-top: 18px;">
+        <section class="config-panel config-panel--notification">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">通知配置</div>
+            <h3>Webhook 通知</h3>
+            <p>配置测试完成、扫描完成时的自动通知，支持企业微信、钉钉、Telegram 和 Server酱。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>启用 Webhook 通知</label>
+                <span>开启后，测试或扫描完成时会自动发送通知。</span>
+              </div>
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="config.webhook_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="config.webhook_enabled ? 'success' : 'default'" size="small" variant="light">
+                    {{ config.webhook_enabled ? '已开启' : '已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>通知平台</label>
+                <span>选择 Webhook 通知平台类型。</span>
+              </div>
+              <t-select v-model="config.webhook_type" class="field-control">
+                <t-option value="wecom" label="企业微信" />
+                <t-option value="dingtalk" label="钉钉" />
+                <t-option value="telegram" label="Telegram" />
+                <t-option value="serverchan" label="Server酱" />
+              </t-select>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>Webhook URL</label>
+                <span>填写对应平台的 Webhook 地址。</span>
+              </div>
+              <t-input v-model="config.webhook_url" placeholder="https://..." class="field-control field-control--wide" />
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>测试完成通知</label>
+                <span>开启后，测速任务完成时会发送通知。</span>
+              </div>
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="config.webhook_on_test" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="config.webhook_on_test ? 'success' : 'default'" size="small" variant="light">
+                    {{ config.webhook_on_test ? '已开启' : '已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>扫描完成通知</label>
+                <span>开启后，频道扫描完成时会发送通知。</span>
+              </div>
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="config.webhook_on_scan" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="config.webhook_on_scan ? 'success' : 'default'" size="small" variant="light">
+                    {{ config.webhook_on_scan ? '已开启' : '已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>通过率告警阈值 (%)</label>
+                <span>当测试通过率低于该值时，发送告警通知。设为 0 表示不告警。</span>
+              </div>
+              <t-input-number v-model="config.webhook_min_pass_rate" :min="0" :max="100" :step="1" class="field-control" />
+            </div>
+          </div>
+        </section>
+      </div>
+
       <div class="config-actions">
         <div class="config-actions-tip">保存后会用于后续测速和定时任务，新布局不会影响现有配置值。</div>
         <t-space>
@@ -236,13 +352,56 @@
         </t-space>
       </div>
     </t-card>
+
+    <t-dialog
+      v-model:visible="discoverDialogVisible"
+      header="频道自动发现"
+      :footer="false"
+      width="780px"
+      destroy-on-close
+    >
+      <div v-if="discoverLoading" class="discover-loading">
+        <t-loading size="medium" text="正在扫描订阅源，请稍候..." />
+      </div>
+      <div v-else-if="discoverResult">
+        <div class="discover-summary">
+          <t-tag theme="primary" size="medium">发现 {{ discoverResult.total_discovered }} 个频道</t-tag>
+          <t-tag theme="success" size="medium">已收录 {{ discoverResult.total_in_template }} 个</t-tag>
+          <t-tag theme="warning" size="medium">未收录 {{ discoverResult.total_new }} 个</t-tag>
+          <t-button size="small" variant="outline" @click="selectAllNew">全选未收录</t-button>
+          <t-button size="small" theme="primary" :loading="merging" @click="mergeSelected">添加选中到模板</t-button>
+        </div>
+        <t-collapse :default-value="expandedCategories" class="discover-collapse">
+          <t-collapse-panel
+            v-for="(channels, cat) in discoverResult.categories"
+            :key="cat"
+            :value="cat"
+            :header="`${cat}（${channels.length}）`"
+          >
+            <t-checkbox-group v-model="selectedChannels" class="discover-channels">
+              <t-checkbox
+                v-for="ch in channels"
+                :key="ch.name"
+                :value="`${cat}|${ch.name}`"
+                :disabled="ch.in_template"
+                :label="ch.name"
+              >
+                <span class="discover-ch-name">{{ ch.name }}</span>
+                <t-tag size="small" variant="light">{{ ch.count }} 源</t-tag>
+                <t-tag v-if="ch.in_template" size="small" theme="success" variant="light">已收录</t-tag>
+              </t-checkbox>
+            </t-checkbox-group>
+          </t-collapse-panel>
+        </t-collapse>
+      </div>
+    </t-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
-import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText } from '../api.js'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { apiGetConfig, apiGetSources, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText, apiDiscover, apiDiscoverMerge } from '../api.js'
 import { useTheme } from '../composables/useTheme.js'
 
 const currentFile = ref('subscribe')
@@ -253,6 +412,17 @@ const configSaving = ref(false)
 const runTimesInput = ref('')
 const runTimesHint = ref('')
 const { theme } = useTheme()
+const sourceList = ref([])
+const sourcesLastUpdated = ref('')
+
+// Discovery state
+const discovering = ref(false)
+const discoverDialogVisible = ref(false)
+const discoverLoading = ref(false)
+const discoverResult = ref(null)
+const selectedChannels = ref([])
+const expandedCategories = ref([])
+const merging = ref(false)
 
 const CONFIG_FIELDS = [
   'min_width',
@@ -270,11 +440,25 @@ const CONFIG_FIELDS = [
   'run_times',
   'run_interval_minutes',
   'include_scan_results_in_test',
+  'webhook_enabled',
+  'webhook_url',
+  'webhook_type',
+  'webhook_on_test',
+  'webhook_on_scan',
+  'webhook_on_detection',
+  'webhook_min_pass_rate',
 ]
 
 const config = reactive({})
 CONFIG_FIELDS.forEach((key) => { config[key] = 0 })
 config.run_mode = 'once'
+config.webhook_enabled = false
+config.webhook_url = ''
+config.webhook_type = 'wecom'
+config.webhook_on_test = true
+config.webhook_on_scan = true
+config.webhook_on_detection = false
+config.webhook_min_pass_rate = 0
 
 const currentRunModeLabel = computed(() => {
   const labelMap = {
@@ -425,20 +609,114 @@ async function saveFile() {
 }
 
 async function resetDemo() {
+  const confirmDialog = DialogPlugin.confirm({
+    header: '恢复默认模板',
+    body: '确认恢复默认频道模板？当前自定义内容将被覆盖。',
+    theme: 'warning',
+    confirmBtn: { content: '确认恢复', theme: 'danger' },
+    onConfirm: async () => {
+      try {
+        await apiResetDemo()
+        await loadFile()
+        MessagePlugin.success('已恢复默认模板')
+      } catch (_) {
+        MessagePlugin.error('恢复失败')
+      }
+      confirmDialog.hide()
+    },
+  })
+}
+
+function scoreTone(score) {
+  if (score >= 60) return 'success'
+  if (score >= 30) return 'warning'
+  return 'danger'
+}
+
+function truncateUrl(url) {
+  if (!url || url === '(未知来源)') return url
+  if (url.length <= 60) return url
+  return url.slice(0, 57) + '...'
+}
+
+async function loadSources() {
   try {
-    const res = await apiResetDemo()
-    if (res.ok) {
-      MessagePlugin.success('已恢复默认模板')
-      loadFile()
-    }
+    const data = await apiGetSources()
+    sourceList.value = data.sources || []
+    sourcesLastUpdated.value = data.last_updated || ''
   } catch (_) {
-    MessagePlugin.error('恢复失败')
+    // silent
+  }
+}
+
+async function startDiscover() {
+  discovering.value = true
+  discoverDialogVisible.value = true
+  discoverLoading.value = true
+  discoverResult.value = null
+  selectedChannels.value = []
+  expandedCategories.value = []
+  try {
+    const result = await apiDiscover()
+    discoverResult.value = result
+    // Expand categories that have new channels
+    if (result.categories) {
+      expandedCategories.value = Object.entries(result.categories)
+        .filter(([, chs]) => chs.some(c => !c.in_template))
+        .map(([cat]) => cat)
+    }
+  } catch (e) {
+    MessagePlugin.error(`扫描失败: ${e.message}`)
+    discoverDialogVisible.value = false
+  } finally {
+    discoverLoading.value = false
+    discovering.value = false
+  }
+}
+
+function selectAllNew() {
+  if (!discoverResult.value) return
+  const selected = []
+  for (const [cat, channels] of Object.entries(discoverResult.value.categories)) {
+    for (const ch of channels) {
+      if (!ch.in_template) {
+        selected.push(`${cat}|${ch.name}`)
+      }
+    }
+  }
+  selectedChannels.value = selected
+}
+
+async function mergeSelected() {
+  if (!selectedChannels.value.length) {
+    MessagePlugin.warning('请先选择要添加的频道')
+    return
+  }
+  merging.value = true
+  try {
+    const channels = selectedChannels.value.map(item => {
+      const [category, name] = item.split('|', 2)
+      return { name, category }
+    })
+    const res = await apiDiscoverMerge(channels)
+    if (res.ok) {
+      MessagePlugin.success(`已添加 ${res.added_count} 个频道到模板${res.new_genres.length ? `，新增分类: ${res.new_genres.join(', ')}` : ''}`)
+      discoverDialogVisible.value = false
+      loadFile()
+    } else {
+      MessagePlugin.error(res.error || '合并失败')
+    }
+  } catch (e) {
+    MessagePlugin.error(`合并失败: ${e.message}`)
+  } finally {
+    merging.value = false
   }
 }
 
 onMounted(() => {
   loadConfig()
   loadFile()
+  loadSources()
 })
 </script>
 
@@ -728,6 +1006,10 @@ onMounted(() => {
   background: var(--surface-panel-accent);
 }
 
+.config-panel--notification {
+  background: var(--surface-panel-accent);
+}
+
 .config-panel-head {
   margin-bottom: 16px;
 }
@@ -881,5 +1163,123 @@ onMounted(() => {
 
 .field-stack--switch {
   width: 100%;
+}
+
+.source-quality-section {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 18px;
+  background: var(--surface-shell-bg);
+  box-shadow: var(--surface-shadow);
+  backdrop-filter: blur(8px);
+}
+
+.source-quality-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.source-updated {
+  color: var(--surface-text-muted);
+  font-size: 11px;
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: 12px;
+  background: var(--surface-panel-bg);
+}
+
+.source-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.source-url {
+  color: var(--surface-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-metrics {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.source-detail {
+  color: var(--surface-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .source-row {
+    flex-wrap: wrap;
+  }
+  .source-metrics {
+    width: 100%;
+  }
+}
+
+.discover-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.discover-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--surface-border-soft);
+}
+
+.discover-collapse {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.discover-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discover-channels :deep(.t-checkbox) {
+  margin-right: 0;
+}
+
+.discover-ch-name {
+  display: inline-block;
+  min-width: 120px;
+  font-size: 13px;
+  font-weight: 500;
 }
 </style>
