@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED, as_completed
 from engine.alias import load_aliases, match_channel_name
 from engine.ffmpeg_test import (
     analyze_iptv_with_ffmpeg,
@@ -1168,24 +1168,41 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
         print("=" * 60)
         _log(f"并发设置：测试线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
 
-        # 获取并解析所有 M3U 数据源
+        # 获取并解析所有 M3U 数据源（并行）
         all_iptv_list = []
-        for idx, m3u_url in enumerate(m3u_urls, 1):
-            _log(f"[{idx}/{len(m3u_urls)}] 正在获取: {m3u_url}")
-            print(f"\n[{idx}/{len(m3u_urls)}] 正在从 {m3u_url} 获取 M3U 数据...")
-            m3u_content = fetch_m3u_playlist(m3u_url)
-            if m3u_content:
-                iptv_list = parse_iptv_addresses(m3u_content)
-                for ci, stream_url in iptv_list:
-                    ci['source_url'] = m3u_url
-                _log(f"  -> 解析到 {len(iptv_list)} 个频道地址")
-                print(f"  -> 解析到 {len(iptv_list)} 个频道地址")
-                all_iptv_list.extend(iptv_list)
-            else:
-                _log(f"  -> 获取失败，跳过")
-                print("  -> 获取失败，跳过")
+        fetch_concurrent = min(10, len(m3u_urls))
 
-        print(f"\n共计解析 {len(all_iptv_list)} 个频道地址")
+        def _fetch_and_parse(url):
+            try:
+                content = fetch_m3u_playlist(url)
+                if content:
+                    parsed = parse_iptv_addresses(content)
+                    for ci, stream_url in parsed:
+                        ci['source_url'] = url
+                    return parsed
+            except Exception:
+                pass
+            return []
+
+        _log(f"开始并行获取 {len(m3u_urls)} 个数据源（并发 {fetch_concurrent}）")
+        with ThreadPoolExecutor(max_workers=fetch_concurrent) as pool:
+            futures = {pool.submit(_fetch_and_parse, url): url for url in m3u_urls}
+            done = 0
+            ok_count = 0
+            fail_count = 0
+            for future in as_completed(futures):
+                done += 1
+                url = futures[future]
+                result = future.result()
+                if result:
+                    all_iptv_list.extend(result)
+                    ok_count += 1
+                    _log(f"[{done}/{len(m3u_urls)}] {url} -> {len(result)} 个频道")
+                else:
+                    fail_count += 1
+                    _log(f"[{done}/{len(m3u_urls)}] {url} -> 获取失败")
+
+        print(f"\n数据源获取完成：成功 {ok_count}，失败 {fail_count}，共计 {len(all_iptv_list)} 个频道地址")
 
         # 匹配 demo 中的频道
         matched_urls = match_channels_from_m3u(all_iptv_list, demo_structure, name_to_canonical, regex_aliases)
