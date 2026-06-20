@@ -379,3 +379,67 @@ def api_detection_run_results(cycle_id):
     page = request.args.get('page', type=int)
     size = request.args.get('size', 100, type=int)
     return jsonify(scanner.get_detection_results(cycle_id, page=page, size=size))
+
+
+@scan_bp.route('/api/scan/persistent/recheck', methods=['POST'])
+def api_persistent_recheck():
+    """重新检测指定频道。"""
+    import database as db
+    from scanner_integration.video_check import deep_check
+    from scanner_integration.network import get_session
+    import asyncio
+
+    data = request.get_json(silent=True) or {}
+    url = data.get('url')
+    if not url:
+        return jsonify({'error': 'url is required'}), 400
+
+    async def _do_recheck():
+        async with get_session(limit=5, timeout=10) as session:
+            result = await deep_check(session, url)
+            if result:
+                db.update_persistent_check(
+                    url, ok=True,
+                    stability=result.get('stability'),
+                    delay=result.get('delay'),
+                    bandwidth=result.get('bandwidth'),
+                    jitter=result.get('jitter'),
+                )
+                return {'ok': True, 'stability': result.get('stability'), 'delay': result.get('delay')}
+            else:
+                db.update_persistent_check(url, ok=False)
+                return {'ok': False, 'reason': 'deep_check failed'}
+
+    try:
+        scanner, err, code = _ensure_scan_bridge()
+        if err:
+            return err, code
+        result = scanner.bridge.run_sync(_do_recheck(), timeout=30)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@scan_bp.route('/api/scan/persistent/priority', methods=['POST'])
+def api_persistent_priority():
+    """更新频道优先级。"""
+    import database as db
+
+    data = request.get_json(silent=True) or {}
+    url = data.get('url')
+    priority = data.get('priority', 0)
+    if not url:
+        return jsonify({'error': 'url is required'}), 400
+    if priority not in (0, 1, 2):
+        return jsonify({'error': 'priority must be 0, 1, or 2'}), 400
+
+    try:
+        conn = db._get_conn()
+        conn.execute(
+            "UPDATE persistent_scan_results SET priority = ? WHERE url = ?",
+            (priority, url)
+        )
+        conn.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

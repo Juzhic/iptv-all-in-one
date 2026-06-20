@@ -10,8 +10,8 @@ from engine import load_config, DEFAULT_CONFIG
 
 if __name__ == '__main__':
     try:
-        host = '0.0.0.0'
-        port = 58080
+        host = os.environ.get('IPTV_HOST', '0.0.0.0')
+        port = int(os.environ.get('IPTV_PORT', 58080))
         dev_mode = '--dev' in sys.argv
 
         _prepare_frontend_on_startup()
@@ -41,7 +41,7 @@ if __name__ == '__main__':
                     cwd=frontend_dir,
                     creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0,
                 )
-                print("Vite 开发服务器: http://localhost:3000（API 代理到 Flask :58080）")
+                print(f"Vite 开发服务器: http://localhost:3000（API 代理到 Flask :{port}）")
             else:
                 print("警告：frontend/ 目录不存在，请先创建 Vue 项目")
             print(f"Flask API 服务器已启动: http://localhost:{port}")
@@ -51,7 +51,7 @@ if __name__ == '__main__':
         app.run(host=host, port=port, debug=False)
     except OSError as e:
         print(f"\n端口 {port} 启动失败: {e}")
-        print("Web 服务只允许绑定 58080，请先结束占用 58080 的旧进程后再重启。")
+        print(f"Web 服务只允许绑定 {port}，请先结束占用 {port} 的旧进程后再重启。")
         input("\n按回车键退出...")
     except Exception as e:
         import traceback

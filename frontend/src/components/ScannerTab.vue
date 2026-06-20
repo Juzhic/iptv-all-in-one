@@ -150,6 +150,11 @@ function appendLogs(lines) {
     scanLogLines.value.push(line)
     if (Number.isFinite(seq)) lastLogSeq = seq
   })
+  // 限制日志行数，避免 DOM 性能恶化
+  const MAX_LOG_LINES = 2000
+  if (scanLogLines.value.length > MAX_LOG_LINES) {
+    scanLogLines.value = scanLogLines.value.slice(-1500)
+  }
   if (autoScroll.value) {
     nextTick(() => {
       const el = logPanelRef.value

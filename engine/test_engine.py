@@ -1,7 +1,6 @@
 import time
 import threading
 import re
-import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -48,6 +47,8 @@ DEFAULT_CONFIG = {
     'run_times': [],
     'run_interval_minutes': 60,
     'include_scan_results_in_test': False,
+    'logo_base_url': 'https://www.xn--rgv465a.top/tvlogo',
+    'epg_url': 'http://192.168.3.61:8080/epg/epg.gz',
 }
 
 
@@ -1037,9 +1038,11 @@ def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex
             f.write(update_block)
 
 
-def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None):
+def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None, config=None):
     """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
-    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    cfg = config or DEFAULT_CONFIG
+    logo_base = cfg.get('logo_base_url', DEFAULT_CONFIG['logo_base_url'])
+    epg_url = cfg.get('epg_url', DEFAULT_CONFIG['epg_url'])
     update_time_str = resolve_output_update_time(filtered_urls, update_time)
     update_entry = (
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
@@ -1048,7 +1051,7 @@ def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex
     )
 
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"\n')
+        f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
 
         if show_update_time and update_time_position == 'top':
             f.write(update_entry)
@@ -1211,7 +1214,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     show_time = cfg.get('show_update_time', True)
     time_pos = cfg.get('update_time_position', 'top')
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
     _log("已清空旧输出文件，开始写入本轮实时结果")
 
     def _on_channel_pass(name, entry):
@@ -1224,7 +1227,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
                 filtered_urls[name].append(entry)
             filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
             save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
 
     # 测速筛选（实时写入）
     # 始终写入 SQLite 进度表，供 Web 端读取
@@ -1259,7 +1262,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
 
     # 运行结束，清空进度
     clear_run_progress()

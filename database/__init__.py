@@ -11,11 +11,7 @@ from database.db import (  # noqa: F401
     now_str,
     timestamp_str,
     DB_PATH,
-    MAX_RUNS,
-    CONFIG_DATA,
-    LOCAL_TZ,
     DEFAULT_DEMO,
-    DEFAULT_ALIAS,
     # 配置
     get_config_data,
     set_config_data,
@@ -78,6 +74,7 @@ from database.db import (  # noqa: F401
     delete_persistent_by_id,
     get_persistent_for_test,
     get_all_persistent_for_check,
+    get_persistent_for_check_tiered,
     get_pending_persistent,
     # 检测
     insert_detection_log,
@@ -89,4 +86,9 @@ from database.db import (  # noqa: F401
     get_detection_runs,
     get_detection_results,
     cleanup_old_detection_runs,
+    # quality_history
+    insert_quality_history,
+    get_quality_trend,
+    get_quality_leaderboard,
+    cleanup_quality_history,
 )

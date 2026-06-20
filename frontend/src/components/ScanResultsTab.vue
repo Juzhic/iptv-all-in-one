@@ -20,6 +20,14 @@
         <t-tag theme="warning" variant="light" v-if="persistentStats.poor">差 {{ persistentStats.poor }}</t-tag>
         <t-tag theme="danger" variant="light" v-if="persistentStats.unreachable">不可达 {{ persistentStats.unreachable }}</t-tag>
         <t-tag theme="primary" variant="light" v-if="persistentStats.pending">待检测 {{ persistentStats.pending }}</t-tag>
+        <div class="quality-bar-container">
+          <div class="quality-bar">
+            <div v-if="persistentStats.good" class="quality-segment quality-good" :style="{ width: qualityPct('good') + '%' }" :title="'好: ' + persistentStats.good"></div>
+            <div v-if="persistentStats.poor" class="quality-segment quality-poor" :style="{ width: qualityPct('poor') + '%' }" :title="'差: ' + persistentStats.poor"></div>
+            <div v-if="persistentStats.unreachable" class="quality-segment quality-unreachable" :style="{ width: qualityPct('unreachable') + '%' }" :title="'不可达: ' + persistentStats.unreachable"></div>
+            <div v-if="persistentStats.pending" class="quality-segment quality-pending" :style="{ width: qualityPct('pending') + '%' }" :title="'待检测: ' + persistentStats.pending"></div>
+          </div>
+        </div>
       </div>
 
       <!-- 分组视图过滤栏 -->
@@ -73,6 +81,7 @@
           <div style="flex:1"></div>
           <t-button variant="outline" size="small" @click="selectAllDetail">全选/取消</t-button>
           <t-button theme="primary" size="small" @click="exportDetailM3U">导出 M3U</t-button>
+          <t-button theme="primary" size="small" variant="outline" @click="exportDetailCSV">导出 CSV</t-button>
         </div>
         <t-table
           :columns="detailColumns"
@@ -109,6 +118,21 @@
           <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
           <template #quality_status="{ row }">
             <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">{{ qualityLabel(row.quality_status) }}</t-tag>
+          </template>
+          <template #priority="{ row }">
+            <t-select
+              :model-value="row.priority ?? 0"
+              size="small"
+              style="width:90px"
+              @change="(val) => onPriorityChange(row.url, val)"
+            >
+              <t-option :value="0" label="普通" />
+              <t-option :value="1" label="高" />
+              <t-option :value="2" label="最高" />
+            </t-select>
+          </template>
+          <template #op="{ row }">
+            <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">重新检测</t-button>
           </template>
         </t-table>
       </t-dialog>
@@ -235,7 +259,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import {
   apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
-  apiPersistentManualCheck,
+  apiPersistentManualCheck, apiPersistentRecheck, apiPersistentPriority,
 } from '../api.js'
 
 // ─── 复制工具 ───
@@ -412,6 +436,8 @@ const detailColumns = [
   { colKey: 'delay', title: '延迟(ms)', width: 100, sorter: true },
   { colKey: 'bandwidth', title: '带宽(KB/s)', width: 120, sorter: true },
   { colKey: 'quality_status', title: '质量', width: 90, sorter: true },
+  { colKey: 'priority', title: '优先级', width: 120 },
+  { colKey: 'op', title: '操作', width: 100 },
 ]
 
 const legacyColumns = [
@@ -456,6 +482,11 @@ function qualityLabel(status) {
   if (status === 'poor') return '差'
   if (status === 'unreachable') return '不可达'
   return '待检测'
+}
+
+function qualityPct(status) {
+  const t = persistentStats.value.total || 1
+  return ((persistentStats.value[status] || 0) / t * 100).toFixed(1)
 }
 
 function platformLabel(platform) {
@@ -556,6 +587,29 @@ function exportDetailM3U() {
   downloadM3U(items, `scan_${detailSourceIp.value}.m3u`)
 }
 
+function exportDetailCSV() {
+  const items = selectedDetailKeys.value.length
+    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
+    : filteredDetailData.value
+  if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
+  const headers = ['name', 'url', 'category', 'province', 'stability', 'delay', 'bandwidth', 'quality_status', 'source_ip']
+  const headerLabels = ['频道名', '频道地址', '分类', '省份', '稳定性', '延迟', '带宽', '质量状态', '来源IP']
+  const escapeCSV = (v) => {
+    const s = v == null ? '' : String(v)
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  let csv = '\uFEFF' + headerLabels.join(',') + '\n'
+  items.forEach(r => {
+    csv += headers.map(h => escapeCSV(h === 'source_ip' ? detailSourceIp.value : r[h])).join(',') + '\n'
+  })
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `scan_${detailSourceIp.value}.csv`; a.click()
+  URL.revokeObjectURL(url)
+  MessagePlugin.success(`已导出 ${items.length} 个频道`)
+}
+
 async function triggerManualCheck() {
   manualChecking.value = true
   try {
@@ -569,6 +623,32 @@ async function triggerManualCheck() {
     MessagePlugin.error('触发失败')
   } finally {
     manualChecking.value = false
+  }
+}
+
+async function recheckChannel(url) {
+  try {
+    const res = await apiPersistentRecheck(url)
+    if (res.ok) {
+      MessagePlugin.success('已触发重新检测')
+    } else {
+      MessagePlugin.error(res.error || '重新检测失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('重新检测失败')
+  }
+}
+
+async function onPriorityChange(url, priority) {
+  try {
+    const res = await apiPersistentPriority(url, priority)
+    if (res.ok) {
+      MessagePlugin.success('优先级已更新')
+    } else {
+      MessagePlugin.error(res.error || '更新优先级失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('更新优先级失败')
   }
 }
 
@@ -701,7 +781,29 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+  align-items: center;
 }
+
+.quality-bar-container {
+  flex-basis: 100%;
+}
+
+.quality-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--td-border-level-1-color, #e5e7eb);
+}
+
+.quality-segment {
+  transition: width 0.3s;
+}
+
+.quality-good { background: #22c55e; }
+.quality-poor { background: #f59e0b; }
+.quality-unreachable { background: #ef4444; }
+.quality-pending { background: #3b82f6; }
 
 .filter-bar {
   display: flex;

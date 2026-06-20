@@ -8,7 +8,7 @@
         </div>
 
         <t-space>
-          <t-button variant="outline" size="small" @click="loadKeys">刷新余额</t-button>
+          <t-button variant="outline" size="small" :loading="keysLoading" @click="loadKeys">刷新余额</t-button>
           <t-button theme="primary" size="small" @click="openAddModal">+ 添加 Key</t-button>
         </t-space>
       </div>
@@ -203,6 +203,16 @@
             <t-option value="hunter" label="Hunter 鹰图" />
             <t-option value="daydaymap" label="DayDayMap" />
           </t-select>
+          <div class="platform-link">
+            <t-link
+              :href="platformLinkMap[keyForm.platform]"
+              target="_blank"
+              theme="primary"
+              size="small"
+            >
+              前往 {{ platformLabelMap[keyForm.platform] || keyForm.platform }} 官网获取 Key ↗
+            </t-link>
+          </div>
         </t-form-item>
 
         <t-form-item label="API Key">
@@ -220,7 +230,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
 import {
   apiSaveScanConfig,
@@ -233,12 +243,25 @@ import {
 
 const saving = ref(false)
 const keyList = ref([])
+const keysLoading = ref(false)
 const keyModalVisible = ref(false)
 const keyModalTitle = ref('添加 API Key')
 const keyEditMode = ref(false)
 const keyForm = reactive({ platform: 'quake', key: '' })
 const oldKey = ref('')
 const { theme } = useTheme()
+
+const platformLabelMap = {
+  quake: 'Quake 360',
+  hunter: 'Hunter 鹰图',
+  daydaymap: 'DayDayMap',
+}
+
+const platformLinkMap = {
+  quake: 'https://quake.360.net/',
+  hunter: 'https://hunter.qianxin.com/',
+  daydaymap: 'https://www.daydaymap.com/',
+}
 
 const scanCfg = reactive({
   selected_provinces: [],
@@ -250,12 +273,6 @@ const scanCfg = reactive({
   daily_full_update: true,
   ddgs_enabled: false,
 })
-
-const platformLabelMap = {
-  quake: 'Quake 360',
-  hunter: 'Hunter 鹰图',
-  daydaymap: 'DayDayMap',
-}
 
 const PROVINCES = [
   '北京', '天津', '上海', '重庆', '河北', '山西', '辽宁', '吉林', '黑龙江', '江苏',
@@ -462,6 +479,7 @@ async function saveScanConfig() {
 }
 
 async function loadKeys() {
+  keysLoading.value = true
   try {
     const res = await apiScanKeys()
     if (res.ok) {
@@ -483,6 +501,9 @@ async function loadKeys() {
     }
   } catch (error) {
     console.error('加载 Key 列表失败', error)
+    MessagePlugin.error('刷新余额失败')
+  } finally {
+    keysLoading.value = false
   }
 }
 
@@ -535,13 +556,22 @@ async function submitKey() {
 }
 
 async function deleteKey(row) {
-  try {
-    await apiScanKeyDelete(row.platform, row.key)
-    MessagePlugin.success('Key 已删除')
-    loadKeys()
-  } catch (_) {
-    MessagePlugin.error('删除失败')
-  }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '删除 API Key',
+    body: `确定删除 ${platformLabelMap[row.platform] || row.platform} 的 Key 吗？删除后无法恢复。`,
+    theme: 'warning',
+    confirmBtn: { content: '删除', theme: 'danger' },
+    onConfirm: async () => {
+      try {
+        await apiScanKeyDelete(row.platform, row.key)
+        MessagePlugin.success('Key 已删除')
+        loadKeys()
+      } catch (_) {
+        MessagePlugin.error('删除失败')
+      }
+      confirmDialog.hide()
+    },
+  })
 }
 
 onMounted(() => {
@@ -886,6 +916,11 @@ onBeforeUnmount(() => {
 .dialog-actions {
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.platform-link {
+  margin-top: 6px;
+  font-size: 12px;
 }
 
 @media (max-width: 1100px) {

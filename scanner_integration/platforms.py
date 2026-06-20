@@ -11,21 +11,86 @@ import aiohttp
 import socket
 
 from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, HUNTER_QUERY, DAYDAYMAP_QUERY
-from .channel_utils import resolve_name, auto_classify, is_blacklisted, is_cctv_paid, normalize_cctv_name
+from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, HUNTER_QUERY, DAYDAYMAP_QUERY, FOFA_QUERY
+from .channel_utils import resolve_name, auto_classify, is_blacklisted, is_cctv_paid, normalize_cctv_name, classify_channel_full
 from .geo_data import extract_province_from_name, CITY_TO_PROVINCE, normalize_province
-from .network import global_sem, new_scan_session
+from .network import global_sem, get_session
 from .logger_bridge import logger
+
+# ==================== 重试和限流工具 ====================
+def _is_stop_requested():
+    from . import scan_state
+    return scan_state.stop_requested
+
+
+async def _retry_with_backoff(coro_factory, max_retries=3, base_delay=1.0, max_delay=30.0):
+    """带指数退避的重试装饰器。coro_factory 必须是返回协程的工厂函数。"""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return await coro_factory()
+        except asyncio.TimeoutError as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.debug(f"[Retry] 超时，{delay:.1f}秒后重试 (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+        except aiohttp.ClientError as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.debug(f"[Retry] 网络错误 {e}，{delay:.1f}秒后重试 (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+        except KeyDepletedError:
+            raise
+        except Exception as e:
+            last_error = e
+            break
+    raise last_error
+
+
+async def _handle_rate_limit(response):
+    """处理 429 Too Many Requests 响应，解析 Retry-After 头。"""
+    if response.status == 429:
+        retry_after = response.headers.get('Retry-After')
+        if retry_after:
+            try:
+                delay = int(retry_after)
+            except ValueError:
+                delay = 60
+        else:
+            delay = 30
+        logger.warning(f"[RateLimit] 触发限流，等待 {delay} 秒")
+        await asyncio.sleep(delay)
+        return True
+    return False
+
+
+def build_channel_entry(name, url, category, province='未知', city='', ip_province='', source_ip=None, **extra):
+    """构建频道条目的工厂函数，统一字段格式。"""
+    entry = {
+        'name': name,
+        'url': url,
+        'category': category,
+        'province': province or '未知',
+        'city': city or '',
+        'ip_province': ip_province or province or '未知',
+        'name_province': province if province and province != '未知' else None,
+        'source_ip': source_ip or '',
+    }
+    entry.update(extra)
+    return entry
+
 
 # ==================== 原 scanner.py 内容 ====================
 def safe_decode_json(raw):
     try:
         return json.loads(raw.decode('utf-8'))
-    except:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         pass
     try:
         return json.loads(raw.decode('gbk', errors='replace'))
-    except:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5):
@@ -34,6 +99,12 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
         f"http://{ip}:{port}/iptv/live/1000.json",
         f"http://{ip}:80/iptv/live/1000.json?key=txiptv",
         f"http://{ip}:8080/iptv/live/1000.json?key=txiptv",
+        f"http://{ip}:{port}/ZHGXTV/Public/json/live_interface.txt",
+        f"http://{ip}:{port}/streamer/list",
+        f"http://{ip}:{port}/api/channels",
+        f"http://{ip}:{port}/channels",
+        f"http://{ip}:{port}/channel_list.json",
+        f"http://{ip}:{port}/playlist?profile=pass",
     ]
     async with global_sem:
         for url in json_urls[:3]:
@@ -49,50 +120,23 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
                         if not ch.get('url'):
                             continue
                         raw_name = ch.get('name', '未知')
-                        if is_blacklisted(raw_name):
-                            continue
-                        if not is_valid_channel_name(raw_name):
-                            continue
                         ch_url = ch['url']
                         if not is_valid_stream_url(ch_url):
                             continue
                         full = ch_url if ch_url.startswith('http') else urljoin(f"http://{ip}:{port}/", ch_url)
-                        resolved_name, cat = resolve_name(raw_name)
-                        detected_prov = extract_province_from_name(resolved_name)
-                        if not detected_prov and raw_name:
-                            for _city_name, p in CITY_TO_PROVINCE.items():
-                                if _city_name in raw_name:
-                                    detected_prov = p
-                                    break
-                            if not detected_prov:
-                                for i in range(len(raw_name)):
-                                    for k in range(i+2, min(i+5, len(raw_name)+1)):
-                                        sub = raw_name[i:k]
-                                        if sub in CITY_TO_PROVINCE:
-                                            detected_prov = CITY_TO_PROVINCE[sub]
-                                            break
-                                    if detected_prov:
-                                        break
-                        final_prov = normalize_province(detected_prov or prov)
-                        cat_auto, prov_auto = auto_classify(resolved_name, cat, final_prov)
-                        if cat_auto != cat or prov_auto != final_prov:
-                            cat, final_prov = cat_auto, prov_auto or final_prov
-                        if is_cctv_paid(resolved_name) and cat not in ('央视频道', '卫视频道', '央视付费频道'):
-                            cat = '央视付费频道'
-                        if cat == '地方频道':
-                            if final_prov in ('香港', '澳门', '台湾'):
-                                cat = '港澳台频道'
-                            elif final_prov and final_prov != '未知':
-                                cat = f"{final_prov}频道"
+                        resolved, cat, final_prov, final_city = classify_channel_full(raw_name, prov, city)
+                        if resolved is None:
+                            continue
                         result.append({
-                            'name': resolved_name, 'url': full, 'category': cat,
-                            'province': final_prov, 'city': city,
-                            'ip_province': prov, 'name_province': detected_prov,
+                            'name': resolved, 'url': full, 'category': cat,
+                            'province': final_prov, 'city': final_city,
+                            'ip_province': prov, 'name_province': final_prov if final_prov != '未知' else None,
                             'source_ip': ip
                         })
                     if result:
                         return result
-            except Exception:
+            except Exception as e:
+                logger.debug(f"[extract] {ip}:{port} 失败: {e}")
                 continue
     return []
 
@@ -125,8 +169,32 @@ async def c_segment_scan(base_ip, port, session, limit=50):
     logger.info(f"[C段] 完成：{cnt}个IP有数据，{len(entries)}个频道")
     return entries
 
-# C段缓存
-_c_segment_cache = {}
+# C段缓存（带 TTL 和最大容量限制，使用 OrderedDict 保证 O(1) 操作）
+from collections import OrderedDict
+
+class _TTLCache:
+    def __init__(self, ttl=300, max_size=1000):
+        self._cache = OrderedDict()
+        self._ttl = ttl
+        self._max_size = max_size
+
+    def get(self, key):
+        if key in self._cache:
+            ts, val = self._cache[key]
+            if time.time() - ts < self._ttl:
+                self._cache.move_to_end(key)
+                return val
+            del self._cache[key]
+        return None
+
+    def set(self, key, val):
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        elif len(self._cache) >= self._max_size:
+            self._cache.popitem(last=False)
+        self._cache[key] = (time.time(), val)
+
+_c_segment_cache = _TTLCache(ttl=300, max_size=1000)
 
 async def smart_c_segment_scan(successful_ips, session):
     if not config_bridge.get_scan_config().get("enable_c_scan"):
@@ -142,10 +210,10 @@ async def smart_c_segment_scan(successful_ips, session):
     now = time.time()
     fresh_segs = {}
     for seg, (ip, port) in segs.items():
-        last = _c_segment_cache.get(seg, 0)
-        if now - last > 300:
+        last = _c_segment_cache.get(seg)
+        if last is None:
             fresh_segs[seg] = (ip, port)
-            _c_segment_cache[seg] = now
+            _c_segment_cache.set(seg, now)
         else:
             logger.debug(f"[C段] 跳过近期已扫描的 {seg}/24")
     segs = fresh_segs
@@ -197,10 +265,13 @@ async def quake_scan(api_key=None, query=None, target_size=None, session=None):
         logger.warning("[Quake] 未提供搜索查询条件，跳过")
         return []
     if target_size is None: target_size = config_bridge.get_scan_config().get("quake_size", 200)
-    if session is None: session = new_scan_session()
+    if session is None: session = get_session(limit=30, force_close=True)
     BATCH_SIZE = 50
     collected_entries, collected_success = [], []
     for start in range(0, target_size, BATCH_SIZE):
+        if _is_stop_requested():
+            logger.info("[Quake] 检测到中止请求，停止扫描")
+            break
         size = min(BATCH_SIZE, target_size - start)
         try:
             await asyncio.sleep(API_REQUEST_DELAY * 0.5)
@@ -245,14 +316,109 @@ async def quake_scan(api_key=None, query=None, target_size=None, session=None):
         collected_entries.extend(await smart_c_segment_scan(collected_success, session))
     return collected_entries
 
+async def fofa_scan(api_key=None, query=None, target_size=None, session=None):
+    if api_key is None: api_key = config_bridge.get_scan_config().get("fofa_key", "")
+    if not api_key:
+        logger.warning("[Fofa] 未配置 API Key，跳过")
+        return []
+    if query is None:
+        logger.warning("[Fofa] 未提供搜索查询条件，跳过")
+        return []
+    email = config_bridge.get_scan_config().get("fofa_email", "")
+    if not email:
+        logger.warning("[Fofa] 未配置 email，跳过")
+        return []
+    if target_size is None: target_size = config_bridge.get_scan_config().get("fofa_size", 200)
+    if session is None: session = get_session(limit=30, force_close=True)
+    BATCH_SIZE = 50
+    collected_entries, collected_success = [], []
+    qbase64 = base64.urlsafe_b64encode(query.encode()).decode().rstrip('=')
+    page = 1
+    for start in range(0, target_size, BATCH_SIZE):
+        if _is_stop_requested():
+            logger.info("[Fofa] 检测到中止请求，停止扫描")
+            break
+        size = min(BATCH_SIZE, target_size - start)
+        try:
+            await asyncio.sleep(API_REQUEST_DELAY * 0.5)
+            async def _req():
+                return await session.get(
+                    "https://fofa.info/api/v1/search/all",
+                    params={
+                        "email": email,
+                        "key": api_key,
+                        "qbase64": qbase64,
+                        "size": size,
+                        "page": page,
+                        "fields": "ip,port,host,title,region"
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15)
+                )
+            r = await _retry_with_backoff(_req)
+            async with r:
+                if r.status == 200:
+                    j = await r.json()
+                    if j.get("error") is False:
+                        results = j.get("results", [])
+                        if not results: break
+                        logger.info(f"[Fofa] 第{page}页，{len(results)} 条")
+                        items = []
+                        for row in results:
+                            if not isinstance(row, (list, tuple)) or len(row) < 4:
+                                continue
+                            ip = str(row[0]).split(':')[0] if row[0] else ''
+                            try:
+                                port = int(row[1]) if row[1] else 8080
+                            except (TypeError, ValueError):
+                                port = 8080
+                            if not ip:
+                                continue
+                            items.append({
+                                "ip": ip, "port": port,
+                                "province": str(row[3] or ''),
+                                "city": ''
+                            })
+                        async def f(item):
+                            ch = await extract_channels_from_ip(
+                                item["ip"], item["port"], session,
+                                item["province"], item["city"]
+                            )
+                            if ch:
+                                collected_success.append((item["ip"], item["port"]))
+                            return ch
+                        for lst in await asyncio.gather(*[f(it) for it in items]):
+                            if lst: collected_entries.extend(lst)
+                        if len(results) < size: break
+                        page += 1
+                    else:
+                        logger.warning(f"[Fofa] API 返回错误: {j.get('errmsg')}")
+                        break
+                elif r.status == 403:
+                    raise KeyDepletedError("Fofa key 积分耗尽")
+                else:
+                    logger.warning(f"[Fofa] 请求失败 HTTP {r.status}")
+                    break
+        except KeyDepletedError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(f"[Fofa] 第{page}页超时")
+            break
+        except Exception as e:
+            logger.warning(f"[Fofa] 第{page}页失败: {e}")
+            break
+    logger.info(f"[Fofa] 总共提取频道: {len(collected_entries)}")
+    if config_bridge.get_scan_config().get("enable_c_scan") and collected_success:
+        collected_entries.extend(await smart_c_segment_scan(collected_success, session))
+    return collected_entries
+
 async def hunter_scan(api_key, query, target_size, session=None):
     if not api_key:
         logger.warning("[Hunter] 未配置 API Key，跳过")
         return []
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     if target_size is None:
-        target_size = config_bridge.get_scan_config().get("quake_size", 200)
+        target_size = config_bridge.get_scan_config().get("hunter_size", config_bridge.get_scan_config().get("quake_size", 200))
     MAX_PAGE_SIZE = 10
     target_size = min(target_size, 100)
     collected_entries = []
@@ -260,6 +426,9 @@ async def hunter_scan(api_key, query, target_size, session=None):
     page = 1
     BATCH_SIZE = MAX_PAGE_SIZE
     while len(collected_entries) < target_size:
+        if _is_stop_requested():
+            logger.info("[Hunter] 检测到中止请求，停止扫描")
+            break
         remaining = target_size - len(collected_entries)
         size = min(BATCH_SIZE, remaining)
         page_size = max(1, min(MAX_PAGE_SIZE, size))
@@ -325,7 +494,7 @@ async def daydaymap_scan(api_key, query, target_size, session=None):
     if not api_key:
         logger.warning("[DayDayMap] 未配置 API Key，跳过")
         return []
-    if session is None: session = new_scan_session()
+    if session is None: session = get_session(limit=30, force_close=True)
     if target_size is None: target_size = config_bridge.get_scan_config().get("quake_size", 200)
     BATCH_SIZE = 50
     all_items = []
@@ -333,6 +502,9 @@ async def daydaymap_scan(api_key, query, target_size, session=None):
     keyword_base64 = base64.b64encode(query.encode()).decode()
     page, max_pages = 1, 5
     while len(all_items) < target_size and page <= max_pages:
+        if _is_stop_requested():
+            logger.info("[DayDayMap] 检测到中止请求，停止扫描")
+            break
         size = min(BATCH_SIZE, target_size - len(all_items))
         post_data = {"page": page, "page_size": size, "keyword": keyword_base64}
         try:
@@ -398,7 +570,7 @@ async def zhgx_scan(size=10, session=None):
     if quake_key:
         await asyncio.sleep(API_REQUEST_DELAY)
         try:
-            if session is None: session = new_scan_session()
+            if session is None: session = get_session(limit=30, force_close=True)
             async with session.post(
                 "https://quake.360.net/api/v3/search/quake_service",
                 headers={"X-QuakeToken": quake_key, "Content-Type": "application/json"},
@@ -411,13 +583,14 @@ async def zhgx_scan(size=10, session=None):
                         for item in j.get("data", []):
                             ip = item.get("ip"); port = item.get("port", 80)
                             if ip: ips.add((ip, port))
-        except: pass
+        except Exception as e:
+            logger.debug(f"[ZHGX] Quake 查询失败: {e}")
     hunter_key = config_bridge.get_scan_config().get("hunter_key")
     if hunter_key:
         await asyncio.sleep(API_REQUEST_DELAY)
         try:
             qb = base64.urlsafe_b64encode('web.body="ZHGXTV"'.encode()).decode().rstrip('=')
-            if session is None: session = new_scan_session()
+            if session is None: session = get_session(limit=30, force_close=True)
             async with session.get(
                 "https://hunter.qianxin.com/openApi/search",
                 params={"api-key": hunter_key, "search": qb, "page": 1, "page_size": min(10, size), "is_web": 1},
@@ -429,14 +602,15 @@ async def zhgx_scan(size=10, session=None):
                         for item in j.get("data", {}).get("arr", []):
                             ip = item.get("ip"); port = item.get("port", 80)
                             if ip: ips.add((ip, port))
-        except: pass
+        except Exception as e:
+            logger.debug(f"[ZHGX] Hunter 查询失败: {e}")
     if not ips:
         logger.info("[ZHGX] 未发现IP")
         return []
     logger.info(f"[ZHGX] {len(ips)} IP")
     entries, success = [], []
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     async def f(ip, port):
         base = f"http://{ip}:{port}"
         async with global_sem:
@@ -451,48 +625,33 @@ async def zhgx_scan(size=10, session=None):
                             parts = line.split(',', 1)
                             if len(parts) < 2: continue
                             name, url_part = parts[0].strip(), parts[1].strip()
-                            if not name or not url_part or is_blacklisted(name): continue
-                            if not is_valid_channel_name(name): continue
+                            if not name or not url_part: continue
                             if url_part.startswith('http://') or url_part.startswith('https://'):
                                 full = url_part
                             else:
                                 full = url_part if url_part.startswith('http') else urljoin(base + '/', url_part)
                             if not is_valid_stream_url(full):
                                 continue
-                            resolved, cat = resolve_name(name)
-                            detected = extract_province_from_name(resolved)
-                            if not detected and name:
-                                for city, prov in CITY_TO_PROVINCE.items():
-                                    if city in name: detected = prov; break
-                                if not detected:
-                                    for i in range(len(name)):
-                                        for j in range(i+2, min(i+5, len(name)+1)):
-                                            sub = name[i:j]
-                                            if sub in CITY_TO_PROVINCE:
-                                                detected = CITY_TO_PROVINCE[sub]; break
-                                        if detected: break
-                            final = normalize_province(detected) if detected else None
-                            cat_auto, prov_auto = auto_classify(resolved, cat, final)
-                            if cat_auto != cat or prov_auto != final:
-                                cat, final = cat_auto, prov_auto or final
-                            if is_cctv_paid(resolved) and cat not in ('央视频道','卫视频道','央视付费频道'):
-                                cat = '央视付费频道'
-                            if cat == '地方频道':
-                                if final in ('香港','澳门','台湾'): cat = '港澳台频道'
-                                elif final and final != '未知': cat = f"{final}频道"
+                            resolved, cat, final_prov, final_city = classify_channel_full(name)
+                            if resolved is None:
+                                continue
                             chs.append({
                                 'name': resolved, 'url': full, 'category': cat,
-                                'province': final or '',
-                                'city': '',
-                                'ip_province': final or '',
-                                'name_province': detected,
+                                'province': final_prov,
+                                'city': final_city,
+                                'ip_province': final_prov,
+                                'name_province': final_prov if final_prov != '未知' else None,
                                 'source_ip': ip
                             })
                         if chs: success.append((ip, port))
                         return chs
-            except: pass
+            except Exception as e:
+                logger.debug(f"[ZHGX] {ip}:{port} 失败: {e}")
         return []
     for lst in await asyncio.gather(*[f(ip, port) for ip, port in ips]):
+        if _is_stop_requested():
+            logger.info("[ZHGX] 检测到中止请求，停止扫描")
+            break
         if lst: entries.extend(lst)
     if config_bridge.get_scan_config().get("enable_c_scan") and success:
         entries.extend(await smart_c_segment_scan(success, session))
@@ -502,7 +661,7 @@ async def zhgx_scan(size=10, session=None):
 async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=None):
     logger.info(f"[JSMpeg] 开始扫描, province={province}, operator={operator}, size={size}")
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     quake_key = config_bridge.get_scan_config().get("quake_key")
     hunter_key = config_bridge.get_scan_config().get("hunter_key")
     ddm_key = config_bridge.get_scan_config().get("daydaymap_api_key")
@@ -577,6 +736,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                     raise KeyDepletedError("Hunter key 积分耗尽")
                 else:
                     logger.warning(f"[JSMpeg] Hunter HTTP {resp.status}")
+        except KeyDepletedError:
+            raise
         except Exception as e:
             logger.warning(f"[JSMpeg] Hunter 查询失败: {e}")
 
@@ -608,6 +769,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                     raise KeyDepletedError("DayDayMap key 积分耗尽")
                 else:
                     logger.warning(f"[JSMpeg] DayDayMap HTTP {resp.status}")
+        except KeyDepletedError:
+            raise
         except Exception as e:
             logger.warning(f"[JSMpeg] DayDayMap 查询失败: {e}")
 
@@ -644,41 +807,17 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
                             continue
                         stream_url = f"{base_url}/hls/{key}/index.m3u8"
                         norm_name = normalize_cctv_name(raw_name)
-                        resolved_name, cat = resolve_name(norm_name)
-                        detected_prov = extract_province_from_name(resolved_name)
-                        if not detected_prov and raw_name:
-                            for _city_name, p in CITY_TO_PROVINCE.items():
-                                if _city_name in raw_name:
-                                    detected_prov = p
-                                    break
-                            if not detected_prov:
-                                for i in range(len(raw_name)):
-                                    for k in range(i+2, min(i+5, len(raw_name)+1)):
-                                        sub = raw_name[i:k]
-                                        if sub in CITY_TO_PROVINCE:
-                                            detected_prov = CITY_TO_PROVINCE[sub]
-                                            break
-                                    if detected_prov:
-                                        break
-                        final_prov = normalize_province(detected_prov or province)
-                        cat_auto, prov_auto = auto_classify(resolved_name, cat, final_prov)
-                        if cat_auto != cat or prov_auto != final_prov:
-                            cat, final_prov = cat_auto, prov_auto or final_prov
-                        if is_cctv_paid(resolved_name) and cat not in ('央视频道', '卫视频道', '央视付费频道'):
-                            cat = '央视付费频道'
-                        if cat == '地方频道':
-                            if final_prov in ('香港', '澳门', '台湾'):
-                                cat = '港澳台频道'
-                            elif final_prov and final_prov != '未知':
-                                cat = f"{final_prov}频道"
+                        resolved_name, cat, final_prov, final_city = classify_channel_full(norm_name, province)
+                        if resolved_name is None:
+                            continue
                         chs.append({
                             'name': resolved_name,
                             'url': stream_url,
                             'category': cat,
-                            'province': final_prov or '',
-                            'city': '',
+                            'province': final_prov,
+                            'city': final_city,
                             'ip_province': province or '',
-                            'name_province': detected_prov,
+                            'name_province': final_prov if final_prov != '未知' else None,
                             'source_ip': ip,
                             'scan_source': source
                         })
@@ -692,6 +831,9 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
 
     tasks = [process_server(ip, port, source) for (ip, port), source in collected_ips.items()]
     for result in await asyncio.gather(*tasks, return_exceptions=True):
+        if _is_stop_requested():
+            logger.info("[JSMpeg] 检测到中止请求，停止扫描")
+            break
         if isinstance(result, list) and result:
             entries.extend(result)
     logger.info(f"[JSMpeg] 扫描完成，提取到 {len(entries)} 个频道")
@@ -719,7 +861,7 @@ async def ddgs_scan(query=None, target_size=30, session=None):
         logger.warning("[DDGS] ddgs 库未安装，跳过扫描")
         return []
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     if not query:
         query = '("iptv/live/zh_cn.js" OR "streamer/list" OR "1000.json") AND (hotel OR iptv)'
     try:
@@ -749,13 +891,17 @@ async def ddgs_scan(query=None, target_size=30, session=None):
                 for ip_info in ips:
                     ip = ip_info[4][0]
                     ip_set.add(ip)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"[DDGS] DNS 解析 {domain} 失败: {e}")
         logger.info(f"[DDGS] 解析出 {len(ip_set)} 个 IP")
         entries = []
         success_ips = []
         for ip in ip_set:
-            for port in [8080, 80, 443]:
+            if _is_stop_requested():
+                logger.info("[DDGS] 检测到中止请求，停止扫描")
+                break
+            for port in config_bridge.get_scan_config().get(
+                    'scan_ports', [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443]):
                 ch = await extract_channels_from_ip(ip, port, session, timeout=3)
                 if ch:
                     entries.extend(ch)
@@ -774,7 +920,7 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
         logger.warning("[Tvheadend] 未配置 Hunter API Key，跳过")
         return []
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     if query is None:
         query = 'web.body="Tvheadend" && ip.province=="中国香港"'
     collected_entries = []
@@ -817,11 +963,12 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
                         logger.warning(f"[Tvheadend] API 错误: {j.get('message')}")
                         break
                 elif r.status == 403:
-                    logger.warning("[Tvheadend] Hunter API Key 无效或积分耗尽")
-                    break
+                    raise KeyDepletedError("[Tvheadend] Hunter API Key 无效或积分耗尽")
                 else:
                     logger.warning(f"[Tvheadend] HTTP {r.status}")
                     break
+        except KeyDepletedError:
+            raise
         except asyncio.TimeoutError:
             logger.warning("[Tvheadend] 请求超时")
             break
@@ -840,7 +987,7 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
                     async with session.head(pre_url, timeout=aiohttp.ClientTimeout(total=2)) as head_resp:
                         if head_resp.status != 200:
                             return []
-                except:
+                except Exception:
                     return []
                 chs = await asyncio.wait_for(extract_tvheadend_channels(ip, port, session), timeout=5)
                 return chs
@@ -853,6 +1000,9 @@ async def tvheadend_scan(api_key, query=None, target_size=30, session=None):
     tasks = [fetch_one(ip, port) for ip, port in all_ips[:target_size]]
     results = await asyncio.gather(*tasks)
     for chs in results:
+        if _is_stop_requested():
+            logger.info("[Tvheadend] 检测到中止请求，停止扫描")
+            break
         collected_entries.extend(chs)
     logger.info(f"[Tvheadend] 共提取 {len(collected_entries)} 个频道")
     return collected_entries
@@ -921,7 +1071,7 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
         logger.warning("[IPTV互动] 未配置 Hunter API Key，跳过")
         return []
     if session is None:
-        session = new_scan_session()
+        session = get_session(limit=30, force_close=True)
     if query is None:
         query = 'title:"首页 - IPTV互动电视系统"'
 
@@ -965,11 +1115,12 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
                         logger.warning(f"[IPTV互动] API 错误: {j.get('message')}")
                         break
                 elif r.status == 403:
-                    logger.warning("[IPTV互动] Hunter API Key 无效或积分耗尽")
-                    break
+                    raise KeyDepletedError("[IPTV互动] Hunter API Key 无效或积分耗尽")
                 else:
                     logger.warning(f"[IPTV互动] HTTP {r.status}")
                     break
+        except KeyDepletedError:
+            raise
         except asyncio.TimeoutError:
             logger.warning("[IPTV互动] 请求超时")
             break
@@ -996,6 +1147,9 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
     tasks = [fetch_one(ip, port) for ip, port in all_ips[:target_size]]
     results = await asyncio.gather(*tasks)
     for chs in results:
+        if _is_stop_requested():
+            logger.info("[IPTV互动] 检测到中止请求，停止扫描")
+            break
         collected_entries.extend(chs)
     logger.info(f"[IPTV互动] 共提取 {len(collected_entries)} 个频道")
     return collected_entries
@@ -1011,7 +1165,7 @@ async def extract_iptv_interactive_channels(ip, port, session):
             text = await resp.text()
             if "IPTV互动电视系统" not in text and "互动电视" not in text:
                 return []
-    except:
+    except Exception:
         return []
 
     channels = []
@@ -1075,7 +1229,7 @@ async def extract_iptv_interactive_channels(ip, port, session):
                             async with session.head(stream_url, timeout=aiohttp.ClientTimeout(total=1.5)) as head_resp:
                                 if head_resp.status != 200:
                                     continue
-                        except:
+                        except Exception:
                             continue
                         name = f"Channel {ch_id}"
                         std_name, cat = resolve_iptv_interactive_channel(name)
@@ -1097,11 +1251,13 @@ async def extract_iptv_interactive_channels(ip, port, session):
 
     # 3. 兜底枚举 1-60
     logger.debug(f"[IPTV互动] {ip}:{port} 尝试兜底枚举 1-60")
+    consecutive_failures = 0
     for ch_id in range(1, 61):
         stream_url = f"{base_url}/live/{ch_id}/index.m3u8"
         try:
             async with session.head(stream_url, timeout=aiohttp.ClientTimeout(total=1.5)) as resp:
                 if resp.status == 200:
+                    consecutive_failures = 0
                     name = f"Channel {ch_id}"
                     std_name, cat = resolve_iptv_interactive_channel(name)
                     channels.append({
@@ -1114,10 +1270,14 @@ async def extract_iptv_interactive_channels(ip, port, session):
                         'name_province': None,
                         'source_ip': ip
                     })
-                    if len(channels) == 0 and ch_id > 10:
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures > 10:
                         break
-        except:
-            continue
+        except Exception:
+            consecutive_failures += 1
+            if consecutive_failures > 10:
+                break
     if channels:
         logger.debug(f"[IPTV互动] {ip}:{port} 从兜底枚举提取到 {len(channels)} 个频道")
     return channels
@@ -1268,6 +1428,7 @@ async def collect_all(size=None, log_fn=None):
     quake_key = km.get_key('quake')
     hunter_key = km.get_key('hunter')
     ddm_key = km.get_key('daydaymap')
+    fofa_key = km.get_key('fofa')
     ddgs_enabled = config_bridge.get_scan_config().get("ddgs_enabled", False)
 
     enabled_platforms = config_bridge.get_scan_config().get("enabled_platforms", [])
@@ -1276,6 +1437,7 @@ async def collect_all(size=None, log_fn=None):
         if km.get_all_keys('quake'): enabled_platforms.append("quake")
         if km.get_all_keys('hunter'): enabled_platforms.append("hunter")
         if km.get_all_keys('daydaymap'): enabled_platforms.append("daydaymap")
+        if km.get_all_keys('fofa'): enabled_platforms.append("fofa")
 
     target_size = size or config_bridge.get_scan_config().get("quake_size", 200)
     selected_provs = config_bridge.get_scan_config().get("selected_provinces", []) or [config_bridge.get_scan_config().get("province", "") or ""]
@@ -1288,117 +1450,100 @@ async def collect_all(size=None, log_fn=None):
         return [], []
 
     all_raw = []
-    async with new_scan_session() as scan_session:
+    async with get_session(limit=30, force_close=True) as scan_session:
         for prov_idx, prov in enumerate(selected_provs, 1):
             if len(selected_provs) > 1:
                 _log(f"[采集] === 省份 ({prov_idx}/{len(selected_provs)}): {prov or '全国'} ===")
             qq = QUAKE_QUERY
             hq = HUNTER_QUERY
             ddm_q = DAYDAYMAP_QUERY
+            fofa_q = FOFA_QUERY
             if operator:
                 qq += f' AND isp="{operator}"'
-                hq += f' AND isp="{operator}"'
+                hq += f' && isp="{operator}"'
                 ddm_q += f' && isp="{operator}"'
+                fofa_q += f' && isp="{operator}"'
             if prov:
                 qq += f' AND province="{prov}"'
-                hq += f' AND province="{prov}"'
-                ddm_q += f' && province="{prov}"'
+                hq += f' && province="{prov}"'
+                ddm_q += f' && province=="{prov}"'
+                fofa_q += f' && region="{prov}"'
 
-            # 串行执行每个平台（带 key 轮换）
+            # 并行执行 API 平台扫描（带 key 轮换）
+            api_tasks = []
             if "quake" in enabled_platforms and quake_key:
-                _log(f"[采集] ({len(all_raw)}条) 开始扫描 Quake 360...")
-                q_res = await _run_with_key_rotation('quake', quake_scan, qq, target_size, session=scan_session)
-                for ch in q_res:
-                    ch['platform'] = 'Quake 360'
-                all_raw.extend(q_res)
-                _log(f"[采集] Quake 360 完成，获得 {len(q_res)} 个频道，累计 {len(all_raw)} 条")
-                await asyncio.sleep(API_REQUEST_DELAY)
-
+                api_tasks.append(('Quake 360', _run_with_key_rotation('quake', quake_scan, qq, target_size, session=scan_session)))
             if "hunter" in enabled_platforms and hunter_key:
-                _log(f"[采集] ({len(all_raw)}条) 开始扫描 Hunter...")
-                h_res = await _run_with_key_rotation('hunter', hunter_scan, hq, target_size, session=scan_session)
-                for ch in h_res:
-                    ch['platform'] = 'Hunter'
-                all_raw.extend(h_res)
-                _log(f"[采集] Hunter 完成，获得 {len(h_res)} 个频道，累计 {len(all_raw)} 条")
-                await asyncio.sleep(API_REQUEST_DELAY)
-
+                api_tasks.append(('Hunter', _run_with_key_rotation('hunter', hunter_scan, hq, target_size, session=scan_session)))
             if "daydaymap" in enabled_platforms and ddm_key:
-                _log(f"[采集] ({len(all_raw)}条) 开始扫描 DayDayMap...")
-                d_res = await _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target_size, session=scan_session)
-                for ch in d_res:
-                    ch['platform'] = 'DayDayMap'
-                all_raw.extend(d_res)
-                _log(f"[采集] DayDayMap 完成，获得 {len(d_res)} 个频道，累计 {len(all_raw)} 条")
-                await asyncio.sleep(API_REQUEST_DELAY)
+                api_tasks.append(('DayDayMap', _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target_size, session=scan_session)))
+            if "fofa" in enabled_platforms and fofa_key:
+                api_tasks.append(('Fofa', _run_with_key_rotation('fofa', fofa_scan, fofa_q, target_size, session=scan_session)))
 
-        # 其他独立扫描（ZHGX, JSMpeg, Tvheadend, IPTV互动等）
+            if api_tasks:
+                _log(f"[采集] ({len(all_raw)}条) 并行扫描: {', '.join(n for n, _ in api_tasks)}...")
+                async def _run_and_tag(name, coro):
+                    try:
+                        result = await coro
+                        for ch in result:
+                            ch['platform'] = name
+                        return result
+                    except Exception as e:
+                        _log(f"[采集] {name} 失败: {e}")
+                        return []
+                results = await asyncio.gather(*[_run_and_tag(n, c) for n, c in api_tasks])
+                for res in results:
+                    all_raw.extend(res)
+                _log(f"[采集] API 平台完成，本轮获得 {sum(len(r) for r in results)} 条，累计 {len(all_raw)} 条")
+
+        # 独立平台扫描（ZHGX, JSMpeg, Tvheadend, IPTV互动, DDGS）也并行执行
+        independent_tasks = []
+
         if enabled_platforms:
-            _log(f"[采集] ({len(all_raw)}条) 开始扫描 ZHGX...")
-            try:
-                zhgx_result = await asyncio.wait_for(zhgx_scan(target_size, session=scan_session), timeout=PLATFORM_TIMEOUT)
-                for ch in zhgx_result:
-                    ch['platform'] = 'ZHGX'
-                all_raw.extend(zhgx_result)
-                _log(f"[采集] ZHGX 完成，获得 {len(zhgx_result)} 个频道，累计 {len(all_raw)} 条")
-            except asyncio.TimeoutError:
-                _log("[采集] ZHGX 总超时，放弃")
+            independent_tasks.append(('ZHGX', zhgx_scan(target_size, session=scan_session)))
 
         # JSMpeg 全国扫描（只执行一次，不限省份）
-        _log(f"[采集] ({len(all_raw)}条) 开始扫描 JSMpeg Streamer...")
-        try:
-            jsmpeg_result = await asyncio.wait_for(
-                jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=target_size, session=scan_session),
-                timeout=PLATFORM_TIMEOUT
-            )
-            for ch in jsmpeg_result:
-                ch['platform'] = ch.pop('scan_source', 'Quake 360')
-            all_raw.extend(jsmpeg_result)
-            _log(f"[采集] JSMpeg 完成，获得 {len(jsmpeg_result)} 个频道，累计 {len(all_raw)} 条")
-        except asyncio.TimeoutError:
-            _log("[采集] JSMpeg 全国扫描总超时，放弃")
+        independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=target_size, session=scan_session)))
 
         if hunter_key:
-            _log(f"[采集] ({len(all_raw)}条) 开始扫描 Tvheadend...")
-            try:
-                tvh_result = await asyncio.wait_for(tvheadend_scan(hunter_key, None, 30, session=scan_session), timeout=PLATFORM_TIMEOUT)
-                for ch in tvh_result:
-                    ch['platform'] = 'Tvheadend'
-                all_raw.extend(tvh_result)
-                _log(f"[采集] Tvheadend 完成，获得 {len(tvh_result)} 个频道，累计 {len(all_raw)} 条")
-            except asyncio.TimeoutError:
-                _log("[采集] Tvheadend 总超时，放弃")
-
-        if hunter_key:
-            _log(f"[采集] ({len(all_raw)}条) 开始扫描 IPTV互动...")
-            try:
-                iptv_interactive_result = await asyncio.wait_for(iptv_interactive_scan(hunter_key, None, 30, session=scan_session), timeout=PLATFORM_TIMEOUT)
-                for ch in iptv_interactive_result:
-                    ch['platform'] = 'IPTV互动'
-                all_raw.extend(iptv_interactive_result)
-                _log(f"[采集] IPTV互动 完成，获得 {len(iptv_interactive_result)} 个频道，累计 {len(all_raw)} 条")
-            except asyncio.TimeoutError:
-                _log("[采集] IPTV互动 总超时，放弃")
+            independent_tasks.append(('Tvheadend', _run_with_key_rotation('hunter', tvheadend_scan, None, 30, session=scan_session)))
+            independent_tasks.append(('IPTV互动', _run_with_key_rotation('hunter', iptv_interactive_scan, None, 30, session=scan_session)))
 
         if ddgs_enabled:
-            _log(f"[采集] ({len(all_raw)}条) 开始扫描 DDGS...")
-            try:
-                ddgs_result = await asyncio.wait_for(ddgs_scan(None, target_size, session=scan_session), timeout=PLATFORM_TIMEOUT)
-                for ch in ddgs_result:
-                    ch['platform'] = 'DDGS'
-                all_raw.extend(ddgs_result)
-                _log(f"[采集] DDGS 完成，获得 {len(ddgs_result)} 个频道，累计 {len(all_raw)} 条")
-            except asyncio.TimeoutError:
-                _log("[采集] DDGS 总超时，放弃")
+            independent_tasks.append(('DDGS', ddgs_scan(None, target_size, session=scan_session)))
+
+        if independent_tasks:
+            _log(f"[采集] ({len(all_raw)}条) 并行扫描独立平台: {', '.join(n for n, _ in independent_tasks)}...")
+            async def _run_independent(name, coro):
+                try:
+                    result = await asyncio.wait_for(coro, timeout=PLATFORM_TIMEOUT)
+                    for ch in result:
+                        if name == 'JSMpeg':
+                            ch['platform'] = ch.pop('scan_source', 'Quake 360')
+                        else:
+                            ch['platform'] = name
+                    return result
+                except asyncio.TimeoutError:
+                    _log(f"[采集] {name} 超时，放弃")
+                    return []
+                except Exception as e:
+                    _log(f"[采集] {name} 失败: {e}")
+                    return []
+            results = await asyncio.gather(*[_run_independent(n, c) for n, c in independent_tasks])
+            for res in results:
+                all_raw.extend(res)
+            _log(f"[采集] 独立平台完成，本轮获得 {sum(len(r) for r in results)} 条，累计 {len(all_raw)} 条")
 
         # 域名/IP 扫描
         _log(f"[采集] ({len(all_raw)}条) 开始域名/IP扫描...")
         try:
             from .domain_ip_scanner import domain_ip_scan
             domain_entries = await domain_ip_scan(session=scan_session)
+            scan_ports = config_bridge.get_scan_config().get(
+                'scan_ports', [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443])
             for ent in domain_entries:
                 ip = ent['ip']
-                for port in [8080, 80, 443]:
+                for port in scan_ports:
                     ch = await extract_channels_from_ip(ip, port, scan_session)
                     if ch:
                         for c in ch:

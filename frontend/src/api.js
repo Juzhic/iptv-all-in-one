@@ -1,11 +1,31 @@
 // ─── 统一 API 请求封装 ───
 
 // 默认请求超时（毫秒）。网络不好时，避免 fetch 无限挂起、
-// 耗尽浏览器对单一域名的并发连接数（约 6 个），导致页面“卡死”。
+// 耗尽浏览器对单一域名的并发连接数（约 6 个），导致页面"卡死"。
 const DEFAULT_TIMEOUT = 20000
 
+// 错误消息映射
+const ERROR_MESSAGES = {
+  400: '请求参数错误',
+  401: '认证失败，请检查用户名和密码',
+  403: '没有权限执行此操作',
+  404: '请求的资源不存在',
+  409: '操作冲突，请稍后重试',
+  429: '请求过于频繁，请稍后重试',
+  500: '服务器内部错误',
+  502: '服务不可用',
+  503: '服务暂时不可用',
+  504: '请求超时',
+}
+
 function checkStatus(r) {
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) {
+    const message = ERROR_MESSAGES[r.status] || `请求失败 (HTTP ${r.status})`
+    const error = new Error(message)
+    error.status = r.status
+    error.response = r
+    throw error
+  }
   return r
 }
 
@@ -20,6 +40,12 @@ function fetchWithTimeout(url, opts = {}) {
     else signal.addEventListener('abort', () => controller.abort(), { once: true })
   }
   return fetch(url, { credentials: 'same-origin', signal: controller.signal, ...rest })
+    .catch(err => {
+      if (err.name === 'AbortError') {
+        throw new Error('请求超时，请检查网络连接')
+      }
+      throw err
+    })
     .finally(() => clearTimeout(timer))
 }
 
@@ -203,4 +229,9 @@ export function apiDetectionRunResults(cycleId, page, size) {
   const qs = params.toString()
   return fetchJSON('/api/scan/detection/run/' + encodeURIComponent(cycleId) + '/results' + (qs ? '?' + qs : ''))
 }
-
+export function apiPersistentRecheck(url) {
+  return postJSON('/api/scan/persistent/recheck', { url })
+}
+export function apiPersistentPriority(url, priority) {
+  return postJSON('/api/scan/persistent/priority', { url, priority })
+}

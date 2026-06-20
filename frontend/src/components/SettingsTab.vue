@@ -241,7 +241,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText } from '../api.js'
 import { useTheme } from '../composables/useTheme.js'
 
@@ -326,7 +326,33 @@ async function loadConfig() {
   }
 }
 
+function validateConfig() {
+  const errors = []
+  if (config.min_width < 0) errors.push('最低分辨率宽度不能为负数')
+  if (config.min_height < 0) errors.push('最低分辨率高度不能为负数')
+  if (config.min_bandwidth_MBps < 0) errors.push('最低带宽不能为负数')
+  if (config.test_duration < 1) errors.push('测试时长至少为 1 秒')
+  if (config.max_workers < 1) errors.push('最大并发数至少为 1')
+  if (config.max_workers > 100) errors.push('最大并发数不建议超过 100')
+  if (config.max_ffmpeg_workers < 1) errors.push('FFmpeg 并发数至少为 1')
+  if (config.system_memory_limit_percent < 0 || config.system_memory_limit_percent > 100) {
+    errors.push('内存保护阈值需在 0-100 之间')
+  }
+  if (config.h265_bandwidth_ratio < 0 || config.h265_bandwidth_ratio > 1) {
+    errors.push('H.265 带宽比例需在 0-1 之间')
+  }
+  if (config.run_mode === 'interval' && config.run_interval_minutes < 1) {
+    errors.push('执行间隔至少为 1 分钟')
+  }
+  return errors
+}
+
 async function saveConfig() {
+  const errors = validateConfig()
+  if (errors.length) {
+    MessagePlugin.warning(errors[0])
+    return
+  }
   configSaving.value = true
   try {
     const data = { ...config, run_times: runTimesInput.value }
@@ -425,15 +451,24 @@ async function saveFile() {
 }
 
 async function resetDemo() {
-  try {
-    const res = await apiResetDemo()
-    if (res.ok) {
-      MessagePlugin.success('已恢复默认模板')
-      loadFile()
-    }
-  } catch (_) {
-    MessagePlugin.error('恢复失败')
-  }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '恢复默认模板',
+    body: '恢复默认模板将覆盖当前的频道模板内容，确认继续？',
+    theme: 'warning',
+    confirmBtn: { content: '恢复', theme: 'warning' },
+    onConfirm: async () => {
+      try {
+        const res = await apiResetDemo()
+        if (res.ok) {
+          MessagePlugin.success('已恢复默认模板')
+          loadFile()
+        }
+      } catch (_) {
+        MessagePlugin.error('恢复失败')
+      }
+      confirmDialog.hide()
+    },
+  })
 }
 
 onMounted(() => {

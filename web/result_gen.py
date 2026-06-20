@@ -9,15 +9,12 @@ from engine import load_config, resolve_output_update_time
 
 
 def _result_sort_key(result):
+    from engine.test_engine import calculate_quality_score
     score = result.get('quality_score')
     if score is None:
         bandwidth = result.get('bandwidth_MBps') or 0
         latency = result.get('connection_latency_ms')
-        try:
-            latency_seconds = max(float(latency), 0) / 1000
-        except (TypeError, ValueError):
-            latency_seconds = 3
-        score = float(bandwidth or 0) / (1 + latency_seconds)
+        score = calculate_quality_score(bandwidth, latency)
     try:
         bandwidth = float(result.get('bandwidth_MBps') or 0)
     except (TypeError, ValueError):
@@ -107,7 +104,9 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
     """从通过的结果动态生成 result.m3u 格式内容。"""
     channels = _group_passed_results(passed_results)
 
-    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    cfg = load_config()
+    logo_base = cfg.get('logo_base_url', 'https://www.xn--rgv465a.top/tvlogo')
+    epg_url = cfg.get('epg_url', '')
     selected_results = []
     body_lines = []
 
@@ -141,7 +140,8 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
                 selected_results.append(result)
 
     update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
-    lines = ['#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"']
+    epg_header = f'#EXTM3U x-tvg-url="{epg_url}"' if epg_url else '#EXTM3U'
+    lines = [epg_header]
     lines.append(
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
         f'group-title="🕘️更新时间",{update_time_str}'

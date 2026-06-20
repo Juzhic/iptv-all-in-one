@@ -179,19 +179,33 @@ def _load_basic_auth_config():
         with open(BASIC_AUTH_CONFIG_FILE, 'r', encoding='utf-8') as f:
             loaded = json.load(f)
     except FileNotFoundError:
-        return config
+        pass
     except (OSError, ValueError):
-        return config
+        pass
+    else:
+        if isinstance(loaded, dict):
+            for key in config:
+                value = loaded.get(key)
+                if value is not None:
+                    value = str(value)
+                    if value:
+                        config[key] = value
 
-    if not isinstance(loaded, dict):
-        return config
+    # 环境变量覆盖（优先级最高）
+    env_username = os.environ.get('IPTV_AUTH_USERNAME')
+    env_password = os.environ.get('IPTV_AUTH_PASSWORD')
+    env_realm = os.environ.get('IPTV_AUTH_REALM')
+    if env_username:
+        config['username'] = env_username
+    if env_password:
+        config['password'] = env_password
+    if env_realm:
+        config['realm'] = env_realm
 
-    for key in config:
-        value = loaded.get(key)
-        if value is not None:
-            value = str(value)
-            if value:
-                config[key] = value
+    # 检测默认弱密码并警告
+    if config['username'] == BASIC_AUTH_DEFAULT_CONFIG['username'] and config['password'] == BASIC_AUTH_DEFAULT_CONFIG['password']:
+        logger.warning("安全警告: 检测到使用默认密码 (admin/admin)，建议立即修改 basic_auth.json 或设置环境变量 IPTV_AUTH_USERNAME/IPTV_AUTH_PASSWORD")
+
     return config
 
 
@@ -231,13 +245,9 @@ def require_basic_auth():
 
 def _finite_number_or_none(value):
     """把外部 API 的数字字段规整成 JSON number；无效值返回 None。"""
-    if value is None or value == '':
-        return None
-    try:
-        num = float(str(value).replace(',', '').strip())
-    except (TypeError, ValueError):
-        return None
-    if num != num or num in (float('inf'), float('-inf')):
+    from engine.utils import safe_number
+    num = safe_number(value)
+    if num is None:
         return None
     return int(num) if num.is_integer() else num
 
