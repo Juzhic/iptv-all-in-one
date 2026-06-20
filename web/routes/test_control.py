@@ -14,7 +14,7 @@ def api_trigger():
     """触发一次测试运行。"""
     if _start_test_background(trigger_source='web') is not None:
         return jsonify({'ok': True, 'message': '测试已启动'})
-    return jsonify({'error': '测试正在运行中，请等待完成'}), 409
+    return jsonify({'ok': False, 'error': '测试正在运行中，请等待完成'}), 409
 
 
 @test_control_bp.route('/api/stop', methods=['POST'])
@@ -24,7 +24,7 @@ def api_stop():
     msg = data.get('message', '用户手动终止')
     with _state._test_lock:
         if not _state._test_running:
-            return jsonify({'error': '当前没有正在运行的测试'}), 409
+            return jsonify({'ok': False, 'error': '当前没有正在运行的测试'}), 409
         _state._test_stop_event.set()
     with _state._progress_lock:
         _state._test_progress['error'] = msg
@@ -43,7 +43,7 @@ def api_status():
             elapsed = _state._test_progress['elapsed']
             source = _state._test_progress.get('source', 'web')
     if running:
-        return jsonify({
+        return jsonify({'ok': True, 'data': {
             'running': True,
             'processed': processed,
             'total': total,
@@ -51,11 +51,11 @@ def api_status():
             'source': source,
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
-        })
+        }})
     from database import get_run_progress
     db_progress = get_run_progress()
     if db_progress and db_progress.get('running'):
-        return jsonify({
+        return jsonify({'ok': True, 'data': {
             'running': True,
             'processed': db_progress.get('processed', 0),
             'total': db_progress.get('total', 0),
@@ -63,8 +63,8 @@ def api_status():
             'source': db_progress.get('source', 'scheduler'),
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
-        })
-    return jsonify({
+        }})
+    return jsonify({'ok': True, 'data': {
         'running': False,
         'processed': 0,
         'total': 0,
@@ -72,7 +72,7 @@ def api_status():
         'source': '',
         'next_scheduled_run': next_run_str,
         'scheduler_running': scheduler_running,
-    })
+    }})
 
 
 @test_control_bp.route('/api/progress', methods=['GET'])
@@ -99,7 +99,7 @@ def api_progress():
             prog_source = _state._test_progress.get('source', 'web')
     if prog_running:
         new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
-        return jsonify({
+        return jsonify({'ok': True, 'data': {
             'running': True,
             'started_at': prog_started_at,
             'total': prog_total,
@@ -113,12 +113,12 @@ def api_progress():
             'last_seq': _state._test_log_seq,
             'source': prog_source,
             **sched_info,
-        })
+        }})
 
     from database import get_run_progress
     db_progress = get_run_progress()
     if db_progress and db_progress.get('running'):
-        return jsonify({
+        return jsonify({'ok': True, 'data': {
             'running': True,
             'started_at': db_progress.get('started_at'),
             'total': db_progress.get('total', 0),
@@ -132,7 +132,7 @@ def api_progress():
             'last_seq': 0,
             'source': db_progress.get('source', 'scheduler'),
             **sched_info,
-        })
+        }})
 
     with _state._progress_lock:
         finished_at = _state._test_progress.get('finished_at')
@@ -147,7 +147,7 @@ def api_progress():
             elapsed = _state._test_progress.get('elapsed', 0)
             error = _state._test_progress.get('error')
             source = _state._test_progress.get('source', '')
-        return jsonify({
+        return jsonify({'ok': True, 'data': {
             'running': False,
             'started_at': started_at,
             'total': total,
@@ -161,11 +161,11 @@ def api_progress():
             'last_seq': _state._test_log_seq,
             'source': source,
             **sched_info,
-        })
+        }})
 
     with _state._progress_lock:
         last_finished_at = _state._test_progress.get('finished_at')
-    return jsonify({
+    return jsonify({'ok': True, 'data': {
         'running': False,
         'started_at': None,
         'total': 0,
@@ -179,4 +179,4 @@ def api_progress():
         'last_seq': 0,
         'source': '',
         **sched_info,
-    })
+    }})

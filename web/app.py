@@ -7,7 +7,6 @@ import logging
 import os
 import pkgutil
 import subprocess
-import sys
 
 # Python 3.14 移除了 pkgutil.get_loader，当前 Flask 仍会调用它。
 if not hasattr(pkgutil, 'get_loader'):
@@ -20,7 +19,7 @@ if not hasattr(pkgutil, 'get_loader'):
 
     pkgutil.get_loader = _compat_get_loader
 
-from flask import Flask, request, Response
+from flask import Flask, request, Response, jsonify
 
 from web.state import BASIC_AUTH_EXEMPT_PATHS
 
@@ -83,14 +82,14 @@ def _ensure_frontend():
         # dist 不存在，尝试构建
         pkg = os.path.join(FRONTEND_DIR, 'package.json')
         if not os.path.exists(pkg):
-            print('[前端] dist/ 不存在，且无前端源码 (frontend/package.json)，跳过构建')
+            logger.warning('[前端] dist/ 不存在，且无前端源码 (frontend/package.json)，跳过构建')
             return
-        print('[前端] dist/ 不存在，正在自动构建...')
+        logger.info('[前端] dist/ 不存在，正在自动构建...')
         _run_frontend_build()
         return
 
     if _frontend_deps_need_install():
-        print('[前端] 检测到依赖清单变更，正在重新安装依赖并构建...')
+        logger.info('[前端] 检测到依赖清单变更，正在重新安装依赖并构建...')
         _run_frontend_build()
         return
 
@@ -99,13 +98,13 @@ def _ensure_frontend():
         dist_mtime = os.path.getmtime(index_html)
         for path in _iter_frontend_watch_files():
             if _safe_mtime(path) > dist_mtime:
-                print(f'[前端] 检测到前端文件更新 ({os.path.basename(path)})，正在重新构建...')
+                logger.info(f'[前端] 检测到前端文件更新 ({os.path.basename(path)})，正在重新构建...')
                 _run_frontend_build()
                 return
     except OSError:
         pass
 
-    print('[前端] 前端已是最新，无需构建 (dist/index.html 存在且源码未变更)')
+    logger.info('[前端] 前端已是最新，无需构建 (dist/index.html 存在且源码未变更)')
 
 
 def _run_frontend_build():
@@ -115,7 +114,7 @@ def _run_frontend_build():
         return
 
     if _frontend_deps_need_install():
-        print('[前端] 正在安装依赖 (npm install)...')
+        logger.info('[前端] 正在安装依赖 (npm install)...')
         install_result = subprocess.run(
             ['cmd', '/c', 'npm install --production=false'],
             cwd=FRONTEND_DIR,
@@ -125,10 +124,10 @@ def _run_frontend_build():
         )
         if install_result.returncode != 0:
             stderr = install_result.stderr.decode('utf-8', errors='replace')[-500:] if install_result.stderr else ''
-            print(f'[前端] 依赖安装失败: {stderr}')
+            logger.error(f'[前端] 依赖安装失败: {stderr}')
             return
 
-    print('[前端] 正在构建 (npm run build)...')
+    logger.info('[前端] 正在构建 (npm run build)...')
     result = subprocess.run(
         ['cmd', '/c', 'npm run build'],
         cwd=FRONTEND_DIR,
@@ -145,14 +144,14 @@ def _run_frontend_build():
                 clean = _re.sub(r'\x1b\[[0-9;]*m', '', line)
                 clean = clean.replace('✓', '[OK]').replace('✗', '[X]')
                 try:
-                    print(f'[前端]   {clean}')
+                    logger.info(f'[前端]   {clean}')
                 except UnicodeEncodeError:
-                    print(f'[前端]   {clean.encode("utf-8", errors="replace").decode("ascii", errors="replace")}')
+                    logger.info(f'[前端]   {clean.encode("utf-8", errors="replace").decode("ascii", errors="replace")}')
     if result.returncode == 0:
-        print('[前端] 构建完成')
+        logger.info('[前端] 构建完成')
     else:
         stderr = result.stderr.decode('utf-8', errors='replace')[-500:] if result.stderr else ''
-        print(f'[前端] 构建失败: {stderr}')
+        logger.error(f'[前端] 构建失败: {stderr}')
 
 
 def _prepare_frontend_on_startup():
@@ -278,6 +277,16 @@ def create_app():
             response.headers['Surrogate-Control'] = 'no-store'
             response.headers['X-Accel-Expires'] = '0'
         response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+        response.headers.setdefault('X-XSS-Protection', '1; mode=block')
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.headers.setdefault('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
         return response
+
+    @app.errorhandler(404)
+    @app.errorhandler(500)
+    @app.errorhandler(405)
+    def handle_error(e):
+        return jsonify({'ok': False, 'error': str(e)}), e.code
 
     return app

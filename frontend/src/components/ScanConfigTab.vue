@@ -117,7 +117,7 @@
                 <label>扫描数量</label>
                 <span>每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
               </div>
-              <t-input-number v-model="scanCfg.quake_size" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="scanCfg.quake_size" :min="1" :max="10000" :step="1" class="field-control" />
             </div>
 
             <div class="config-field config-field--stack">
@@ -160,6 +160,28 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
+                <label>Fofa 配置</label>
+                <span>配置 Fofa 平台的 API Key、邮箱和每次扫描返回的最大条数。</span>
+              </div>
+
+              <div class="fofa-config-card">
+                <div class="fofa-field">
+                  <label>API Key</label>
+                  <t-input v-model="scanCfg.fofa_api_key" placeholder="粘贴 Fofa API Key" />
+                </div>
+                <div class="fofa-field">
+                  <label>Email</label>
+                  <t-input v-model="scanCfg.fofa_email" placeholder="Fofa 注册邮箱" />
+                </div>
+                <div class="fofa-field">
+                  <label>扫描数量</label>
+                  <t-input-number v-model="scanCfg.fofa_size" :min="1" :max="10000" :step="100" />
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
                 <label>定时扫描</label>
                 <span>设置自动扫描的星期和时间，适合夜间低峰期定时补源。</span>
               </div>
@@ -181,7 +203,121 @@
       </div>
 
       <div class="config-actions">
-        <div class="config-actions-tip">当前数据库里的 C 段扫描真实值是 {{ scanCfg.enable_c_scan ? '开启' : '关闭' }}，现在页面会按真实状态显示，不再出现灰色却写“开启”的错位。</div>
+        <div class="config-actions-tip">当前数据库里的 C 段扫描真实值是 {{ scanCfg.enable_c_scan ? '开启' : '关闭' }}，现在页面会按真实状态显示，不再出现灰色却写"开启"的错位。</div>
+        <t-space>
+          <t-button theme="primary" :loading="saving" @click="saveScanConfig">保存配置</t-button>
+          <t-button variant="outline" @click="loadConfig">重新加载</t-button>
+        </t-space>
+      </div>
+    </t-card>
+
+    <t-card size="small" :bordered="false" class="config-card">
+      <div class="config-header">
+        <div>
+          <div class="section-title section-title--flush">高级扫描策略</div>
+          <p class="section-desc">配置 ISP 智能分析和社区源等高级扫描策略，提升扫描覆盖范围和精准度。</p>
+        </div>
+      </div>
+
+      <div class="config-panel-grid">
+        <section class="config-panel">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">ISP 智能分析</div>
+            <h3>ISP Intelligence</h3>
+            <p>基于运营商数据智能识别热门段，提升扫描效率和精准度。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>ISP Intelligence</label>
+                <span>启用基于运营商的智能热点段识别。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.isp_intelligence_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.isp_intelligence_enabled ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.isp_intelligence_enabled ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+                <div class="field-inline-hint">
+                  {{ scanCfg.isp_intelligence_enabled ? '将分析 ISP 数据识别热门网段，优先扫描高价值区域。' : '当前使用标准扫描模式，不进行 ISP 智能分析。' }}
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>最小频道数</label>
+                <span>热点段最少需要包含的频道数量。</span>
+              </div>
+              <t-input-number v-model="scanCfg.hot_segment_min_channels" :min="1" :max="100" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>热点段扫描限制</label>
+                <span>最多扫描的热点段数量。</span>
+              </div>
+              <t-input-number v-model="scanCfg.hot_segment_scan_limit" :min="1" :max="500" :step="10" class="field-control" />
+            </div>
+          </div>
+        </section>
+
+        <section class="config-panel config-panel--accent">
+          <div class="config-panel-head">
+            <div class="config-panel-eyebrow">社区源配置</div>
+            <h3>Community Sources</h3>
+            <p>从社区维护的源列表中获取 IPTV 数据，扩展扫描覆盖面。</p>
+          </div>
+
+          <div class="config-field-list">
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>社区源</label>
+                <span>启用从社区源获取 IPTV 数据。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.community_sources_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.community_sources_enabled ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.community_sources_enabled ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+                <div class="field-inline-hint">
+                  {{ scanCfg.community_sources_enabled ? '将从社区维护的源获取数据，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台进行采集。' }}
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>社区源 URL</label>
+                <span>每行一个社区源地址，支持 GitHub 仓库地址。</span>
+              </div>
+              <t-textarea
+                v-model="scanCfg.community_source_urls"
+                placeholder="https://github.com/user/repo&#10;https://example.com/iptv.txt"
+                :autosize="{ minRows: 3, maxRows: 6 }"
+                class="field-control field-control--wide"
+              />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>GitHub 代理</label>
+                <span>GitHub 资源代理地址，留空表示不使用代理。</span>
+              </div>
+              <t-input v-model="scanCfg.github_proxy" placeholder="https://ghproxy.com/" class="field-control field-control--wide" />
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="config-actions">
+        <div class="config-actions-tip">配置高级扫描策略后，需要点击保存按钮才能生效。</div>
         <t-space>
           <t-button theme="primary" :loading="saving" @click="saveScanConfig">保存配置</t-button>
           <t-button variant="outline" @click="loadConfig">重新加载</t-button>
@@ -202,6 +338,7 @@
             <t-option value="quake" label="Quake 360" />
             <t-option value="hunter" label="Hunter 鹰图" />
             <t-option value="daydaymap" label="DayDayMap" />
+            <t-option value="fofa" label="Fofa" />
           </t-select>
           <div class="platform-link">
             <t-link
@@ -217,6 +354,10 @@
 
         <t-form-item label="API Key">
           <t-input v-model="keyForm.key" placeholder="粘贴 API Key" />
+        </t-form-item>
+
+        <t-form-item v-if="keyForm.platform === 'fofa'" label="Email">
+          <t-input v-model="keyForm.email" placeholder="Fofa 注册邮箱" />
         </t-form-item>
       </t-form>
 
@@ -247,7 +388,7 @@ const keysLoading = ref(false)
 const keyModalVisible = ref(false)
 const keyModalTitle = ref('添加 API Key')
 const keyEditMode = ref(false)
-const keyForm = reactive({ platform: 'quake', key: '' })
+const keyForm = reactive({ platform: 'quake', key: '', email: '' })
 const oldKey = ref('')
 const { theme } = useTheme()
 
@@ -255,12 +396,14 @@ const platformLabelMap = {
   quake: 'Quake 360',
   hunter: 'Hunter 鹰图',
   daydaymap: 'DayDayMap',
+  fofa: 'Fofa',
 }
 
 const platformLinkMap = {
   quake: 'https://quake.360.net/',
   hunter: 'https://hunter.qianxin.com/',
   daydaymap: 'https://www.daydaymap.com/',
+  fofa: 'https://fofa.info/',
 }
 
 const scanCfg = reactive({
@@ -272,6 +415,15 @@ const scanCfg = reactive({
   update_days: [0, 1, 2, 3, 4, 5, 6],
   daily_full_update: true,
   ddgs_enabled: false,
+  isp_intelligence_enabled: false,
+  hot_segment_min_channels: 5,
+  hot_segment_scan_limit: 50,
+  community_sources_enabled: false,
+  community_source_urls: '',
+  github_proxy: '',
+  fofa_api_key: '',
+  fofa_email: '',
+  fofa_size: 200,
 })
 
 const PROVINCES = [
@@ -447,18 +599,67 @@ async function loadConfig() {
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
     scanCfg.ddgs_enabled = !!cfg.ddgs_enabled
+    scanCfg.isp_intelligence_enabled = !!cfg.isp_intelligence_enabled
+    scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 5
+    scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 50
+    scanCfg.community_sources_enabled = !!cfg.community_sources_enabled
+    scanCfg.community_source_urls = Array.isArray(cfg.community_source_urls) ? cfg.community_source_urls.join('\n') : (cfg.community_source_urls || '')
+    scanCfg.github_proxy = cfg.github_proxy || ''
+    scanCfg.fofa_api_key = cfg.fofa_api_key || ''
+    scanCfg.fofa_email = cfg.fofa_email || ''
+    scanCfg.fofa_size = typeof cfg.fofa_size === 'number' ? cfg.fofa_size : 200
     updateCountdown()
   } catch (_) {
     MessagePlugin.error('加载扫描配置失败')
   }
 }
 
+function validateScanConfig() {
+  const errors = []
+  if (scanCfg.fofa_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(scanCfg.fofa_email)) {
+    errors.push('Fofa 邮箱格式不正确')
+  }
+  if (scanCfg.quake_size > 10000) {
+    errors.push('Quake 扫描数量不能超过 10000')
+  }
+  if (scanCfg.fofa_size > 10000) {
+    errors.push('Fofa 扫描数量不能超过 10000')
+  }
+  if (scanCfg.github_proxy && !/^https?:\/\/.+/.test(scanCfg.github_proxy)) {
+    errors.push('GitHub 代理地址格式不正确，需以 http:// 或 https:// 开头')
+  }
+  if (scanCfg.community_source_urls) {
+    const urls = typeof scanCfg.community_source_urls === 'string'
+      ? scanCfg.community_source_urls.split('\n').map(u => u.trim()).filter(Boolean)
+      : scanCfg.community_source_urls
+    for (const url of urls) {
+      if (!/^https?:\/\/.+/.test(url)) {
+        errors.push(`社区源 URL 格式不正确: ${url}`)
+        break
+      }
+    }
+  }
+  return errors
+}
+
 async function saveScanConfig() {
+  const errors = validateScanConfig()
+  if (errors.length) {
+    MessagePlugin.warning(errors[0])
+    return
+  }
   saving.value = true
   try {
     const data = { ...scanCfg }
     if (data.daily_full_update) {
       data.update_days = [0, 1, 2, 3, 4, 5, 6]
+    }
+    
+    if (typeof data.community_source_urls === 'string') {
+      data.community_source_urls = data.community_source_urls
+        .split('\n')
+        .map(url => url.trim())
+        .filter(url => url)
     }
 
     const res = await apiSaveScanConfig(data)
@@ -826,12 +1027,31 @@ onBeforeUnmount(() => {
 }
 
 .province-card,
-.schedule-card {
+.schedule-card,
+.fofa-config-card {
   width: 100%;
   padding: 14px;
   border: 1px solid var(--surface-border-soft);
   border-radius: 14px;
   background: var(--surface-inner-bg);
+}
+
+.fofa-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fofa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fofa-field label {
+  color: var(--surface-text-primary);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .province-toolbar {

@@ -178,14 +178,12 @@
         <t-input v-model="logSearch" placeholder="搜索日志内容..." clearable style="width:300px" />
         <span style="font-size:12px;color:var(--td-text-color-placeholder)">{{ logEntries.length }} 条</span>
       </t-space>
-      <div class="log-panel">
-        <div v-for="(l, i) in filteredLogs" :key="i" class="log-line">
-          <span class="log-time">[{{ l.ts }}]</span>
-          <span :class="logClass(l)">[{{ l.level === 'ERROR' ? 'ERROR' : l.level === 'WARNING' ? 'WARN' : 'INFO' }}]</span>
-          <span :class="logMsgClass(l)">{{ l.message }}</span>
-        </div>
-        <div v-if="!filteredLogs.length" style="color:var(--td-text-color-placeholder);padding:8px">暂无日志</div>
-      </div>
+      <LogPanel
+        :entries="filteredLogs"
+        :show-count="false"
+        empty-text="暂无日志"
+        @clear="logEntries = []"
+      />
     </t-dialog>
 
     <!-- 对比弹窗 -->
@@ -270,22 +268,19 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
+import { useClipboard } from '../composables/useClipboard.js'
+import { platformTheme } from '../utils/platform.js'
+import { daysAgo as daysAgoUtil } from '../utils/date.js'
+import LogPanel from './LogPanel.vue'
+
+const { copyText: rawCopy } = useClipboard()
+async function copyText(text) {
+  await rawCopy(text)
+  MessagePlugin.success('已复制')
+}
 
 const props = defineProps({ initialRuns: Array })
 const emit = defineEmits(['update-overview'])
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    MessagePlugin.success('已复制')
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
-    document.body.removeChild(ta)
-    MessagePlugin.success('已复制')
-  }
-}
 
 const historyRuns = ref(props.initialRuns || [])
 const startDate = ref('')
@@ -311,13 +306,13 @@ const compareData = ref(null)
 
 // 日期初始化
 const now = new Date()
-const daysAgo = (n) => new Date(now - n * 86400000)
 const fmt = (d) => {
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
+const daysAgo = (n) => new Date(now.getTime() - n * 86400000)
 startDate.value = fmt(daysAgo(3))
 endDate.value = fmt(now)
 
@@ -409,15 +404,6 @@ function hasH265(info) {
   return (info.urls || []).some(u => u.is_h265)
 }
 
-function platformTheme(platform) {
-  if (!platform) return 'default'
-  const p = platform.toLowerCase()
-  if (p.includes('quake')) return 'primary'
-  if (p.includes('hunter')) return 'warning'
-  if (p.includes('daydaymap') || p.includes('dayday')) return 'success'
-  return 'default'
-}
-
 function filteredChannels(runId) {
   const q = (detailSearch[runId] || '').toLowerCase()
   const f = detailFilter[runId] || 'all'
@@ -500,13 +486,6 @@ const filteredLogs = computed(() => {
   return logEntries.value.filter(l => ((l.ts || '') + ' ' + (l.level || '') + ' ' + (l.message || '')).toLowerCase().includes(q))
 })
 
-function logClass(l) { return l.level === 'ERROR' ? 'log-level-error' : l.level === 'WARNING' ? 'log-level-warn' : 'log-level-info' }
-function logMsgClass(l) {
-  if (/失败|异常|error/i.test(l.message || '')) return 'log-msg-fail'
-  if (/通过|完成|pass/i.test(l.message || '')) return 'log-msg-pass'
-  return 'log-msg-info'
-}
-
 // ── 对比功能 ──
 const compareChannelColumns = [
   { colKey: 'channel', title: '频道', width: 180, ellipsis: true },
@@ -572,15 +551,6 @@ onMounted(() => {
 .detail-panel { padding: 12px 0; }
 .detail-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .no-data { text-align: center; padding: 40px; color: var(--td-text-color-placeholder); font-size: 13px; }
-.log-panel { background: #1e1e2e; color: #cdd6f4; font-family: 'Cascadia Code','Fira Code',Consolas,monospace; font-size: 12px; line-height: 1.7; height: 500px; overflow-y: auto; border-radius: 8px; padding: 12px; }
-.log-line { white-space: pre-wrap; word-break: break-all; }
-.log-time { color: #89b4fa; margin-right: 8px; }
-.log-level-error { color: #f38ba8; }
-.log-level-warn { color: #f59e0b; }
-.log-level-info { color: #cba6f7; margin-right: 4px; }
-.log-msg-fail { color: #f38ba8; }
-.log-msg-pass { color: #a6e3a1; }
-.log-msg-info { color: #cdd6f4; }
 .codec-tag-h265 { background: var(--td-brand-color-light); color: var(--td-brand-color); }
 .codec-tag-codec { background: var(--td-bg-color-component); color: var(--td-text-color-secondary); }
 .ch-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }

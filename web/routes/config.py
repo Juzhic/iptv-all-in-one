@@ -47,7 +47,7 @@ def _sanitize_profile_name(name):
 def api_get_config():
     """读取当前配置（从数据库，合并默认值）。"""
     cfg = load_config()
-    return jsonify(cfg)
+    return jsonify({'ok': True, 'data': cfg})
 
 
 @config_bp.route('/api/config', methods=['POST'])
@@ -55,7 +55,7 @@ def api_save_config():
     """保存配置到数据库。"""
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({'error': '无效的请求数据'}), 400
+        return jsonify({'ok': False, 'error': '无效的请求数据'}), 400
 
     # 合法配置项白名单
     valid_keys = set(DEFAULT_CONFIG.keys())
@@ -90,7 +90,7 @@ def api_save_config():
             pass
     else:
         _ensure_scheduler_started(cfg)
-    return jsonify({'ok': True, 'updated': updated_keys, 'config': cfg})
+    return jsonify({'ok': True, 'data': {'updated': updated_keys, 'config': cfg}})
 
 
 def _normalize_run_times(times):
@@ -123,21 +123,21 @@ def _normalize_run_times(times):
 def api_get_text(key):
     """读取配置数据内容。"""
     if not is_allowed_data_key(key):
-        return jsonify({'error': '不允许访问该数据'}), 403
+        return jsonify({'ok': False, 'error': '不允许访问该数据'}), 403
     content = get_config_data(key)
-    return jsonify({'content': content, 'filename': key})
+    return jsonify({'ok': True, 'data': {'content': content, 'filename': key}})
 
 
 @config_bp.route('/api/text/<key>', methods=['POST'])
 def api_save_text(key):
     """保存配置数据内容。"""
     if not is_allowed_data_key(key):
-        return jsonify({'error': '不允许访问该数据'}), 403
+        return jsonify({'ok': False, 'error': '不允许访问该数据'}), 403
     data = request.get_json(silent=True)
     if not data or 'content' not in data:
-        return jsonify({'error': '缺少 content 字段'}), 400
+        return jsonify({'ok': False, 'error': '缺少 content 字段'}), 400
     set_config_data(key, data['content'])
-    return jsonify({'ok': True, 'filename': key})
+    return jsonify({'ok': True, 'data': {'filename': key}})
 
 
 @config_bp.route('/api/reset-demo', methods=['POST'])
@@ -149,7 +149,7 @@ def api_reset_demo():
 
 # ─────────────── 配置导入导出 API ───────────────
 
-@config_bp.route('/api/config/export')
+@config_bp.route('/api/config/export', methods=['GET'])
 def api_config_export():
     """Export all configuration as a JSON file for backup."""
     import json
@@ -179,20 +179,20 @@ def api_config_import():
     import json
 
     if not request.files:
-        return jsonify({'error': '请上传配置文件'}), 400
+        return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
 
     file = request.files.get('file')
     if not file:
-        return jsonify({'error': '请上传配置文件'}), 400
+        return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
 
     try:
         content = file.read().decode('utf-8')
         data = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        return jsonify({'error': f'文件格式错误: {e}'}), 400
+        return jsonify({'ok': False, 'error': f'文件格式错误: {e}'}), 400
 
     if not isinstance(data, dict):
-        return jsonify({'error': '配置文件格式错误，应为 JSON 对象'}), 400
+        return jsonify({'ok': False, 'error': '配置文件格式错误，应为 JSON 对象'}), 400
 
     valid_keys = {'config', 'subscribe', 'demo', 'alias', 'scan_config'}
     imported = []
@@ -209,7 +209,7 @@ def api_config_import():
     except Exception:
         pass
 
-    return jsonify({'ok': True, 'imported': imported})
+    return jsonify({'ok': True, 'data': {'imported': imported}})
 
 
 # ─────────────── 频道发现 API ───────────────
@@ -220,9 +220,9 @@ def api_discover():
     from engine.discovery import discover_channels
     try:
         result = discover_channels()
-        return jsonify(result)
+        return jsonify({'ok': True, 'data': result})
     except Exception as e:
-        return jsonify({'error': f'扫描失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'扫描失败: {e}'}), 500
 
 
 @config_bp.route('/api/discover/merge', methods=['POST'])
@@ -231,32 +231,32 @@ def api_discover_merge():
     from engine.discovery import merge_channels_into_demo
     data = request.get_json(silent=True)
     if not data or 'channels' not in data:
-        return jsonify({'error': '缺少 channels 字段'}), 400
+        return jsonify({'ok': False, 'error': '缺少 channels 字段'}), 400
 
     channels = data['channels']
     if not isinstance(channels, list):
-        return jsonify({'error': 'channels 应为列表'}), 400
+        return jsonify({'ok': False, 'error': 'channels 应为列表'}), 400
 
     try:
         result = merge_channels_into_demo(channels)
-        return jsonify({'ok': True, **result})
+        return jsonify({'ok': True, 'data': result})
     except Exception as e:
-        return jsonify({'error': f'合并失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'合并失败: {e}'}), 500
 
 
 # ─────────────── 多方案管理 API ───────────────
 
-@config_bp.route('/api/profiles')
+@config_bp.route('/api/profiles', methods=['GET'])
 def api_list_profiles():
     """List all profile configurations."""
     import json
     raw = get_config_data('profiles')
     if raw:
         try:
-            return jsonify(json.loads(raw))
+            return jsonify({'ok': True, 'data': json.loads(raw)})
         except json.JSONDecodeError:
             pass
-    return jsonify([{'name': '默认', 'key': 'demo', 'description': '默认频道方案'}])
+    return jsonify({'ok': True, 'data': [{'name': '默认', 'key': 'demo', 'description': '默认频道方案'}]})
 
 
 @config_bp.route('/api/profiles', methods=['POST'])
@@ -265,16 +265,16 @@ def api_create_profile():
     import json
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({'error': '请求数据无效'}), 400
+        return jsonify({'ok': False, 'error': '请求数据无效'}), 400
     name = _sanitize_profile_name(data.get('name', ''))
     if not name:
-        return jsonify({'error': '方案名称无效（只允许中文、字母、数字、下划线、连字符，最长50字符）'}), 400
+        return jsonify({'ok': False, 'error': '方案名称无效（只允许中文、字母、数字、下划线、连字符，最长50字符）'}), 400
     description = data.get('description', '').strip()
     key = f'profile:{name}'
     raw = get_config_data('profiles')
     profiles = json.loads(raw) if raw else [{'name': '默认', 'key': 'demo', 'description': '默认频道方案'}]
     if any(p['key'] == key for p in profiles):
-        return jsonify({'error': '方案已存在'}), 400
+        return jsonify({'ok': False, 'error': '方案已存在'}), 400
     profiles.append({'name': name, 'key': key, 'description': description})
     set_config_data('profiles', json.dumps(profiles, ensure_ascii=False))
     if data.get('source') == 'copy':
@@ -282,7 +282,7 @@ def api_create_profile():
         set_config_data(key, demo or '')
     else:
         set_config_data(key, f'{name},#genre#\n')
-    return jsonify({'ok': True, 'key': key})
+    return jsonify({'ok': True, 'data': {'key': key}})
 
 
 @config_bp.route('/api/profiles/<name>', methods=['DELETE'])
@@ -291,10 +291,10 @@ def api_delete_profile(name):
     import json
     name = _sanitize_profile_name(name)
     if not name:
-        return jsonify({'error': '方案名称无效'}), 400
+        return jsonify({'ok': False, 'error': '方案名称无效'}), 400
     key = f'profile:{name}'
     if key == 'demo':
-        return jsonify({'error': '不能删除默认方案'}), 400
+        return jsonify({'ok': False, 'error': '不能删除默认方案'}), 400
     raw = get_config_data('profiles')
     profiles = json.loads(raw) if raw else []
     profiles = [p for p in profiles if p['key'] != key]

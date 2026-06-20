@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """web 包 — 扫描模块 API 蓝图。"""
+import logging
 from flask import Blueprint, request, jsonify
 
 import database as db
 import web.state as _state
 from web.app import _finite_number_or_none
+
+logger = logging.getLogger(__name__)
 
 scan_bp = Blueprint('scan', __name__)
 
@@ -18,7 +21,7 @@ def _ensure_scan_bridge():
     """确保扫描桥接层已初始化。"""
     scanner = _get_scanner()
     if scanner is None:
-        return None, jsonify({'error': '扫描模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
+        return None, jsonify({'ok': False, 'error': '扫描模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
     if scanner.bridge._loop is None or not scanner.bridge._loop.is_running():
         scanner.init_bridge()
     return scanner, None, None
@@ -38,7 +41,7 @@ def api_scan_trigger():
         provinces=data.get('provinces')
     )
     if 'error' in result:
-        return jsonify(result), 409
+        return jsonify({'ok': False, 'error': result['error']}), 409
     return jsonify({'ok': True, 'message': '扫描已启动'})
 
 
@@ -49,7 +52,7 @@ def api_scan_stop():
     if err:
         return err, code
     result = scanner.trigger_stop()
-    return jsonify(result)
+    return jsonify({'ok': True, 'data': result})
 
 
 @scan_bp.route('/api/scan/force-clear', methods=['POST'])
@@ -60,7 +63,7 @@ def api_scan_force_clear():
         db.clear_scan_progress()
         return jsonify({'ok': True, 'message': '扫描状态已清除'})
     result = scanner.force_clear_scan()
-    return jsonify(result)
+    return jsonify({'ok': True, 'data': result})
 
 
 @scan_bp.route('/api/scan/status', methods=['GET'])
@@ -68,9 +71,9 @@ def api_scan_status():
     """获取扫描实时进度。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'running': False, 'phase': 'idle', 'message': '扫描模块未安装'})
+        return jsonify({'ok': True, 'data': {'running': False, 'phase': 'idle', 'message': '扫描模块未安装'}})
     status = scanner.get_scan_status()
-    return jsonify(status)
+    return jsonify({'ok': True, 'data': status})
 
 
 @scan_bp.route('/api/scan/results', methods=['GET'])
@@ -78,10 +81,11 @@ def api_scan_results():
     """分页查询扫描结果。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'total': 0, 'items': []})
+        return jsonify({'ok': True, 'items': [], 'total': 0})
     scan_id = request.args.get('scan_id')
     page = request.args.get('page', 1, type=int)
     size = request.args.get('size', 50, type=int)
+    size = min(size, 200)
     category = request.args.get('category')
     province = request.args.get('province')
     search = request.args.get('search')
@@ -89,7 +93,7 @@ def api_scan_results():
         scan_id=scan_id, page=page, size=size,
         category=category, province=province, search=search
     )
-    return jsonify({'total': total, 'items': items, 'page': page, 'size': size})
+    return jsonify({'ok': True, 'items': items, 'total': total, 'page': page, 'size': size})
 
 
 @scan_bp.route('/api/scan/latest', methods=['GET'])
@@ -97,8 +101,8 @@ def api_scan_latest():
     """获取最新扫描记录。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify(None)
-    return jsonify(scanner.get_latest_scan())
+        return jsonify({'ok': True, 'data': None})
+    return jsonify({'ok': True, 'data': scanner.get_latest_scan()})
 
 
 @scan_bp.route('/api/scan/history', methods=['GET'])
@@ -106,9 +110,10 @@ def api_scan_history():
     """获取扫描历史。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify([])
+        return jsonify({'ok': True, 'items': [], 'total': 0})
     limit = request.args.get('limit', 50, type=int)
-    return jsonify(scanner.get_scan_history(limit=limit))
+    items = scanner.get_scan_history(limit=limit)
+    return jsonify({'ok': True, 'items': items, 'total': len(items)})
 
 
 @scan_bp.route('/api/scan/config', methods=['GET'])
@@ -117,10 +122,10 @@ def api_scan_config_get():
     try:
         from scanner_integration.config_bridge import get_scan_config
         cfg = get_scan_config()
-        return jsonify(cfg)
+        return jsonify({'ok': True, 'data': cfg})
     except Exception:
         from scanner_integration.config_bridge import DEFAULT_SCAN_CONFIG
-        return jsonify(DEFAULT_SCAN_CONFIG)
+        return jsonify({'ok': True, 'data': DEFAULT_SCAN_CONFIG})
 
 
 @scan_bp.route('/api/scan/config', methods=['POST'])
@@ -133,9 +138,9 @@ def api_scan_config_set():
         save_scan_config(data)
         init_key_manager()
         cfg = get_scan_config()
-        return jsonify({'ok': True, 'config': cfg})
+        return jsonify({'ok': True, 'data': cfg})
     except Exception as e:
-        return jsonify({'error': f'保存失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'保存失败: {e}'}), 500
 
 
 @scan_bp.route('/api/scan/keys', methods=['GET'])
@@ -153,23 +158,23 @@ def api_scan_keys_list():
             from scanner_integration.key_manager import check_all_quake_credits
             credits_info['quake'] = asyncio.run(check_all_quake_credits())
         except Exception as e:
-            print(f"[Credits] Quake 积分查询失败: {e}")
+            logger.warning(f"[Credits] Quake 积分查询失败: {e}")
             credits_info['quake'] = []
         try:
             import asyncio
             from scanner_integration.key_manager import check_all_hunter_credits
             credits_info['hunter'] = asyncio.run(check_all_hunter_credits())
         except Exception as e:
-            print(f"[Credits] Hunter 积分查询失败: {e}")
+            logger.warning(f"[Credits] Hunter 积分查询失败: {e}")
             credits_info['hunter'] = []
         try:
             import asyncio
             from scanner_integration.key_manager import check_all_daydaymap_credits
             credits_info['daydaymap'] = asyncio.run(check_all_daydaymap_credits())
         except Exception as e:
-            print(f"[Credits] DayDayMap 积分查询失败: {e}")
+            logger.warning(f"[Credits] DayDayMap 积分查询失败: {e}")
             credits_info['daydaymap'] = []
-        print(f"[Credits] results: hunter={credits_info.get('hunter')}, daydaymap={credits_info.get('daydaymap')}")
+        logger.info(f"[Credits] results: hunter={credits_info.get('hunter')}, daydaymap={credits_info.get('daydaymap')}")
         result = []
         for platform in ('quake', 'hunter', 'daydaymap'):
             keys = km.get_all_keys(platform)
@@ -187,9 +192,9 @@ def api_scan_keys_list():
                     'role_limit': _finite_number_or_none(ci.get('role_limit')),
                     'error': ci.get('error', ''),
                 })
-        return jsonify({'ok': True, 'keys': result})
+        return jsonify({'ok': True, 'data': result})
     except Exception as e:
-        return jsonify({'error': str(e)})
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @scan_bp.route('/api/scan/keys', methods=['POST'])
@@ -202,23 +207,23 @@ def api_scan_keys_add():
         platform = data.get('platform', '').strip()
         key = data.get('key', '').strip()
         if not platform or not key:
-            return jsonify({'error': '平台和 Key 不能为空'}), 400
+            return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
         if platform not in ('quake', 'hunter', 'daydaymap'):
-            return jsonify({'error': '不支持的平台'}), 400
+            return jsonify({'ok': False, 'error': '不支持的平台'}), 400
 
         cfg = get_scan_config()
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
         if key in keys_list:
-            return jsonify({'error': 'Key 已存在'}), 400
+            return jsonify({'ok': False, 'error': 'Key 已存在'}), 400
         keys_list.append(key)
         cfg[f'{platform}_api_keys'] = keys_list
         save_scan_config(cfg)
         init_key_manager()
         return jsonify({'ok': True, 'message': f'{platform} Key 已添加'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @scan_bp.route('/api/scan/keys', methods=['DELETE'])
@@ -231,7 +236,7 @@ def api_scan_keys_delete():
         platform = data.get('platform', '').strip()
         key = data.get('key', '').strip()
         if not platform or not key:
-            return jsonify({'error': '平台和 Key 不能为空'}), 400
+            return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
 
         cfg = get_scan_config()
         keys_list = cfg.get(f'{platform}_api_keys', [])
@@ -248,7 +253,7 @@ def api_scan_keys_delete():
         init_key_manager()
         return jsonify({'ok': True, 'message': 'Key 已删除'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @scan_bp.route('/api/scan/keys', methods=['PUT'])
@@ -262,7 +267,7 @@ def api_scan_keys_update():
         old_key = data.get('old_key', '').strip()
         new_key = data.get('new_key', '').strip()
         if not platform or not old_key or not new_key:
-            return jsonify({'error': '参数不完整'}), 400
+            return jsonify({'ok': False, 'error': '参数不完整'}), 400
         if old_key == new_key:
             return jsonify({'ok': True, 'message': 'Key 未变更'})
 
@@ -271,9 +276,9 @@ def api_scan_keys_update():
         if not isinstance(keys_list, list):
             keys_list = []
         if old_key not in keys_list:
-            return jsonify({'error': '原 Key 不存在'}), 400
+            return jsonify({'ok': False, 'error': '原 Key 不存在'}), 400
         if new_key in keys_list:
-            return jsonify({'error': '新 Key 已存在'}), 400
+            return jsonify({'ok': False, 'error': '新 Key 已存在'}), 400
         idx = keys_list.index(old_key)
         keys_list[idx] = new_key
         cfg[f'{platform}_api_keys'] = keys_list
@@ -283,7 +288,7 @@ def api_scan_keys_update():
         init_key_manager()
         return jsonify({'ok': True, 'message': 'Key 已更新'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @scan_bp.route('/api/scan/stats', methods=['GET'])
@@ -291,9 +296,9 @@ def api_scan_stats():
     """获取扫描结果统计。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'by_category': {}, 'by_province': {}})
+        return jsonify({'ok': True, 'data': {'by_category': {}, 'by_province': {}}})
     scan_id = request.args.get('scan_id')
-    return jsonify(scanner.get_scan_stats(scan_id=scan_id))
+    return jsonify({'ok': True, 'data': scanner.get_scan_stats(scan_id=scan_id)})
 
 
 # ─────────────── 持久化扫描结果 API ───────────────
@@ -304,7 +309,7 @@ def api_persistent_grouped():
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    return jsonify(scanner.get_persistent_grouped())
+    return jsonify({'ok': True, 'data': scanner.get_persistent_grouped()})
 
 
 @scan_bp.route('/api/scan/persistent/details', methods=['GET'])
@@ -315,10 +320,11 @@ def api_persistent_details():
         return err, code
     source_ip = request.args.get('source_ip', '')
     if not source_ip:
-        return jsonify({'error': 'source_ip is required'}), 400
+        return jsonify({'ok': False, 'error': 'source_ip is required'}), 400
     page = request.args.get('page', type=int)
     size = request.args.get('size', 50, type=int)
-    return jsonify(scanner.get_persistent_details(source_ip, page=page, size=size))
+    size = min(size, 200)
+    return jsonify({'ok': True, 'data': scanner.get_persistent_details(source_ip, page=page, size=size)})
 
 
 @scan_bp.route('/api/scan/persistent/stats', methods=['GET'])
@@ -327,7 +333,7 @@ def api_persistent_stats():
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    return jsonify(scanner.get_persistent_stats())
+    return jsonify({'ok': True, 'data': scanner.get_persistent_stats()})
 
 
 @scan_bp.route('/api/scan/persistent/manual-check', methods=['POST'])
@@ -336,7 +342,7 @@ def api_persistent_manual_check():
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    return jsonify(scanner.trigger_persistent_manual_check())
+    return jsonify({'ok': True, 'data': scanner.trigger_persistent_manual_check()})
 
 
 @scan_bp.route('/api/scan/persistent/<int:row_id>', methods=['DELETE'])
@@ -345,7 +351,7 @@ def api_persistent_delete(row_id):
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    return jsonify(scanner.delete_persistent_item(row_id))
+    return jsonify({'ok': True, 'data': scanner.delete_persistent_item(row_id)})
 
 
 # ─────────────── 检测记录 API ───────────────
@@ -355,7 +361,7 @@ def api_detection_logs():
     """获取定期检测日志。"""
     from database import get_detection_logs
     limit = request.args.get('limit', 200, type=int)
-    return jsonify(get_detection_logs(limit=limit))
+    return jsonify({'ok': True, 'data': get_detection_logs(limit=limit)})
 
 
 @scan_bp.route('/api/scan/detection/runs', methods=['GET'])
@@ -367,7 +373,7 @@ def api_detection_runs():
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    return jsonify(scanner.get_detection_runs(start, end, limit))
+    return jsonify({'ok': True, 'data': scanner.get_detection_runs(start, end, limit)})
 
 
 @scan_bp.route('/api/scan/detection/run/<cycle_id>/results', methods=['GET'])
@@ -378,7 +384,8 @@ def api_detection_run_results(cycle_id):
         return err, code
     page = request.args.get('page', type=int)
     size = request.args.get('size', 100, type=int)
-    return jsonify(scanner.get_detection_results(cycle_id, page=page, size=size))
+    size = min(size, 200)
+    return jsonify({'ok': True, 'data': scanner.get_detection_results(cycle_id, page=page, size=size)})
 
 
 @scan_bp.route('/api/scan/persistent/recheck', methods=['POST'])
@@ -392,7 +399,7 @@ def api_persistent_recheck():
     data = request.get_json(silent=True) or {}
     url = data.get('url')
     if not url:
-        return jsonify({'error': 'url is required'}), 400
+        return jsonify({'ok': False, 'error': 'url is required'}), 400
 
     async def _do_recheck():
         async with get_session(limit=5, timeout=10) as session:
@@ -415,9 +422,9 @@ def api_persistent_recheck():
         if err:
             return err, code
         result = scanner.bridge.run_sync(_do_recheck(), timeout=30)
-        return jsonify(result)
+        return jsonify({'ok': True, 'data': result})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @scan_bp.route('/api/scan/persistent/priority', methods=['POST'])
@@ -429,9 +436,9 @@ def api_persistent_priority():
     url = data.get('url')
     priority = data.get('priority', 0)
     if not url:
-        return jsonify({'error': 'url is required'}), 400
+        return jsonify({'ok': False, 'error': 'url is required'}), 400
     if priority not in (0, 1, 2):
-        return jsonify({'error': 'priority must be 0, 1, or 2'}), 400
+        return jsonify({'ok': False, 'error': 'priority must be 0, 1, or 2'}), 400
 
     try:
         conn = db._get_conn()
@@ -442,4 +449,4 @@ def api_persistent_priority():
         conn.commit()
         return jsonify({'ok': True})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e)}), 500

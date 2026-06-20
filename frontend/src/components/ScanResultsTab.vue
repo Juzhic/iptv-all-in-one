@@ -261,19 +261,15 @@ import {
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
   apiPersistentManualCheck, apiPersistentRecheck, apiPersistentPriority,
 } from '../api.js'
+import { useClipboard } from '../composables/useClipboard.js'
+import { platformLabel } from '../utils/platform.js'
+import { qualityTheme, qualityLabel } from '../utils/quality.js'
+import { formatDateShort } from '../utils/date.js'
 
-// ─── 复制工具 ───
+const { copyText: rawCopy } = useClipboard()
 async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    MessagePlugin.success('已复制')
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
-    document.body.removeChild(ta)
-    MessagePlugin.success('已复制')
-  }
+  await rawCopy(text)
+  MessagePlugin.success('已复制')
 }
 
 // ─── 视图模式 ───
@@ -470,42 +466,14 @@ function stabilityClass(v) {
   return 'stability-bad'
 }
 
-function qualityTheme(status) {
-  if (status === 'good') return 'success'
-  if (status === 'poor') return 'warning'
-  if (status === 'unreachable') return 'danger'
-  return 'default'
-}
-
-function qualityLabel(status) {
-  if (status === 'good') return '好'
-  if (status === 'poor') return '差'
-  if (status === 'unreachable') return '不可达'
-  return '待检测'
-}
+const formatDate = formatDateShort
 
 function qualityPct(status) {
   const t = persistentStats.value.total || 1
   return ((persistentStats.value[status] || 0) / t * 100).toFixed(1)
 }
 
-function platformLabel(platform) {
-  const map = {
-    'Quake 360': '🔍 Quake 360',
-    'Hunter': '🦅 Hunter 鹰图',
-    'DayDayMap': '🗺️ DayDayMap',
-    'ZHGX': '📡 ZHGX',
-    'JSMpeg': '📺 JSMpeg',
-    'Tvheadend': '📻 Tvheadend',
-    '未知': '❓ 未知平台',
-  }
-  return map[platform] || `📌 ${platform}`
-}
 
-function formatDate(s) {
-  if (!s) return '-'
-  return s.substring(0, 19)
-}
 
 // ─── 分组视图加载 ───
 async function loadGrouped() {

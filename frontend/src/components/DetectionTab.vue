@@ -73,7 +73,7 @@
                 <label>检测间隔（分钟）</label>
                 <span>每隔多久对持久化结果执行一轮健康检查。设为 0 暂停检测。</span>
               </div>
-              <t-input-number v-model="detCfg.detection_interval_minutes" :min="0" :step="10" class="field-control" />
+              <t-input-number v-model="detCfg.detection_interval_minutes" :min="0" :max="10080" :step="10" class="field-control" />
             </div>
 
             <div class="config-field">
@@ -81,7 +81,7 @@
                 <label>连续失败删除阈值</label>
                 <span>源连续检测失败几次后自动从结果池中删除。</span>
               </div>
-              <t-input-number v-model="detCfg.deletion_threshold" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="detCfg.deletion_threshold" :min="1" :max="100" :step="1" class="field-control" />
             </div>
 
             <div class="config-field">
@@ -105,7 +105,7 @@
             <t-button size="small" variant="outline" @click="detAutoScroll = !detAutoScroll">
               {{ detAutoScroll ? '暂停滚动' : '自动滚动' }}
             </t-button>
-            <t-button size="small" variant="outline" @click="detLogLines = []">清空</t-button>
+            <t-button size="small" variant="outline" @click="clearDetLogLines">清空</t-button>
           </div>
 
           <div class="detection-log-panel" ref="detLogPanelRef">
@@ -176,8 +176,8 @@
           </t-tag>
         </template>
         <template #quality_status="{ row }">
-          <t-tag :theme="detStatusTheme(row.quality_status)" size="small" variant="light">
-            {{ detStatusLabel(row.quality_status) }}
+          <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">
+            {{ qualityLabel(row.quality_status) }}
           </t-tag>
         </template>
         <template #op="{ row }">
@@ -199,9 +199,10 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
 import { usePolling } from '../composables/usePolling.js'
+import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
   apiDetectionRuns,
@@ -233,7 +234,26 @@ async function loadConfig() {
   }
 }
 
+function validateDetConfig() {
+  const errors = []
+  if (detCfg.detection_interval_minutes < 0 || detCfg.detection_interval_minutes > 10080) {
+    errors.push('检测间隔需在 0-10080 分钟之间')
+  }
+  if (detCfg.deletion_threshold < 1 || detCfg.deletion_threshold > 100) {
+    errors.push('连续失败删除阈值需在 1-100 之间')
+  }
+  if (detCfg.stable_channel_multiplier < 1 || detCfg.stable_channel_multiplier > 10) {
+    errors.push('稳定频道检测倍数需在 1-10 之间')
+  }
+  return errors
+}
+
 async function saveDetConfig() {
+  const errors = validateDetConfig()
+  if (errors.length) {
+    MessagePlugin.warning(errors[0])
+    return
+  }
   saving.value = true
   try {
     const res = await apiSaveScanConfig({ ...detCfg })
@@ -303,6 +323,17 @@ async function recheckChannel(url) {
   }
 }
 
+async function clearDetLogLines() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认清空',
+    body: '清空后日志将无法恢复，确认清空？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
+  detLogLines.value = []
+}
+
 function detLogClass(message) {
   if (/通过|完成|检测完成/.test(message)) return 'det-log-pass'
   if (/失败|错误|异常/.test(message)) return 'det-log-fail'
@@ -318,7 +349,7 @@ async function loadDetectionLogs() {
   } catch (_) { /* ignore */ }
 }
 
-const { start: startDetPoll, stop: stopDetPoll } = usePolling(loadDetectionLogs, 10000)
+const { start: startDetPoll, stop: stopDetPoll } = usePolling(loadDetectionLogs, 10000, { pauseWhenHidden: true })
 
 watch(detLogLines, () => {
   if (!detAutoScroll.value) return
@@ -462,18 +493,6 @@ async function openDetDetail(row) {
   detDetailQualityFilter.value = ''
   detDetailSortInfo.value = {}
   await loadDetDetail()
-}
-
-function detStatusTheme(status) {
-  if (status === 'good') return 'success'
-  if (status === 'poor') return 'warning'
-  if (status === 'unreachable') return 'danger'
-  return 'default'
-}
-
-function detStatusLabel(status) {
-  const map = { good: '正常', poor: '较差', unreachable: '不可达', pending: '待检测' }
-  return map[status] || status
 }
 
 function formatBytes(bytes) {

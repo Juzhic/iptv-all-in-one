@@ -25,17 +25,12 @@
         </div>
         <t-progress :percentage="progressPct" />
       </div>
-      <div class="toolbar-row">
-        <t-button :theme="autoScroll ? 'primary' : 'default'" variant="outline" size="small" @click="autoScroll = !autoScroll">自动滚动</t-button>
-        <t-button variant="outline" size="small" @click="scanLogLines = []">清空日志</t-button>
-      </div>
-      <div class="log-panel" ref="logPanelRef">
-        <div v-for="(line, index) in scanLogLines" :key="index" class="log-line">
-          <span class="log-time">[{{ line.time || '' }}]</span>
-          <span :class="logClass(line.msg)">{{ line.msg || '' }}</span>
-        </div>
-        <div v-if="!scanLogLines.length" class="log-empty">等待扫描开始...</div>
-      </div>
+      <LogPanel
+        :entries="scanLogLines"
+        :show-count="false"
+        empty-text="等待扫描开始..."
+        @clear="clearScanLogLines"
+      />
     </t-card>
 
     <div class="summary-head">
@@ -69,9 +64,10 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
+import LogPanel from './LogPanel.vue'
 
 const scanRunning = ref(false)
 const scanStarting = ref(false)
@@ -83,8 +79,6 @@ const progressVisible = ref(false)
 const progressLabel = ref('')
 const progressPct = ref(0)
 const scanLogLines = ref([])
-const logPanelRef = ref(null)
-const autoScroll = ref(true)
 const scanSummary = ref(createEmptySummary())
 
 let lastLogSeq = 0
@@ -136,12 +130,6 @@ function buildPhaseText(phase, message) {
   return `${label} · ${message}`
 }
 
-function logClass(msg) {
-  if (/发现|频道|成功|完成|存活/.test(msg || '')) return 'log-msg-pass'
-  if (/失败|错误|超时|异常|终止/.test(msg || '')) return 'log-msg-fail'
-  return 'log-msg-info'
-}
-
 function appendLogs(lines) {
   if (!Array.isArray(lines) || !lines.length) return
   lines.forEach((line) => {
@@ -154,12 +142,6 @@ function appendLogs(lines) {
   const MAX_LOG_LINES = 2000
   if (scanLogLines.value.length > MAX_LOG_LINES) {
     scanLogLines.value = scanLogLines.value.slice(-1500)
-  }
-  if (autoScroll.value) {
-    nextTick(() => {
-      const el = logPanelRef.value
-      if (el) el.scrollTop = el.scrollHeight
-    })
   }
 }
 
@@ -281,7 +263,7 @@ function formatMetric(value) {
   return String(value ?? 0)
 }
 
-const { start: startPoll, stop: stopPoll } = usePolling(refreshStatus, 2000)
+const { start: startPoll, stop: stopPoll } = usePolling(refreshStatus, 2000, { pauseWhenHidden: true })
 
 async function triggerScan() {
   scanStarting.value = true
@@ -311,6 +293,13 @@ async function triggerScan() {
 }
 
 async function stopScan() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认停止',
+    body: '停止后当前扫描进度将丢失，确认停止？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
   scanStopping.value = true
   try {
     const res = await apiScanStop()
@@ -328,6 +317,13 @@ async function stopScan() {
 }
 
 async function forceClear() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认清除',
+    body: '强制清除将重置扫描状态，确认继续？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
   scanClearing.value = true
   try {
     const res = await apiScanForceClear()
@@ -346,6 +342,17 @@ async function forceClear() {
   } finally {
     scanClearing.value = false
   }
+}
+
+async function clearScanLogLines() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认清空',
+    body: '清空后日志将无法恢复，确认清空？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
+  scanLogLines.value = []
 }
 
 onMounted(async () => {
@@ -409,55 +416,6 @@ onMounted(async () => {
   font-size: 12px;
   font-weight: 700;
   color: #2563eb;
-}
-
-.toolbar-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
-  margin-bottom: 8px;
-}
-
-.log-panel {
-  height: 400px;
-  overflow-y: auto;
-  padding: 12px;
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at top right, rgba(124, 58, 237, 0.18), transparent 34%),
-    linear-gradient(160deg, #161822 0%, #1e2230 100%);
-  color: #cdd6f4;
-  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.7;
-  scroll-behavior: smooth;
-}
-
-.log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.log-empty {
-  color: #94a3b8;
-}
-
-.log-time {
-  margin-right: 8px;
-  color: #93c5fd;
-}
-
-.log-msg-pass {
-  color: #86efac;
-}
-
-.log-msg-fail {
-  color: #fda4af;
-}
-
-.log-msg-info {
-  color: #d8b4fe;
 }
 
 .summary-head {

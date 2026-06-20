@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     'run_interval_minutes': 60,
     'include_scan_results_in_test': False,
     'logo_base_url': 'https://www.xn--rgv465a.top/tvlogo',
-    'epg_url': 'http://192.168.3.61:8080/epg/epg.gz',
+    'epg_url': '',
 }
 
 
@@ -1343,7 +1343,7 @@ if __name__ == "__main__":
         print(f"已从 history.json 迁移 {migrated} 轮历史数据到 SQLite")
 
     if not load_subscribe_urls():
-        print("订阅源为空，请先运行 python web.py 在后台配置订阅源")
+        print("订阅源为空，请先运行 python -m web 在后台配置订阅源")
     elif run_mode == 'once':
         run_test_cycle()
 

@@ -161,12 +161,14 @@ def _scheduler_loop():
                 if current_cfg.get('run_mode', 'once') != run_mode:
                     continue
 
-            print(f"\n{'#' * 60}")
-            print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"{'#' * 60}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"{'#' * 60}")
+            logger.info(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"{'#' * 60}")
             run_token = _start_test_background(trigger_source='scheduler')
             if run_token is None:
-                print("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
+                logger.warning("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
                 continue
 
             if run_mode == 'interval':

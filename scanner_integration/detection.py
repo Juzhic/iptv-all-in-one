@@ -140,6 +140,14 @@ class DetectionManager:
         ok_count = 0
         fail_count = 0
         results_list = []
+        updates_to_apply = []
+
+        # Pre-fetch consecutive_failures for local tracking
+        all_urls = [item['url'] for item in all_items]
+        try:
+            cf_cache = _db.get_consecutive_failures_batch(all_urls)
+        except Exception:
+            cf_cache = {}
 
         # 按 source_ip (URL host) 分组，实现熔断机制
         groups = defaultdict(list)
@@ -160,12 +168,14 @@ class DetectionManager:
                     name = item.get('name', '')
 
                     if not url.startswith(('http://', 'https://')):
-                        _db.update_persistent_check(url, ok=False)
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
                         fail_count += 1
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': False,
                             'http_status': 0, 'response_time_ms': 0,
-                            'response_size_bytes': 0, 'consecutive_failures': 0,
+                            'response_size_bytes': 0,
+                            'consecutive_failures': cf_cache.get(url, 0),
                             'quality_status': 'unreachable',
                         })
                         return False
@@ -175,34 +185,36 @@ class DetectionManager:
                         await asyncio.sleep(2)
                         perf = await deep_check(session, url)
                     if perf is not None:
-                        _db.update_persistent_check(
-                            url, ok=True,
-                            stability=perf['stability'],
-                            delay=perf['delay'],
-                            bandwidth=perf['bandwidth'],
-                            jitter=perf.get('jitter'),
-                        )
+                        updates_to_apply.append({
+                            'url': url, 'ok': True, 'name': name,
+                            'stability': perf['stability'],
+                            'delay': perf['delay'],
+                            'bandwidth': perf['bandwidth'],
+                            'jitter': perf.get('jitter'),
+                        })
                         ok_count += 1
-                        psr = _db.get_persistent_by_url(url)
+                        quality_status = _db._evaluate_quality(
+                            perf['stability'], perf['delay'], perf['bandwidth']
+                        )
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': True,
                             'http_status': 200,
                             'response_time_ms': perf['delay'],
                             'response_size_bytes': 0,
                             'consecutive_failures': 0,
-                            'quality_status': psr['quality_status'] if psr else 'good',
+                            'quality_status': quality_status,
                         })
                         return True
                     else:
-                        _db.update_persistent_check(url, ok=False)
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
                         fail_count += 1
-                        psr = _db.get_persistent_by_url(url)
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': False,
                             'http_status': 0, 'response_time_ms': 0,
                             'response_size_bytes': 0,
-                            'consecutive_failures': psr['consecutive_failures'] if psr else 0,
-                            'quality_status': psr['quality_status'] if psr else 'unreachable',
+                            'consecutive_failures': cf_cache.get(url, 0),
+                            'quality_status': 'unreachable',
                         })
                         return False
 
@@ -224,13 +236,13 @@ class DetectionManager:
                     for item in rest:
                         url = item['url']
                         name = item.get('name', '')
-                        _db.update_persistent_check(url, ok=False)
-                        psr = _db.get_persistent_by_url(url)
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': False,
                             'http_status': 0, 'response_time_ms': 0,
                             'response_size_bytes': 0,
-                            'consecutive_failures': psr['consecutive_failures'] if psr else 0,
+                            'consecutive_failures': cf_cache.get(url, 0),
                             'quality_status': 'circuit_breaker_skipped',
                         })
                         self._log(
@@ -242,6 +254,9 @@ class DetectionManager:
                         await check_one(item)
 
             await asyncio.gather(*[check_group(host, items) for host, items in groups.items()])
+
+        # 批量更新所有检测结果
+        _db.batch_update_persistent_checks(updates_to_apply)
 
         # 删除达到阈值的记录
         deleted = _db.delete_persistent_by_threshold(threshold)

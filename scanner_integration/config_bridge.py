@@ -86,6 +86,7 @@ DEFAULT_SCAN_CONFIG = {
 }
 
 _CONFIG_CACHE = None
+_CONFIG_CACHE_MTIME = None
 
 
 def _normalize_key_list(cfg, platform, *legacy_single_names):
@@ -175,10 +176,18 @@ def _normalize_scan_config(raw_cfg):
 
 
 def get_scan_config():
-    """从数据库读取扫描配置，合并默认值后返回 dict。"""
-    global _CONFIG_CACHE
-    from database import get_config_data
-    raw = get_config_data('scan_config')
+    """从数据库读取扫描配置，合并默认值后返回 dict。使用缓存机制避免重复读取。"""
+    global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
+    from database import get_config_data_with_mtime
+    
+    # 获取配置内容和更新时间
+    raw, current_mtime = get_config_data_with_mtime('scan_config')
+    
+    # 如果配置未变化，直接返回缓存
+    if _CONFIG_CACHE is not None and _CONFIG_CACHE_MTIME == current_mtime:
+        return _CONFIG_CACHE
+    
+    # 配置有变化，重新解析
     if raw:
         try:
             loaded = json.loads(raw)
@@ -186,14 +195,16 @@ def get_scan_config():
             loaded = {}
     else:
         loaded = {}
+    
     cfg = _normalize_scan_config(loaded)
     _CONFIG_CACHE = cfg
+    _CONFIG_CACHE_MTIME = current_mtime
     return cfg
 
 
 def save_scan_config(cfg):
     """保存扫描配置到数据库。"""
-    global _CONFIG_CACHE
+    global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
     from database import set_config_data
     current = get_scan_config()
     merged = dict(current)
@@ -209,5 +220,7 @@ def save_scan_config(cfg):
     persisted.pop('fofa_key', None)
 
     set_config_data('scan_config', json.dumps(persisted, ensure_ascii=False, indent=2))
-    _CONFIG_CACHE = normalized
+    # 清除缓存，下次读取时会重新加载
+    _CONFIG_CACHE = None
+    _CONFIG_CACHE_MTIME = None
 

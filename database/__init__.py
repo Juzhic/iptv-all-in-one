@@ -14,6 +14,7 @@ from database.db import (  # noqa: F401
     DEFAULT_DEMO,
     # 配置
     get_config_data,
+    get_config_data_with_mtime,
     set_config_data,
     get_config,
     save_config,
@@ -71,6 +72,8 @@ from database.db import (  # noqa: F401
     get_persistent_grouped,
     get_persistent_by_url,
     update_persistent_check,
+    batch_update_persistent_checks,
+    get_consecutive_failures_batch,
     delete_persistent_by_threshold,
     delete_persistent_by_id,
     get_persistent_for_test,

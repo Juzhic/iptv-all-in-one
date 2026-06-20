@@ -94,6 +94,12 @@ export function apiGetConfig() {
 export function apiSaveConfig(data) {
   return postJSON('/api/config', data)
 }
+export function apiExportConfig() {
+  return fetchJSON('/api/config/export')
+}
+export function apiImportConfig(data) {
+  return postJSON('/api/config/import', data)
+}
 
 // ─── 数据文件 ───
 export function apiGetText(key) {

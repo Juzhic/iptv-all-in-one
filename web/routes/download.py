@@ -14,12 +14,12 @@ download_bp = Blueprint('download', __name__)
 def api_download(fmt):
     """下载结果文件（从数据库动态生成）。"""
     if fmt not in ('txt', 'm3u'):
-        return jsonify({'error': '格式仅支持 txt 或 m3u'}), 400
+        return jsonify({'ok': False, 'error': '格式仅支持 txt 或 m3u'}), 400
 
     latest_run = get_latest_run()
     passed = get_latest_passed_results()
     if not passed:
-        return jsonify({'error': '暂无通过的频道数据'}), 404
+        return jsonify({'ok': False, 'error': '暂无通过的频道数据'}), 404
     fallback_update_time = (latest_run or {}).get('finished_at')
 
     if fmt == 'txt':

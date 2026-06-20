@@ -98,7 +98,7 @@ def parse_h264_resolution(data: bytes):
         width = (pic_width_in_mbs + 1) * 16
         height = (pic_height_in_mbs + 1) * 16 * (2 - frame_mbs_only_flag)
         return width, height
-    except:
+    except Exception:
         return None, None
 
 async def get_video_info_light(url):
@@ -110,7 +110,7 @@ async def get_video_info_light(url):
         w, h = parse_h264_resolution(data)
         if w and h:
             return (f"{w}×{h}", "h264")
-    except:
+    except Exception:
         pass
     return await get_video_info(url)
 
@@ -165,7 +165,7 @@ def filter_hd(channels, min_width=MIN_WIDTH, min_height=MIN_HEIGHT, drop_unknown
                     hd.append(c)
                 else:
                     dropped += 1
-            except:
+            except Exception:
                 if drop_unknown:
                     dropped += 1
                 else:
@@ -191,7 +191,7 @@ async def fast_check_with_fallback(session, url):
                 async with session.head(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT), allow_redirects=True) as r:
                     if r.status == 200:
                         return True
-            except:
+            except Exception:
                 pass
             try:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT + 2), allow_redirects=True) as r:
@@ -203,7 +203,7 @@ async def fast_check_with_fallback(session, url):
                         if total >= 4096:
                             return True
                     return total > 0
-            except:
+            except Exception:
                 pass
         return False
 
@@ -421,5 +421,5 @@ async def quick_stream_check(session, url):
                 if total >= 4096:
                     return True
             return total > 0
-    except:
+    except Exception:
         return False

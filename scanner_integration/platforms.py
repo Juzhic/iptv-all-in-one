@@ -12,8 +12,7 @@ import socket
 
 from . import config_bridge
 from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, HUNTER_QUERY, DAYDAYMAP_QUERY, FOFA_QUERY
-from .channel_utils import resolve_name, auto_classify, is_blacklisted, is_cctv_paid, normalize_cctv_name, classify_channel_full
-from .geo_data import extract_province_from_name, CITY_TO_PROVINCE, normalize_province
+from .channel_utils import is_blacklisted, normalize_cctv_name, classify_channel_full
 from .network import global_sem, get_session
 from .logger_bridge import logger
 

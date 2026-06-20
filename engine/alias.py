@@ -11,19 +11,31 @@ _alias_lock = threading.RLock()
 _name_to_canonical = {}
 _regex_aliases = []
 _canonical_to_aliases = {}
+_alias_cache_mtime = None
 
 
 def load_aliases():
     """
     从数据库读取频道别名，解析并缓存。
     返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
+    使用缓存机制避免重复解析。
     """
-    global _name_to_canonical, _regex_aliases, _canonical_to_aliases
-    from database import get_config_data
-    content = get_config_data('alias')
+    global _name_to_canonical, _regex_aliases, _canonical_to_aliases, _alias_cache_mtime
+    from database import get_config_data_with_mtime
+    
+    # 获取配置内容和更新时间
+    content, current_mtime = get_config_data_with_mtime('alias')
+    
+    # 如果配置未变化，直接返回缓存
+    with _alias_lock:
+        if _alias_cache_mtime is not None and _alias_cache_mtime == current_mtime:
+            return _canonical_to_aliases, _name_to_canonical, _regex_aliases
+    
+    # 配置有变化，重新解析
     canonical_to_aliases = {}
     name_to_canonical = {}
     regex_aliases = []
+    
     for line in content.split('\n'):
         line = line.strip()
         if not line or line.startswith('#'):
@@ -43,11 +55,14 @@ def load_aliases():
                     continue
             else:
                 name_to_canonical[alias] = canonical
+    
     # 写入模块缓存
     with _alias_lock:
         _canonical_to_aliases = canonical_to_aliases
         _name_to_canonical = name_to_canonical
         _regex_aliases = regex_aliases
+        _alias_cache_mtime = current_mtime
+    
     return canonical_to_aliases, name_to_canonical, regex_aliases
 
 

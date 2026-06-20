@@ -580,6 +580,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_results_channel ON run_results(channel);
         CREATE INDEX IF NOT EXISTS idx_results_run_passed ON run_results(run_id, passed);
         CREATE INDEX IF NOT EXISTS idx_results_quality ON run_results(quality_score);
+        CREATE INDEX IF NOT EXISTS idx_results_run_channel ON run_results(run_id, channel);
         CREATE INDEX IF NOT EXISTS idx_runs_finished_at ON runs(finished_at);
 
         CREATE TABLE IF NOT EXISTS config_data (
@@ -660,6 +661,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_scan_results_province ON scan_results(province);
         CREATE INDEX IF NOT EXISTS idx_scan_results_name ON scan_results(name);
         CREATE INDEX IF NOT EXISTS idx_scan_results_scan_url ON scan_results(scan_id, url);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_results_unique ON scan_results(scan_id, url);
         CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at);
 
         CREATE TABLE IF NOT EXISTS scan_progress (
@@ -715,6 +717,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_psr_failures ON persistent_scan_results(consecutive_failures);
         CREATE INDEX IF NOT EXISTS idx_psr_last_checked ON persistent_scan_results(last_checked_at);
         CREATE INDEX IF NOT EXISTS idx_psr_deleted_at ON persistent_scan_results(deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_psr_deleted_src ON persistent_scan_results(deleted_at, source_ip);
+        CREATE INDEX IF NOT EXISTS idx_psr_deleted_quality ON persistent_scan_results(deleted_at, quality_status);
+        CREATE INDEX IF NOT EXISTS idx_psr_deleted_platform ON persistent_scan_results(deleted_at, platform);
 
         CREATE TABLE IF NOT EXISTS detection_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -754,6 +759,7 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_det_results_cycle ON detection_results(cycle_id);
         CREATE INDEX IF NOT EXISTS idx_det_results_cycle_ok ON detection_results(cycle_id, check_ok);
+        CREATE INDEX IF NOT EXISTS idx_det_results_url ON detection_results(url);
 
         CREATE TABLE IF NOT EXISTS quality_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -772,6 +778,7 @@ def init_db():
     """)
     _ensure_run_results_columns(conn)
     _ensure_scan_results_columns(conn)
+    _ensure_scan_logs_level_column(conn)
     _ensure_persistent_deleted_at_column(conn)
     _ensure_persistent_jitter_column(conn)
     conn.commit()
@@ -824,6 +831,14 @@ def _ensure_scan_results_columns(conn):
     existing = {row['name'] for row in rows}
     if 'platform' not in existing:
         conn.execute("ALTER TABLE scan_results ADD COLUMN platform TEXT DEFAULT ''")
+
+
+def _ensure_scan_logs_level_column(conn):
+    """为旧数据库补齐 scan_logs.level 字段。"""
+    rows = conn.execute("PRAGMA table_info(scan_logs)").fetchall()
+    existing = {row['name'] for row in rows}
+    if 'level' not in existing:
+        conn.execute("ALTER TABLE scan_logs ADD COLUMN level TEXT DEFAULT 'INFO'")
 
 
 def _ensure_persistent_deleted_at_column(conn):
@@ -1485,6 +1500,19 @@ def get_config_data(key):
         (key,)
     ).fetchone()
     return _decode_config_content(key, row['content']) if row else ''
+
+
+def get_config_data_with_mtime(key):
+    """获取配置数据内容及其更新时间。返回 (content, updated_at) 元组。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT CAST(content AS BLOB) AS content, updated_at FROM config_data WHERE key = ?",
+        (key,)
+    ).fetchone()
+    if row:
+        content = _decode_config_content(key, row['content'])
+        return content, row['updated_at']
+    return '', None
 
 
 def set_config_data(key, content):
@@ -2446,6 +2474,118 @@ def update_persistent_check(url, ok, stability=None, delay=None,
     except Exception:
         pass
 
+
+def batch_update_persistent_checks(updates):
+    """批量更新多条持久化结果的检测状态，减少 commit 次数。
+
+    Args:
+        updates: list of dict, 每个 dict 包含:
+            url (str): 必须
+            ok (bool): 必须
+            name (str): 可选，用于质量历史记录
+            stability, delay, bandwidth, jitter, resolution, codec: 可选 (ok=True 时使用)
+    """
+    if not updates:
+        return
+
+    conn = _get_conn()
+    now = now_str()
+
+    ok_items = [u for u in updates if u.get('ok')]
+    fail_items = [u for u in updates if not u.get('ok')]
+
+    if fail_items:
+        conn.executemany(
+            """UPDATE persistent_scan_results
+               SET consecutive_failures=consecutive_failures+1,
+                   last_checked_at=?, quality_status='unreachable'
+               WHERE url=? AND deleted_at IS NULL""",
+            [(now, u['url']) for u in fail_items]
+        )
+
+    if ok_items:
+        urls = [u['url'] for u in ok_items]
+        placeholders = ','.join(['?'] * len(urls))
+        old_rows = conn.execute(
+            f"SELECT url, stability, delay, bandwidth, jitter FROM persistent_scan_results "
+            f"WHERE url IN ({placeholders}) AND deleted_at IS NULL",
+            urls
+        ).fetchall()
+        old_map = {row['url']: dict(row) for row in old_rows}
+
+        alpha = 0.3
+        update_params = []
+        history_params = []
+
+        for u in ok_items:
+            url = u['url']
+            old = old_map.get(url, {})
+            stability = u.get('stability')
+            delay = u.get('delay')
+            bandwidth = u.get('bandwidth')
+            jitter = u.get('jitter')
+            resolution = u.get('resolution')
+            codec = u.get('codec')
+            name = u.get('name')
+
+            old_stability = old.get('stability')
+            if stability is None:
+                stability = old_stability
+                if delay is None:
+                    delay = old.get('delay')
+                if bandwidth is None:
+                    bandwidth = old.get('bandwidth')
+            elif old_stability is not None:
+                try:
+                    stability = int(alpha * stability + (1 - alpha) * old_stability)
+                except (TypeError, ValueError):
+                    pass
+
+            quality = _evaluate_quality(stability, delay, bandwidth)
+            update_params.append((
+                now, quality, stability, delay, bandwidth,
+                jitter, resolution, codec, url
+            ))
+            history_params.append(
+                (url, name, stability, delay, bandwidth, jitter, quality, 'detection', now)
+            )
+
+        conn.executemany(
+            """UPDATE persistent_scan_results
+               SET consecutive_failures=0, last_checked_at=?,
+                   quality_status=?, validated=1,
+                   stability=COALESCE(?, stability),
+                   delay=COALESCE(?, delay),
+                   bandwidth=COALESCE(?, bandwidth),
+                   jitter=COALESCE(?, jitter),
+                   resolution=COALESCE(?, resolution),
+                   codec=COALESCE(?, codec)
+               WHERE url=? AND deleted_at IS NULL""",
+            update_params
+        )
+
+        conn.executemany(
+            """INSERT INTO quality_history
+               (url, name, stability, delay, bandwidth, jitter, quality_status, source, recorded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            history_params
+        )
+
+    conn.commit()
+
+
+def get_consecutive_failures_batch(urls):
+    """批量获取多条 URL 的 consecutive_failures。返回 {url: int} 字典。"""
+    if not urls:
+        return {}
+    conn = _get_conn()
+    placeholders = ','.join(['?'] * len(urls))
+    rows = conn.execute(
+        f"SELECT url, consecutive_failures FROM persistent_scan_results "
+        f"WHERE url IN ({placeholders}) AND deleted_at IS NULL",
+        urls
+    ).fetchall()
+    return {row['url']: row['consecutive_failures'] for row in rows}
 
 
 def _evaluate_quality(stability, delay, bandwidth):

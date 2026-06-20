@@ -37,7 +37,7 @@ def api_get_runs():
     start = request.args.get('start', '')
     end = request.args.get('end', '')
     runs = get_run_history(start_date=start or None, end_date=end or None)
-    return jsonify(runs)
+    return jsonify({'ok': True, 'items': runs, 'total': len(runs)})
 
 
 @history_bp.route('/api/run/<run_id>', methods=['GET'])
@@ -45,8 +45,8 @@ def api_get_run(run_id):
     """获取单轮测试详情。"""
     detail = get_run_detail(run_id)
     if not detail:
-        return jsonify({'error': '未找到该轮记录'}), 404
-    return jsonify(detail)
+        return jsonify({'ok': False, 'error': '未找到该轮记录'}), 404
+    return jsonify({'ok': True, 'data': detail})
 
 
 @history_bp.route('/api/run/<run_id>/channels', methods=['GET'])
@@ -54,8 +54,9 @@ def api_get_run_channels(run_id):
     """获取单轮测试按频道分组的详情，含数据来源平台。"""
     page = request.args.get('page', type=int)
     size = request.args.get('size', 20, type=int)
+    size = min(size, 200)
     summary = get_channel_summary_with_source(run_id, page=page, size=size)
-    return jsonify(summary)
+    return jsonify({'ok': True, 'data': summary})
 
 
 @history_bp.route('/api/run/<run_id>', methods=['DELETE'])
@@ -70,7 +71,7 @@ def api_get_run_logs(run_id):
     """获取指定轮次的运行日志。"""
     limit = request.args.get('limit', 0, type=int)
     payload = get_run_logs(run_id, limit=limit if limit and limit > 0 else None)
-    return jsonify(payload)
+    return jsonify({'ok': True, 'data': payload})
 
 
 # ─────────────── 测试对比 API ───────────────
@@ -81,11 +82,11 @@ def api_compare_runs():
     run_a = request.args.get('run_a', '').strip()
     run_b = request.args.get('run_b', '').strip()
     if not run_a or not run_b:
-        return jsonify({'error': '请提供 run_a 和 run_b 参数'}), 400
+        return jsonify({'ok': False, 'error': '请提供 run_a 和 run_b 参数'}), 400
     result = compare_runs(run_a, run_b)
     if result is None:
-        return jsonify({'error': '未找到指定轮次'}), 404
-    return jsonify(result)
+        return jsonify({'ok': False, 'error': '未找到指定轮次'}), 404
+    return jsonify({'ok': True, 'data': result})
 
 
 # ─────────────── 订阅源质量评分 API ───────────────
@@ -109,11 +110,11 @@ def api_get_sources():
     """获取最新一轮测试中各订阅源的质量评分。"""
     run = get_latest_run()
     if not run:
-        return jsonify({'sources': [], 'last_updated': None})
+        return jsonify({'ok': True, 'data': {'sources': [], 'last_updated': None}})
 
     results = run.get('results', [])
     if not results:
-        return jsonify({'sources': [], 'last_updated': run.get('finished_at')})
+        return jsonify({'ok': True, 'data': {'sources': [], 'last_updated': run.get('finished_at')}})
 
     template_total = _count_template_channels()
 
@@ -174,7 +175,7 @@ def api_get_sources():
         })
 
     sources.sort(key=lambda s: s['score'], reverse=True)
-    return jsonify({'sources': sources, 'last_updated': run.get('finished_at')})
+    return jsonify({'ok': True, 'data': {'sources': sources, 'last_updated': run.get('finished_at')}})
 
 
 # ─────────────── 频道质量趋势 API ───────────────
@@ -231,4 +232,4 @@ def api_channel_trend(name):
             })
 
     trend.reverse()
-    return jsonify({'channel': name, 'trend': trend})
+    return jsonify({'ok': True, 'data': {'channel': name, 'trend': trend}})
