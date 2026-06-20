@@ -13,6 +13,16 @@
       </t-space>
     </t-card>
 
+    <!-- 对比按钮 -->
+    <div v-if="selectedRowKeys.length > 0" style="margin-bottom:8px">
+      <t-space>
+        <t-button theme="primary" size="small" :disabled="selectedRowKeys.length !== 2" @click="openCompare">
+          对比选中 ({{ selectedRowKeys.length }}/2)
+        </t-button>
+        <t-button variant="outline" size="small" @click="selectedRowKeys = []">取消选择</t-button>
+      </t-space>
+    </div>
+
     <!-- 历史表格 -->
     <t-table
       :columns="columns"
@@ -22,6 +32,7 @@
       :expand-icon="true"
       :expanded-row-keys="expandedKeys"
       @expand-change="onExpandChange"
+      :row-selection="{ selectedRowKeys, onChange: onSelectionChange }"
       size="small"
     >
       <template #summary_pass_rate="{ row }">
@@ -176,13 +187,89 @@
         <div v-if="!filteredLogs.length" style="color:var(--td-text-color-placeholder);padding:8px">暂无日志</div>
       </div>
     </t-dialog>
+
+    <!-- 对比弹窗 -->
+    <t-dialog
+      v-model:visible="compareVisible"
+      header="测试结果对比"
+      :footer="false"
+      width="1200px"
+      destroy-on-close
+    >
+      <div v-if="compareLoading" style="text-align:center;padding:40px;color:var(--td-text-color-placeholder)">加载中...</div>
+      <div v-else-if="compareData">
+        <!-- 顶部：两个 run 概览 -->
+        <t-row :gutter="16" style="margin-bottom:16px">
+          <t-col :span="6">
+            <t-card size="small" header="A (基准)">
+              <div style="font-size:13px;line-height:2">
+                <div>时间：{{ compareData.run_a.finished_at }}</div>
+                <div>通过率：{{ compareData.run_a.pass_rate }}%</div>
+                <div>频道覆盖：{{ compareData.run_a.unique_channels_passed }}/{{ compareData.run_a.unique_channels_total }}</div>
+                <div>耗时：{{ Math.round(compareData.run_a.duration_seconds / 60) }} 分钟</div>
+              </div>
+            </t-card>
+          </t-col>
+          <t-col :span="6">
+            <t-card size="small" header="B (比较)">
+              <div style="font-size:13px;line-height:2">
+                <div>时间：{{ compareData.run_b.finished_at }}</div>
+                <div>通过率：{{ compareData.run_b.pass_rate }}%</div>
+                <div>频道覆盖：{{ compareData.run_b.unique_channels_passed }}/{{ compareData.run_b.unique_channels_total }}</div>
+                <div>耗时：{{ Math.round(compareData.run_b.duration_seconds / 60) }} 分钟</div>
+              </div>
+            </t-card>
+          </t-col>
+        </t-row>
+
+        <!-- 中间：delta 标签 -->
+        <t-space :size="12" style="margin-bottom:16px">
+          <t-tag theme="success" variant="light">改善 {{ compareData.summary.channels_improved }}</t-tag>
+          <t-tag theme="danger" variant="light">退步 {{ compareData.summary.channels_regressed }}</t-tag>
+          <t-tag theme="primary" variant="light">新增 {{ compareData.summary.new_channels }}</t-tag>
+          <t-tag variant="light">消失 {{ compareData.summary.removed_channels }}</t-tag>
+          <t-tag variant="outline">通过率 {{ fmtDelta(compareData.summary.pass_rate_delta, '%') }}</t-tag>
+          <t-tag variant="outline">带宽 {{ fmtDelta(compareData.summary.avg_bandwidth_delta, ' MB/s') }}</t-tag>
+          <t-tag variant="outline">延迟 {{ fmtDelta(compareData.summary.avg_latency_delta, ' ms') }}</t-tag>
+        </t-space>
+
+        <!-- 底部：频道级对比表 -->
+        <t-table
+          :columns="compareChannelColumns"
+          :data="compareData.channels"
+          :bordered="false"
+          size="small"
+          row-key="channel"
+          :pagination="{ pageSize: 30 }"
+          max-height="480"
+        >
+          <template #a_passed="{ row }">
+            <t-tag v-if="row.a_passed != null" :theme="row.a_passed ? 'success' : 'danger'" size="small">{{ row.a_passed ? '是' : '否' }}</t-tag>
+            <span v-else>-</span>
+          </template>
+          <template #b_passed="{ row }">
+            <t-tag v-if="row.b_passed != null" :theme="row.b_passed ? 'success' : 'danger'" size="small">{{ row.b_passed ? '是' : '否' }}</t-tag>
+            <span v-else>-</span>
+          </template>
+          <template #a_bandwidth="{ row }">{{ fmtNum(row.a_bandwidth, 2) }}</template>
+          <template #b_bandwidth="{ row }">{{ fmtNum(row.b_bandwidth, 2) }}</template>
+          <template #a_score="{ row }">{{ fmtNum(row.a_score) }}</template>
+          <template #b_score="{ row }">{{ fmtNum(row.b_score) }}</template>
+          <template #status="{ row }">
+            <t-tag :theme="statusMap[row.status]?.theme || 'default'" size="small" variant="light">
+              {{ statusMap[row.status]?.label || row.status }}
+            </t-tag>
+          </template>
+        </t-table>
+      </div>
+    </t-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
-import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs } from '../api.js'
+import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
 
 const props = defineProps({ initialRuns: Array })
 const emit = defineEmits(['update-overview'])
@@ -215,6 +302,12 @@ const logVisible = ref(false)
 const logMeta = ref('')
 const logEntries = ref([])
 const logSearch = ref('')
+
+// 对比弹窗
+const selectedRowKeys = ref([])
+const compareVisible = ref(false)
+const compareLoading = ref(false)
+const compareData = ref(null)
 
 // 日期初始化
 const now = new Date()
@@ -412,6 +505,58 @@ function logMsgClass(l) {
   if (/失败|异常|error/i.test(l.message || '')) return 'log-msg-fail'
   if (/通过|完成|pass/i.test(l.message || '')) return 'log-msg-pass'
   return 'log-msg-info'
+}
+
+// ── 对比功能 ──
+const compareChannelColumns = [
+  { colKey: 'channel', title: '频道', width: 180, ellipsis: true },
+  { colKey: 'a_passed', title: 'A通过', width: 70 },
+  { colKey: 'b_passed', title: 'B通过', width: 70 },
+  { colKey: 'a_bandwidth', title: 'A带宽', width: 90 },
+  { colKey: 'b_bandwidth', title: 'B带宽', width: 90 },
+  { colKey: 'a_score', title: 'A评分', width: 80 },
+  { colKey: 'b_score', title: 'B评分', width: 80 },
+  { colKey: 'status', title: '变化状态', width: 100 },
+]
+
+const statusMap = {
+  improved: { label: '改善', theme: 'success' },
+  regressed: { label: '退步', theme: 'danger' },
+  new: { label: '新增', theme: 'primary' },
+  removed: { label: '消失', theme: 'default' },
+  stable: { label: '稳定', theme: 'default' },
+}
+
+function onSelectionChange(keys) {
+  selectedRowKeys.value = keys
+}
+
+async function openCompare() {
+  if (selectedRowKeys.value.length !== 2) return
+  const [a, b] = selectedRowKeys.value
+  compareVisible.value = true
+  compareLoading.value = true
+  compareData.value = null
+  try {
+    compareData.value = await apiCompareRuns(a, b)
+  } catch (e) {
+    MessagePlugin.error('对比失败: ' + e.message)
+    compareVisible.value = false
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+function fmtNum(v, digits = 2) {
+  if (v == null) return '-'
+  return Number(v).toFixed(digits)
+}
+
+function fmtDelta(v, unit = '', digits = 2) {
+  if (v == null) return '-'
+  const n = Number(v)
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${n.toFixed(digits)}${unit}`
 }
 
 onMounted(() => {

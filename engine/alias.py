@@ -4,8 +4,10 @@
 提供别名加载、频道名匹配、CCTV 归一化等功能，供测速模块和扫描模块共用。
 """
 import re
+import threading
 
 # 模块级缓存，首次调用 load_aliases() 后填充
+_alias_lock = threading.RLock()
 _name_to_canonical = {}
 _regex_aliases = []
 _canonical_to_aliases = {}
@@ -42,9 +44,10 @@ def load_aliases():
             else:
                 name_to_canonical[alias] = canonical
     # 写入模块缓存
-    _canonical_to_aliases = canonical_to_aliases
-    _name_to_canonical = name_to_canonical
-    _regex_aliases = regex_aliases
+    with _alias_lock:
+        _canonical_to_aliases = canonical_to_aliases
+        _name_to_canonical = name_to_canonical
+        _regex_aliases = regex_aliases
     return canonical_to_aliases, name_to_canonical, regex_aliases
 
 
@@ -70,9 +73,10 @@ def match_channel_name(name, name_to_canonical=None, regex_aliases=None):
 
 def get_cached_aliases():
     """返回当前缓存的别名数据，未加载时先触发加载。"""
-    if not _name_to_canonical:
-        load_aliases()
-    return _canonical_to_aliases, _name_to_canonical, _regex_aliases
+    with _alias_lock:
+        if not _name_to_canonical:
+            load_aliases()
+        return _canonical_to_aliases, _name_to_canonical, _regex_aliases
 
 
 def strip_quality_suffix(name):

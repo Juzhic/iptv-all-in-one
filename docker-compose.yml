@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  iptv-test:
+    build: .
+    container_name: iptv-test
+    ports:
+      - "58080:58080"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./basic_auth.json:/app/basic_auth.json
+    environment:
+      - FFMPEG_BIN=/usr/bin/ffmpeg
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

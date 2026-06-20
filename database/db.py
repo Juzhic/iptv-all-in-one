@@ -750,7 +750,7 @@ def init_db():
             response_size_bytes INTEGER DEFAULT 0,
             consecutive_failures INTEGER DEFAULT 0,
             quality_status TEXT DEFAULT 'pending',
-            FOREIGN KEY (cycle_id) REFERENCES detection_runs(cycle_id)
+            FOREIGN KEY (cycle_id) REFERENCES detection_runs(cycle_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_det_results_cycle ON detection_results(cycle_id);
         CREATE INDEX IF NOT EXISTS idx_det_results_cycle_ok ON detection_results(cycle_id, check_ok);
@@ -908,12 +908,14 @@ def _cleanup_old_runs(conn):
         "SELECT run_id FROM runs ORDER BY id DESC LIMIT -1 OFFSET ?",
         (MAX_RUNS,)
     ).fetchall()
-    for row in rows:
-        conn.execute("DELETE FROM run_logs WHERE run_id = ?", (row['run_id'],))
-        conn.execute("DELETE FROM run_results WHERE run_id = ?", (row['run_id'],))
-        conn.execute("DELETE FROM runs WHERE run_id = ?", (row['run_id'],))
-    if rows:
-        conn.commit()
+    if not rows:
+        return
+    ids = [row['run_id'] for row in rows]
+    placeholders = ','.join('?' * len(ids))
+    conn.execute(f"DELETE FROM run_logs WHERE run_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM run_results WHERE run_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", ids)
+    conn.commit()
 
 
 def cleanup_old_run_logs(days=30):
@@ -1293,9 +1295,148 @@ def get_codec_stats(run_id):
 def delete_run(run_id):
     """删除指定轮次及其所有结果。"""
     conn = _get_conn()
+    conn.execute("DELETE FROM run_logs WHERE run_id = ?", (run_id,))
     conn.execute("DELETE FROM run_results WHERE run_id = ?", (run_id,))
     conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
     conn.commit()
+
+
+def compare_runs(run_id_a, run_id_b):
+    """对比两轮测试，返回对比数据。run_id_a 为基准，run_id_b 为比较目标。"""
+    conn = _get_conn()
+
+    run_a = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id_a,)).fetchone()
+    run_b = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id_b,)).fetchone()
+    if not run_a or not run_b:
+        return None
+
+    def _run_summary(r):
+        return {
+            'run_id': r['run_id'],
+            'finished_at': r['finished_at'],
+            'duration_seconds': r['duration_seconds'],
+            'total_tested': r['total_tested'],
+            'total_passed': r['total_passed'],
+            'total_failed': r['total_failed'],
+            'pass_rate': r['pass_rate'],
+            'unique_channels_passed': r['unique_channels_passed'],
+            'unique_channels_total': r['unique_channels_total'],
+        }
+
+    def _best_per_channel(run_id):
+        """每个频道取最佳结果：passed 优先，再按 quality_score 降序。"""
+        rows = conn.execute(
+            """SELECT channel, passed, bandwidth_MBps, connection_latency_ms,
+                      quality_score, codec, url
+               FROM run_results WHERE run_id = ?
+               ORDER BY channel, passed DESC, COALESCE(quality_score, 0) DESC""",
+            (run_id,)
+        ).fetchall()
+        best = {}
+        for r in rows:
+            ch = r['channel']
+            if ch not in best:
+                best[ch] = {
+                    'passed': bool(r['passed']),
+                    'bandwidth': r['bandwidth_MBps'],
+                    'latency': r['connection_latency_ms'],
+                    'score': r['quality_score'],
+                    'codec': r['codec'],
+                    'url': r['url'],
+                }
+        return best
+
+    ch_a = _best_per_channel(run_id_a)
+    ch_b = _best_per_channel(run_id_b)
+
+    all_channels = sorted(set(ch_a) | set(ch_b))
+    channels_a = set(ch_a)
+    channels_b = set(ch_b)
+    new_channels = channels_b - channels_a
+    removed_channels = channels_a - channels_b
+
+    comparisons = []
+    improved = regressed = stable = 0
+
+    for ch in all_channels:
+        a = ch_a.get(ch)
+        b = ch_b.get(ch)
+
+        if ch in new_channels:
+            status = 'new'
+            improved += 0  # counted separately
+        elif ch in removed_channels:
+            status = 'removed'
+        else:
+            a_pass = a['passed'] if a else False
+            b_pass = b['passed'] if b else False
+            a_score = a['score'] or 0 if a else 0
+            b_score = b['score'] or 0 if b else 0
+
+            if (not a_pass and b_pass) or (a_score > 0 and b_score > a_score * 1.1):
+                status = 'improved'
+            elif (a_pass and not b_pass) or (a_score > 0 and b_score < a_score * 0.9):
+                status = 'regressed'
+            else:
+                status = 'stable'
+
+        if status == 'improved':
+            improved += 1
+        elif status == 'regressed':
+            regressed += 1
+        elif status == 'new':
+            pass  # counted via len(new_channels)
+        elif status == 'removed':
+            pass  # counted via len(removed_channels)
+        else:
+            stable += 1
+
+        comparisons.append({
+            'channel': ch,
+            'a_passed': a['passed'] if a else None,
+            'b_passed': b['passed'] if b else None,
+            'a_bandwidth': a['bandwidth'] if a else None,
+            'b_bandwidth': b['bandwidth'] if b else None,
+            'a_latency': a['latency'] if a else None,
+            'b_latency': b['latency'] if b else None,
+            'a_score': a['score'] if a else None,
+            'b_score': b['score'] if b else None,
+            'a_codec': a['codec'] if a else None,
+            'b_codec': b['codec'] if b else None,
+            'status': status,
+        })
+
+    # 排序：regressed → improved → new → removed → stable
+    order = {'regressed': 0, 'improved': 1, 'new': 2, 'removed': 3, 'stable': 4}
+    comparisons.sort(key=lambda x: (order.get(x['status'], 5), x['channel']))
+
+    # 计算 delta
+    ra = run_a['pass_rate'] or 0
+    rb = run_b['pass_rate'] or 0
+
+    def _avg(channel_map, key):
+        vals = [v[key] for v in channel_map.values() if v[key] is not None]
+        return sum(vals) / len(vals) if vals else 0
+
+    avg_bw_a = _avg(ch_a, 'bandwidth')
+    avg_bw_b = _avg(ch_b, 'bandwidth')
+    avg_lat_a = _avg(ch_a, 'latency')
+    avg_lat_b = _avg(ch_b, 'latency')
+
+    return {
+        'run_a': _run_summary(run_a),
+        'run_b': _run_summary(run_b),
+        'summary': {
+            'channels_improved': improved,
+            'channels_regressed': regressed,
+            'new_channels': len(new_channels),
+            'removed_channels': len(removed_channels),
+            'pass_rate_delta': round(rb - ra, 2),
+            'avg_bandwidth_delta': round(avg_bw_b - avg_bw_a, 3),
+            'avg_latency_delta': round(avg_lat_b - avg_lat_a, 2),
+        },
+        'channels': comparisons,
+    }
 
 
 def _looks_corrupt_text(text):
@@ -1796,11 +1937,13 @@ def _cleanup_old_scan_runs(conn):
         "SELECT scan_id FROM scan_runs ORDER BY id DESC LIMIT -1 OFFSET ?",
         (MAX_SCAN_RUNS,)
     ).fetchall()
-    for row in rows:
-        conn.execute("DELETE FROM scan_results WHERE scan_id = ?", (row['scan_id'],))
-        conn.execute("DELETE FROM scan_runs WHERE scan_id = ?", (row['scan_id'],))
-    if rows:
-        conn.commit()
+    if not rows:
+        return
+    ids = [row['scan_id'] for row in rows]
+    placeholders = ','.join('?' * len(ids))
+    conn.execute(f"DELETE FROM scan_results WHERE scan_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM scan_runs WHERE scan_id IN ({placeholders})", ids)
+    conn.commit()
 
 
 # --- scan_progress ---

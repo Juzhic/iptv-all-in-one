@@ -58,6 +58,22 @@
         <t-button variant="outline" size="small" @click="previewResult(fmt)">预览</t-button>
       </div>
 
+      <div class="subscribe-section">
+        <div class="subscribe-header">
+          <span class="subscribe-title">📺 播放器订阅地址（M3U）</span>
+        </div>
+        <div class="subscribe-body">
+          <div class="subscribe-url-row">
+            <t-input :value="subscribeUrl" readonly size="small" />
+            <t-button theme="primary" size="small" @click="copySubscribeUrl">复制</t-button>
+          </div>
+          <div v-if="qrDataUrl" class="qr-section">
+            <img :src="qrDataUrl" alt="扫码订阅" class="qr-image" />
+            <span class="qr-hint">手机扫码添加订阅</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 预览 -->
       <div v-if="previewVisible" style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -75,10 +91,12 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, inject } from 'vue'
+import { ref, nextTick, watch, inject, computed, onMounted } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
+import QRCode from 'qrcode'
 import { apiTriggerTest, apiStopTest, apiGetProgress, apiPreviewResult, apiDownloadUrl } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
+import { useTheme } from '../composables/useTheme.js'
 
 const emit = defineEmits(['test-finished'])
 
@@ -104,6 +122,43 @@ const previewVisible = ref(false)
 const previewTitle = ref('')
 const previewContent = ref('')
 const previewStats = ref('')
+
+const { theme } = useTheme()
+const qrDataUrl = ref('')
+const subscribeUrl = computed(() => `${window.location.origin}/api/subscribe.m3u`)
+
+async function generateQR() {
+  try {
+    const isDark = theme.value === 'dark'
+    qrDataUrl.value = await QRCode.toDataURL(subscribeUrl.value, {
+      width: 200,
+      margin: 2,
+      color: {
+        dark: isDark ? '#e5edf7' : '#000000',
+        light: isDark ? '#1e293b' : '#ffffff',
+      }
+    })
+  } catch (e) {
+    console.warn('QR generation failed:', e)
+  }
+}
+
+watch(theme, () => { generateQR() })
+onMounted(() => { generateQR() })
+
+async function copySubscribeUrl() {
+  try {
+    await navigator.clipboard.writeText(subscribeUrl.value)
+    MessagePlugin.success('订阅地址已复制')
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = subscribeUrl.value
+    ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
+    document.body.removeChild(ta)
+    MessagePlugin.success('订阅地址已复制')
+  }
+}
 
 let lastLogSeq = 0
 let wasRunning = false
@@ -131,6 +186,9 @@ const { start: startPoll, stop: stopPoll } = usePolling(async () => {
         data.lines.forEach(l => {
           if (l.seq > lastLogSeq) {
             logLines.value.push(l)
+            if (logLines.value.length > 5000) {
+              logLines.value.splice(0, logLines.value.length - 5000)
+            }
             lastLogSeq = l.seq
           }
         })
@@ -146,7 +204,7 @@ const { start: startPoll, stop: stopPoll } = usePolling(async () => {
       statusText.value = '已完成'
       progressLabel.value = '测试完成'
       if (data.lines?.length) {
-        data.lines.forEach(l => { if (l.seq > lastLogSeq) { logLines.value.push(l); lastLogSeq = l.seq } })
+        data.lines.forEach(l => { if (l.seq > lastLogSeq) { logLines.value.push(l); if (logLines.value.length > 5000) { logLines.value.splice(0, logLines.value.length - 5000) } lastLogSeq = l.seq } })
       }
       stopPoll()
       emit('test-finished')
@@ -248,4 +306,12 @@ watch(appTestRunning, (isRunning) => {
 .log-msg-fail { color: #f38ba8; }
 .log-msg-info { color: #cba6f7; }
 .preview-content { background: #1e1e2e; color: #cdd6f4; font-family: 'Cascadia Code','Fira Code',Consolas,monospace; font-size: 12px; line-height: 1.6; max-height: 400px; overflow: auto; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.subscribe-section { margin-top: 12px; border: 1px solid var(--td-border-level-1-color); border-radius: 8px; overflow: hidden; }
+.subscribe-header { background: var(--td-bg-color-secondarycontainer); padding: 8px 16px; }
+.subscribe-title { font-weight: 600; font-size: 14px; }
+.subscribe-body { padding: 16px; }
+.subscribe-url-row { display: flex; gap: 8px; align-items: center; }
+.qr-section { margin-top: 12px; text-align: center; }
+.qr-image { width: 160px; height: 160px; border-radius: 4px; }
+.qr-hint { display: block; margin-top: 8px; font-size: 12px; color: var(--td-text-color-placeholder); }
 </style>

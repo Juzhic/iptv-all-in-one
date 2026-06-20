@@ -51,6 +51,7 @@ _DEFAULT_FFMPEG_WORKERS = int(os.environ.get('MAX_FFMPEG_WORKERS', '6') or 6)
 _ffmpeg_limit = max(1, _DEFAULT_FFMPEG_WORKERS)
 _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
 _ffmpeg_lock = threading.Lock()
+_ffmpeg_timeout = 5
 NON_LIVE_MEDIA_EXTENSIONS = frozenset({
     '.mp4',
     '.m4v',
@@ -104,6 +105,16 @@ def set_ffmpeg_max_workers(limit):
             _ffmpeg_limit = limit
             _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
     return _ffmpeg_limit
+
+
+def set_ffmpeg_timeout(t):
+    """设置 FFmpeg 子进程超时秒数。"""
+    global _ffmpeg_timeout
+    try:
+        _ffmpeg_timeout = max(1, int(t))
+    except (TypeError, ValueError):
+        _ffmpeg_timeout = 5
+    return _ffmpeg_timeout
 
 
 def detect_non_live_media_url(url):
@@ -262,7 +273,7 @@ def ffmpeg_test(url):
                 text=True,
                 encoding='utf-8',
                 errors='ignore',
-                timeout=5
+                timeout=_ffmpeg_timeout
             )
             stderr_output = completed.stderr
     except subprocess.TimeoutExpired as e:
