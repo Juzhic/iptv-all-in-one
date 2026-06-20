@@ -30,7 +30,7 @@ def _init_log_seq():
 
 
 def _scan_log(msg):
-    """记录一条扫描日志，写入数据库，前端可增量拉取�?""
+    """记录一条扫描日志，写入数据库，前端可增量拉取"""
     global _scan_log_seq
     _scan_log_seq += 1
     time_str = datetime.now().strftime('%H:%M:%S')
