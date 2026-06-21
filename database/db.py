@@ -542,6 +542,10 @@ def init_db():
     # 启动时完整性检查，损坏则自动恢复
     check_and_recover_db()
     conn = _get_conn()
+    # 为旧数据库补齐缺失列，避免后续 executescript 中 CREATE INDEX 失败
+    if _table_exists(conn, 'persistent_scan_results'):
+        _ensure_persistent_deleted_at_column(conn)
+        _ensure_persistent_jitter_column(conn)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -779,8 +783,6 @@ def init_db():
     _ensure_run_results_columns(conn)
     _ensure_scan_results_columns(conn)
     _ensure_scan_logs_level_column(conn)
-    _ensure_persistent_deleted_at_column(conn)
-    _ensure_persistent_jitter_column(conn)
     conn.commit()
     _init_default_data()
     # 启动时重置卡死的进度状态
@@ -808,6 +810,14 @@ def init_db():
         auto_vacuum_if_needed()
     except Exception:
         pass
+
+
+def _table_exists(conn, table_name):
+    """检查表是否存在。"""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+    ).fetchone()
+    return row is not None
 
 
 def _ensure_run_results_columns(conn):

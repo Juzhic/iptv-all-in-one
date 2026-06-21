@@ -5,6 +5,16 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.1] - 2026-06-21
+
+### 修复
+- 修复 `scanner_integration/__init__.py` 文件编码损坏问题（109 个 U+FFFD 替换字符）
+- 修复 30+ 个 docstring 缺失第三个闭合引号导致的 SyntaxError
+- 修复 12 个字符串缺失闭合引号的问题
+- 修复多处注释与代码同行导致的缩进错误
+- 修复 `database/db.py` 中旧数据库升级时 `deleted_at` 列不存在导致 `CREATE INDEX` 失败的问题
+- 添加 `_table_exists()` 辅助函数，将列补齐逻辑移到 `executescript()` 之前执行
+
 ## [1.6.0] - 2026-06-21
 
 ### 新增
