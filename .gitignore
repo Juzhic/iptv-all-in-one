@@ -32,3 +32,4 @@ basic_auth.json
 # 前端构建产物
 dist/
 frontend/node_modules/
+/deploy
