@@ -9,7 +9,10 @@ echo   IPTV-Test Build Deploy Package
 echo ============================================
 echo.
 
-echo [1/3] Building frontend dist...
+echo [1/4] Cleaning deploy folder...
+if exist "%DEPLOY%" rd /s /q "%DEPLOY%"
+
+echo [2/4] Building frontend dist...
 cd /d "%ROOT%frontend"
 if errorlevel 1 (
     echo ERROR: frontend folder not found
@@ -23,12 +26,11 @@ if errorlevel 1 (
 echo Frontend build OK.
 echo.
 
-echo [2/3] Preparing deploy folder...
-if exist "%DEPLOY%" rd /s /q "%DEPLOY%"
+echo [3/4] Preparing deploy folder...
 mkdir "%DEPLOY%"
 mkdir "%DEPLOY%\output"
 
-echo [3/3] Copying files...
+echo [4/4] Copying files...
 cd /d "%ROOT%"
 
 xcopy /e /i /q "engine"                "%DEPLOY%\engine"
