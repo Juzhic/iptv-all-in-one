@@ -280,6 +280,9 @@ class SystemMemoryLimiter:
 
 
 # --- 日志配置模块 ---
+_logging_setup_lock = threading.Lock()
+
+
 class _DBLogHandler(logging.Handler):
     """将日志写入 SQLite 数据库的 logging handler。"""
     def __init__(self):
@@ -300,24 +303,25 @@ _db_handler = _DBLogHandler()
 
 
 def setup_logging(run_id=''):
-    """配置日志系统：控制台输出 + 数据库写入。"""
-    root_logger = logging.getLogger()
-    if root_logger.handlers:
-        for handler in root_logger.handlers[:]:
-            handler.close()
-            root_logger.removeHandler(handler)
+    """配置日志系统：控制台输出 + 数据库写入。线程安全。"""
+    with _logging_setup_lock:
+        root_logger = logging.getLogger()
+        if root_logger.handlers:
+            for handler in root_logger.handlers[:]:
+                handler.close()
+                root_logger.removeHandler(handler)
 
-    _db_handler.run_id = run_id
-    _db_handler.setFormatter(logging.Formatter('%(message)s'))
+        _db_handler.run_id = run_id
+        _db_handler.setFormatter(logging.Formatter('%(message)s'))
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            _db_handler,
-            logging.StreamHandler()
-        ]
-    )
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                _db_handler,
+                logging.StreamHandler()
+            ]
+        )
 
     logger = logging.getLogger(__name__)
     logger.info(f"日志系统已启动（数据库 + 控制台）")
@@ -395,7 +399,7 @@ def parse_iptv_addresses(m3u_content):
             continue
 
         if is_url(line):
-            if not is_valid_stream_url(line):
+            if is_valid_stream_url is not None and not is_valid_stream_url(line):
                 current_channel = {}
                 continue
             if detect_non_live_media_url(line):
@@ -414,7 +418,7 @@ def parse_iptv_addresses(m3u_content):
             name = name.strip()
             url = url.strip()
             if name and is_url(url) and not detect_non_live_media_url(url):
-                if not is_valid_stream_url(url):
+                if is_valid_stream_url is not None and not is_valid_stream_url(url):
                     continue
                 channel_info = {'name': name}
                 if current_group:
@@ -884,7 +888,10 @@ def filter_and_save_playlist(
             if pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             else:
-                time.sleep(0.5)
+                if stop_event:
+                    stop_event.wait(0.5)
+                else:
+                    time.sleep(0.5)
                 done = set()
 
             for future in done:
@@ -936,6 +943,8 @@ def filter_and_save_playlist(
         # 不等待残留线程：主循环已通过 channel_timeout 标记并收集了所有结果，
         # 残留线程仅剩网络/FFmpeg 清理，无需阻塞主线程。
         executor.shutdown(wait=False, cancel_futures=True)
+        # 主动清空超时标记，避免残留线程继续读取旧标记
+        _clear_timeouts()
 
     # 任务结束日志
     total_elapsed = time.time() - start_time

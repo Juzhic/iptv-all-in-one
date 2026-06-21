@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """web 包 — 扫描模块 API 蓝图。"""
+import ipaddress
 import logging
+from urllib.parse import urlparse
 from flask import Blueprint, request, jsonify
 
 import database as db
@@ -8,6 +10,34 @@ import web.state as _state
 from web.app import _finite_number_or_none
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_recheck_url(url):
+    """Validate URL for recheck to prevent SSRF attacks."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            return False, '仅支持 http/https 协议'
+        hostname = parsed.hostname
+        if not hostname:
+            return False, '无效的主机名'
+        # Block localhost and common internal addresses
+        blocked = ('localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]', '169.254.169.254')
+        if hostname in blocked:
+            return False, '不允许访问内部地址'
+        # Resolve and check IP ranges
+        import socket
+        try:
+            infos = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+            for _, _, _, _, sockaddr in infos:
+                ip = ipaddress.ip_address(sockaddr[0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+                    return False, f'不允许访问内部地址 ({ip})'
+        except (socket.gaierror, ValueError, OSError):
+            return False, '无法解析主机名'
+        return True, ''
+    except Exception:
+        return False, 'URL 格式无效'
 
 scan_bp = Blueprint('scan', __name__)
 
@@ -155,25 +185,34 @@ def api_scan_keys_list():
         credits_info = {}
         try:
             import asyncio
-            from scanner_integration.key_manager import check_all_quake_credits
-            credits_info['quake'] = asyncio.run(check_all_quake_credits())
+            from scanner_integration.key_manager import (
+                check_all_quake_credits,
+                check_all_hunter_credits,
+                check_all_daydaymap_credits,
+            )
+            async def _fetch_all_credits():
+                results = await asyncio.gather(
+                    check_all_quake_credits(),
+                    check_all_hunter_credits(),
+                    check_all_daydaymap_credits(),
+                    return_exceptions=True,
+                )
+                return results
+            quake_r, hunter_r, daydaymap_r = asyncio.run(_fetch_all_credits())
+            credits_info['quake'] = quake_r if not isinstance(quake_r, Exception) else []
+            credits_info['hunter'] = hunter_r if not isinstance(hunter_r, Exception) else []
+            credits_info['daydaymap'] = daydaymap_r if not isinstance(daydaymap_r, Exception) else []
+            if isinstance(quake_r, Exception):
+                logger.warning(f"[Credits] Quake 积分查询失败: {quake_r}")
+            if isinstance(hunter_r, Exception):
+                logger.warning(f"[Credits] Hunter 积分查询失败: {hunter_r}")
+            if isinstance(daydaymap_r, Exception):
+                logger.warning(f"[Credits] DayDayMap 积分查询失败: {daydaymap_r}")
         except Exception as e:
-            logger.warning(f"[Credits] Quake 积分查询失败: {e}")
-            credits_info['quake'] = []
-        try:
-            import asyncio
-            from scanner_integration.key_manager import check_all_hunter_credits
-            credits_info['hunter'] = asyncio.run(check_all_hunter_credits())
-        except Exception as e:
-            logger.warning(f"[Credits] Hunter 积分查询失败: {e}")
-            credits_info['hunter'] = []
-        try:
-            import asyncio
-            from scanner_integration.key_manager import check_all_daydaymap_credits
-            credits_info['daydaymap'] = asyncio.run(check_all_daydaymap_credits())
-        except Exception as e:
-            logger.warning(f"[Credits] DayDayMap 积分查询失败: {e}")
-            credits_info['daydaymap'] = []
+            logger.warning(f"[Credits] 积分查询失败: {e}")
+            credits_info.setdefault('quake', [])
+            credits_info.setdefault('hunter', [])
+            credits_info.setdefault('daydaymap', [])
         logger.info(f"[Credits] results: hunter={credits_info.get('hunter')}, daydaymap={credits_info.get('daydaymap')}")
         result = []
         for platform in ('quake', 'hunter', 'daydaymap'):
@@ -185,7 +224,7 @@ def api_scan_keys_list():
                 ci = credit_map.get(suffix, {})
                 result.append({
                     'platform': platform,
-                    'key': key,
+                    'key': f"...{key[-6:]}",
                     'key_suffix': suffix,
                     'credit': _finite_number_or_none(ci.get('credit')),
                     'role': ci.get('role', ''),
@@ -400,6 +439,10 @@ def api_persistent_recheck():
     url = data.get('url')
     if not url:
         return jsonify({'ok': False, 'error': 'url is required'}), 400
+
+    ok, reason = _validate_recheck_url(url)
+    if not ok:
+        return jsonify({'ok': False, 'error': reason}), 400
 
     async def _do_recheck():
         async with get_session(limit=5, timeout=10) as session:

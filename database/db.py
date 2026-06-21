@@ -1996,10 +1996,17 @@ def get_scan_progress():
     return dict(row)
 
 
+SP_ALLOWED_COLS = {'running', 'started_at', 'phase', 'total', 'processed', 'percent', 'message', 'updated_at'}
+
+
 def update_scan_progress(**kwargs):
     """更新扫描进度。"""
     if not kwargs:
         return
+    # Validate column names against whitelist
+    for k in kwargs:
+        if k not in SP_ALLOWED_COLS:
+            raise ValueError(f"Invalid column name: {k}")
     kwargs['updated_at'] = now_str()
     conn = _get_conn()
     sets = ', '.join(f"{k} = ?" for k in kwargs)

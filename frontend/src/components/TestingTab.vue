@@ -84,7 +84,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, inject, computed, onMounted } from 'vue'
+import { ref, watch, inject, computed, onMounted } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import QRCode from 'qrcode'
 import { apiTriggerTest, apiStopTest, apiPreviewResult, apiDownloadUrl } from '../api.js'
@@ -259,14 +259,7 @@ watch(() => testProgress.running, (isRunning) => {
   }
 }, { immediate: true })
 
-// 自动滚动日志
-watch(() => testProgress.lines.length, () => {
-  if (!autoScroll.value) return
-  nextTick(() => {
-    const el = logPanelRef.value
-    if (el) el.scrollTop = el.scrollHeight
-  })
-})
+// Auto-scroll is handled internally by LogPanel component
 </script>
 
 <style scoped>

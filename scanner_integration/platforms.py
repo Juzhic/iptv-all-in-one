@@ -1,6 +1,7 @@
 # platforms.py
 import asyncio
 import base64
+import ipaddress
 import json
 import re
 import random
@@ -93,6 +94,14 @@ def safe_decode_json(raw):
         return None
 
 async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5):
+    # SSRF protection: reject private/internal IPs
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+            return []
+    except ValueError:
+        return []
+
     json_urls = [
         f"http://{ip}:{port}/iptv/live/1000.json?key=txiptv",
         f"http://{ip}:{port}/iptv/live/1000.json",

@@ -345,8 +345,9 @@ const detailProvinces = ref([])
 
 const filteredDetailData = computed(() => {
   // 服务端已分页，allDetailData 即当前页数据
-  // 客户端排序仍在当前页内生效
   let data = [...allDetailData.value]
+  // NOTE: Client-side sorting only affects the current page of server-paginated data.
+  // This is acceptable for ad-hoc re-sorting within a page; primary ordering comes from the server.
   const { sortBy, descending } = detailSortInfo.value
   if (sortBy) {
     data.sort((a, b) => {
@@ -524,7 +525,9 @@ async function openSourceDetail(sourceIp) {
       allDetailData.value = Array.isArray(data) ? data : []
       detailTotal.value = allDetailData.value.length
     }
-    // 提取筛选选项（从当前页数据）
+    // NOTE: Filter options are extracted from the current page only (server-paginated).
+    // If the first page doesn't cover all categories/provinces, some options may be missing.
+    // This is a known limitation; a dedicated API endpoint would be needed for exhaustive options.
     const cats = new Set()
     const provs = new Set()
     allDetailData.value.forEach(r => {
@@ -700,7 +703,10 @@ function selectAllLegacy() {
 function downloadM3U(items, filename) {
   let m3u = '#EXTM3U\n'
   items.forEach(ch => {
-    m3u += `#EXTINF:-1 group-title="${ch.category || ''}",${ch.name || ''}\n`
+    // Escape commas in channel name — M3U EXTINF uses comma to separate attributes from the display name
+    const safeName = (ch.name || '').replace(/,/g, '\\,')
+    const safeCategory = (ch.category || '').replace(/,/g, '\\,')
+    m3u += `#EXTINF:-1 group-title="${safeCategory}",${safeName}\n`
     m3u += `${ch.url || ''}\n`
   })
   const blob = new Blob([m3u], { type: 'audio/x-mpegurl' })

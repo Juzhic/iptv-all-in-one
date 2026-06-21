@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import pkgutil
+import secrets
 import subprocess
+import sys as _sys
 
 # Python 3.14 移除了 pkgutil.get_loader，当前 Flask 仍会调用它。
 if not hasattr(pkgutil, 'get_loader'):
@@ -29,7 +31,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_DIR = os.path.join(BASE_DIR, 'dist')
 FRONTEND_DIR = os.path.join(BASE_DIR, 'frontend')
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _npm_cmd(args):
+    """Build npm command list, cross-platform."""
+    if _sys.platform == 'win32':
+        return ['cmd', '/c', f'npm {args}']
+    return ['npm'] + args.split()
 
 
 # ─────────────── 前端构建辅助函数 ───────────────
@@ -116,7 +126,7 @@ def _run_frontend_build():
     if _frontend_deps_need_install():
         logger.info('[前端] 正在安装依赖 (npm install)...')
         install_result = subprocess.run(
-            ['cmd', '/c', 'npm install --production=false'],
+            _npm_cmd('install --production=false'),
             cwd=FRONTEND_DIR,
             shell=False,
             capture_output=True,
@@ -129,7 +139,7 @@ def _run_frontend_build():
 
     logger.info('[前端] 正在构建 (npm run build)...')
     result = subprocess.run(
-        ['cmd', '/c', 'npm run build'],
+        _npm_cmd('run build'),
         cwd=FRONTEND_DIR,
         shell=False,
         capture_output=True,
@@ -174,9 +184,11 @@ BASIC_AUTH_DEFAULT_CONFIG = {
 
 def _load_basic_auth_config():
     config = dict(BASIC_AUTH_DEFAULT_CONFIG)
+    _auth_file_found = False
     try:
         with open(BASIC_AUTH_CONFIG_FILE, 'r', encoding='utf-8') as f:
             loaded = json.load(f)
+        _auth_file_found = True
     except FileNotFoundError:
         pass
     except (OSError, ValueError):
@@ -200,6 +212,14 @@ def _load_basic_auth_config():
         config['password'] = env_password
     if env_realm:
         config['realm'] = env_realm
+
+    # 当没有 basic_auth.json 且未通过环境变量设置密码时，生成随机密码
+    if not _auth_file_found and not env_password:
+        random_pw = secrets.token_urlsafe(16)
+        config['password'] = random_pw
+        logger.warning(f"未找到 basic_auth.json 且未设置 IPTV_AUTH_PASSWORD，已生成随机密码")
+        logger.warning(f"登录凭据: 用户名={config['username']}  密码={random_pw}")
+        logger.warning(f"建议创建 basic_auth.json 或设置环境变量以持久化认证凭据")
 
     # 检测默认弱密码并警告
     if config['username'] == BASIC_AUTH_DEFAULT_CONFIG['username'] and config['password'] == BASIC_AUTH_DEFAULT_CONFIG['password']:
@@ -284,9 +304,12 @@ def create_app():
         return response
 
     @app.errorhandler(404)
-    @app.errorhandler(500)
     @app.errorhandler(405)
-    def handle_error(e):
+    def handle_client_error(e):
         return jsonify({'ok': False, 'error': str(e)}), e.code
+
+    @app.errorhandler(500)
+    def handle_server_error(e):
+        return jsonify({'ok': False, 'error': '服务器内部错误'}), 500
 
     return app

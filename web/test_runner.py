@@ -40,7 +40,8 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             'source': trigger_source,
             'last_seq': 0,
         })
-    _state._test_log_lines.clear()
+    with _state._progress_lock:
+        _state._test_log_lines.clear()
     _state.reset_test_log_seq()
     _start_time = time.time()
     _run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
@@ -59,11 +60,12 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
     def _on_log(msg):
         seq = _state.inc_test_log_seq()
         now = datetime.now().strftime('%H:%M:%S')
-        _state._test_log_lines.append({
-            'seq': seq,
-            'time': now,
-            'msg': msg,
-        })
+        with _state._progress_lock:
+            _state._test_log_lines.append({
+                'seq': seq,
+                'time': now,
+                'msg': msg,
+            })
 
     def _run():
         try:

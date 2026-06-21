@@ -75,13 +75,15 @@ def set_test_active_token(token):
 
 def inc_test_log_seq():
     global _test_log_seq
-    _test_log_seq += 1
-    return _test_log_seq
+    with _progress_lock:
+        _test_log_seq += 1
+        return _test_log_seq
 
 
 def reset_test_log_seq():
     global _test_log_seq
-    _test_log_seq = 0
+    with _progress_lock:
+        _test_log_seq = 0
 
 
 def set_scheduler_running(value):

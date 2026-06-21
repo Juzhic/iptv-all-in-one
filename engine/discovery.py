@@ -78,7 +78,7 @@ def discover_channels():
     # Classify channels
     try:
         from scanner_integration.channel_utils import auto_classify, is_blacklisted
-    except ImportError:
+    except Exception:
         auto_classify = None
         is_blacklisted = lambda n: False
 

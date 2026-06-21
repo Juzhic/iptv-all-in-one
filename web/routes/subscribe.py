@@ -125,13 +125,13 @@ def api_subscribe():
                        headers={'Content-Disposition': 'attachment; filename=iptv.' + ('txt' if fmt == 'txt' else 'm3u')})
 
     if fmt == 'txt':
-        content = _generate_result_txt(passed, fallback_update_time, demo_content)
+        content = _generate_result_txt(passed, fallback_update_time)
         buf = io.BytesIO(content.encode('utf-8'))
         buf.seek(0)
         return send_file(buf, mimetype='text/plain',
                         as_attachment=True, download_name='iptv.txt')
     else:
-        content = _generate_result_m3u(passed, fallback_update_time, demo_content)
+        content = _generate_result_m3u(passed, fallback_update_time)
         buf = io.BytesIO(content.encode('utf-8'))
         buf.seek(0)
         return send_file(buf, mimetype='audio/x-mpegurl',

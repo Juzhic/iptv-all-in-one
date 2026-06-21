@@ -93,11 +93,14 @@ def _ensure_scheduler_started(cfg=None):
             return True
         if not _acquire_scheduler_lock():
             return False
-        _state.set_scheduler_running(True)
-        _write_scheduler_state(True, _state._next_scheduled_run)
         t = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
         _state.set_scheduler_thread(t)
-        t.start()
+        try:
+            t.start()
+        except Exception:
+            _state.set_scheduler_thread(None)
+            _release_scheduler_lock()
+            return False
         return True
 
 
@@ -126,58 +129,62 @@ def _scheduler_loop():
     _write_scheduler_state(True, _state._next_scheduled_run)
     from engine.test_engine import _next_run_datetime
     from web.test_runner import _start_test_background, _is_run_token_active
+    import logging
+    logger = logging.getLogger(__name__)
 
     try:
         while True:
-            cfg = load_config()
-            run_mode = cfg.get('run_mode', 'once')
-            if run_mode == 'once':
-                _state.set_next_scheduled_run(None)
-                _write_scheduler_state(False, None)
-                break
+            try:
+                cfg = load_config()
+                run_mode = cfg.get('run_mode', 'once')
+                if run_mode == 'once':
+                    _state.set_next_scheduled_run(None)
+                    _write_scheduler_state(False, None)
+                    break
 
-            next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
-            if next_run is None:
-                _state.set_next_scheduled_run(None)
-                _write_scheduler_state(True, None)
-                time.sleep(60)
-                continue
-
-            _state.set_next_scheduled_run(next_run)
-            _write_scheduler_state(True, next_run)
-            wait_sec = (next_run - datetime.now()).total_seconds()
-            if wait_sec > 0:
-                while wait_sec > 0:
-                    time.sleep(min(wait_sec, 30))
-                    wait_sec = (next_run - datetime.now()).total_seconds()
-                    current_cfg = load_config()
-                    current_mode = current_cfg.get('run_mode', 'once')
-                    if current_mode != run_mode:
-                        break
-                else:
-                    pass
-
-                current_cfg = load_config()
-                if current_cfg.get('run_mode', 'once') != run_mode:
+                next_run = _next_run_datetime(run_mode, cfg.get('run_times', []), cfg.get('run_interval_minutes', 0))
+                if next_run is None:
+                    _state.set_next_scheduled_run(None)
+                    _write_scheduler_state(True, None)
+                    time.sleep(60)
                     continue
 
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"{'#' * 60}")
-            logger.info(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"{'#' * 60}")
-            run_token = _start_test_background(trigger_source='scheduler')
-            if run_token is None:
-                logger.warning("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
-                continue
+                _state.set_next_scheduled_run(next_run)
+                _write_scheduler_state(True, next_run)
+                wait_sec = (next_run - datetime.now()).total_seconds()
+                if wait_sec > 0:
+                    while wait_sec > 0:
+                        time.sleep(min(wait_sec, 30))
+                        wait_sec = (next_run - datetime.now()).total_seconds()
+                        current_cfg = load_config()
+                        current_mode = current_cfg.get('run_mode', 'once')
+                        if current_mode != run_mode:
+                            break
+                    else:
+                        pass
 
-            if run_mode == 'interval':
-                while _is_run_token_active(run_token):
-                    time.sleep(5)
+                    current_cfg = load_config()
+                    if current_cfg.get('run_mode', 'once') != run_mode:
+                        continue
+
+                logger.info(f"{'#' * 60}")
+                logger.info(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"{'#' * 60}")
+                run_token = _start_test_background(trigger_source='scheduler')
+                if run_token is None:
+                    logger.warning("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
+                    continue
+
+                if run_mode == 'interval':
+                    while _is_run_token_active(run_token):
+                        time.sleep(5)
+                    continue
+            except Exception as e:
+                logger.error(f"调度器循环内异常（将重试）: {e}")
+                time.sleep(30)  # Back off before retrying
                 continue
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"调度器异常退出: {e}")
+        logger.error(f"调度器异常退出: {e}")
     finally:
         _state.set_scheduler_running(False)
         _state.set_next_scheduled_run(None)

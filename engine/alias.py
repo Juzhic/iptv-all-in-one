@@ -49,8 +49,12 @@ def load_aliases():
         name_to_canonical[canonical] = canonical
         for alias in aliases:
             if alias.startswith('re:'):
+                pattern_src = alias[3:]
+                # ReDoS protection: limit pattern length
+                if len(pattern_src) > 200:
+                    continue
                 try:
-                    regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
+                    regex_aliases.append((re.compile(pattern_src, re.IGNORECASE), canonical))
                 except re.error:
                     continue
             else:

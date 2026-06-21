@@ -97,8 +97,9 @@ def api_progress():
             prog_finished_at = _state._test_progress['finished_at']
             prog_error = _state._test_progress['error']
             prog_source = _state._test_progress.get('source', 'web')
+            new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
+            prog_last_seq = _state._test_log_seq
     if prog_running:
-        new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
         return jsonify({'ok': True, 'data': {
             'running': True,
             'started_at': prog_started_at,
@@ -110,7 +111,7 @@ def api_progress():
             'finished_at': prog_finished_at,
             'error': prog_error,
             'lines': new_lines,
-            'last_seq': _state._test_log_seq,
+            'last_seq': prog_last_seq,
             'source': prog_source,
             **sched_info,
         }})
@@ -137,8 +138,8 @@ def api_progress():
     with _state._progress_lock:
         finished_at = _state._test_progress.get('finished_at')
     if finished_at:
-        new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
         with _state._progress_lock:
+            new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
             started_at = _state._test_progress.get('started_at')
             total = _state._test_progress.get('total', 0)
             processed = _state._test_progress.get('processed', 0)
@@ -147,6 +148,7 @@ def api_progress():
             elapsed = _state._test_progress.get('elapsed', 0)
             error = _state._test_progress.get('error')
             source = _state._test_progress.get('source', '')
+            last_seq = _state._test_log_seq
         return jsonify({'ok': True, 'data': {
             'running': False,
             'started_at': started_at,
@@ -158,7 +160,7 @@ def api_progress():
             'finished_at': finished_at,
             'error': error,
             'lines': new_lines,
-            'last_seq': _state._test_log_seq,
+            'last_seq': last_seq,
             'source': source,
             **sched_info,
         }})
