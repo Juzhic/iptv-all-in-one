@@ -3,7 +3,7 @@
 import ipaddress
 import logging
 from urllib.parse import urlparse
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 
 import database as db
 import web.state as _state
@@ -75,6 +75,22 @@ def api_scan_trigger():
     return jsonify({'ok': True, 'message': '扫描已启动'})
 
 
+@scan_bp.route('/api/scan/trigger-incremental', methods=['POST'])
+def api_scan_trigger_incremental():
+    """启动一次增量扫描（仅检查新源，跳过已知 URL）。"""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    data = request.get_json(silent=True) or {}
+    result = scanner.trigger_incremental_scan(
+        platforms_override=data.get('platforms'),
+        provinces_override=data.get('provinces')
+    )
+    if 'error' in result:
+        return jsonify({'ok': False, 'error': result['error']}), 409
+    return jsonify({'ok': True, 'message': '增量扫描已启动', 'mode': 'incremental'})
+
+
 @scan_bp.route('/api/scan/stop', methods=['POST'])
 def api_scan_stop():
     """请求停止扫描。"""
@@ -104,6 +120,43 @@ def api_scan_status():
         return jsonify({'ok': True, 'data': {'running': False, 'phase': 'idle', 'message': '扫描模块未安装'}})
     status = scanner.get_scan_status()
     return jsonify({'ok': True, 'data': status})
+
+
+@scan_bp.route('/api/scan/stream')
+def api_scan_stream():
+    """SSE 实时推送扫描进度和日志。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+
+    def generate():
+        q = scanner.subscribe_sse()
+        try:
+            # 立即发送当前状态
+            import json
+            status = scanner.get_scan_status()
+            yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except Exception:
+                    # 30 秒无事件，发送心跳保活
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            scanner.unsubscribe_sse(q)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
 
 
 @scan_bp.route('/api/scan/results', methods=['GET'])
@@ -175,47 +228,69 @@ def api_scan_config_set():
 
 @scan_bp.route('/api/scan/keys', methods=['GET'])
 def api_scan_keys_list():
-    """列出所有平台的 API Key（含积分信息）。"""
+    """列出所有平台的 API Key（快速，不含积分信息）。"""
     try:
         from scanner_integration.key_manager import KeyManager, init_key_manager
-        from scanner_integration.config_bridge import get_scan_config
         init_key_manager()
         km = KeyManager.instance()
-        cfg = get_scan_config()
+        result = []
+        for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
+            keys = km.get_all_keys(platform)
+            for key in keys:
+                suffix = f"...{key[-6:]}"
+                result.append({
+                    'platform': platform,
+                    'key': suffix,
+                    'key_suffix': suffix,
+                    'credit': None,
+                    'role': '',
+                    'role_limit': None,
+                    'error': '',
+                })
+        return jsonify({'ok': True, 'data': result})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@scan_bp.route('/api/scan/keys/credits', methods=['GET'])
+def api_scan_keys_credits():
+    """查询所有平台的 API Key 积分（慢，调用各平台 API）。"""
+    try:
+        from scanner_integration.key_manager import (
+            KeyManager, init_key_manager,
+            check_all_quake_credits,
+            check_all_hunter_credits,
+            check_all_daydaymap_credits,
+            check_all_fofa_credits,
+        )
+        init_key_manager()
+        km = KeyManager.instance()
         credits_info = {}
         try:
             import asyncio
-            from scanner_integration.key_manager import (
-                check_all_quake_credits,
-                check_all_hunter_credits,
-                check_all_daydaymap_credits,
-            )
             async def _fetch_all_credits():
-                results = await asyncio.gather(
+                return await asyncio.gather(
                     check_all_quake_credits(),
                     check_all_hunter_credits(),
                     check_all_daydaymap_credits(),
+                    check_all_fofa_credits(),
                     return_exceptions=True,
                 )
-                return results
-            quake_r, hunter_r, daydaymap_r = asyncio.run(_fetch_all_credits())
+            quake_r, hunter_r, daydaymap_r, fofa_r = asyncio.run(_fetch_all_credits())
             credits_info['quake'] = quake_r if not isinstance(quake_r, Exception) else []
             credits_info['hunter'] = hunter_r if not isinstance(hunter_r, Exception) else []
             credits_info['daydaymap'] = daydaymap_r if not isinstance(daydaymap_r, Exception) else []
-            if isinstance(quake_r, Exception):
-                logger.warning(f"[Credits] Quake 积分查询失败: {quake_r}")
-            if isinstance(hunter_r, Exception):
-                logger.warning(f"[Credits] Hunter 积分查询失败: {hunter_r}")
-            if isinstance(daydaymap_r, Exception):
-                logger.warning(f"[Credits] DayDayMap 积分查询失败: {daydaymap_r}")
+            credits_info['fofa'] = fofa_r if not isinstance(fofa_r, Exception) else []
+            for name, val in [('Quake', quake_r), ('Hunter', hunter_r),
+                              ('DayDayMap', daydaymap_r), ('Fofa', fofa_r)]:
+                if isinstance(val, Exception):
+                    logger.warning(f"[Credits] {name} 积分查询失败: {val}")
         except Exception as e:
             logger.warning(f"[Credits] 积分查询失败: {e}")
-            credits_info.setdefault('quake', [])
-            credits_info.setdefault('hunter', [])
-            credits_info.setdefault('daydaymap', [])
-        logger.info(f"[Credits] results: hunter={credits_info.get('hunter')}, daydaymap={credits_info.get('daydaymap')}")
+            for p in ('quake', 'hunter', 'daydaymap', 'fofa'):
+                credits_info.setdefault(p, [])
         result = []
-        for platform in ('quake', 'hunter', 'daydaymap'):
+        for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
             keys = km.get_all_keys(platform)
             platform_credits = credits_info.get(platform, [])
             credit_map = {c['key_suffix']: c for c in platform_credits}
@@ -224,7 +299,7 @@ def api_scan_keys_list():
                 ci = credit_map.get(suffix, {})
                 result.append({
                     'platform': platform,
-                    'key': f"...{key[-6:]}",
+                    'key': suffix,
                     'key_suffix': suffix,
                     'credit': _finite_number_or_none(ci.get('credit')),
                     'role': ci.get('role', ''),
@@ -247,7 +322,7 @@ def api_scan_keys_add():
         key = data.get('key', '').strip()
         if not platform or not key:
             return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
-        if platform not in ('quake', 'hunter', 'daydaymap'):
+        if platform not in ('quake', 'hunter', 'daydaymap', 'fofa'):
             return jsonify({'ok': False, 'error': '不支持的平台'}), 400
 
         cfg = get_scan_config()
@@ -258,6 +333,13 @@ def api_scan_keys_add():
             return jsonify({'ok': False, 'error': 'Key 已存在'}), 400
         keys_list.append(key)
         cfg[f'{platform}_api_keys'] = keys_list
+
+        # Fofa 需要同步 email
+        if platform == 'fofa':
+            email = data.get('email', '').strip()
+            if email:
+                cfg['fofa_email'] = email
+
         save_scan_config(cfg)
         init_key_manager()
         return jsonify({'ok': True, 'message': f'{platform} Key 已添加'})
@@ -267,7 +349,7 @@ def api_scan_keys_add():
 
 @scan_bp.route('/api/scan/keys', methods=['DELETE'])
 def api_scan_keys_delete():
-    """删除一个 API Key。"""
+    """删除一个 API Key（支持通过后缀匹配）。"""
     try:
         from scanner_integration.config_bridge import get_scan_config, save_scan_config
         from scanner_integration.key_manager import init_key_manager
@@ -281,8 +363,14 @@ def api_scan_keys_delete():
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
+        # 支持后缀匹配（前端传 ...xxx，后端存完整 key）
         if key in keys_list:
             keys_list.remove(key)
+        else:
+            suffix = key.lstrip('.')
+            matched = [k for k in keys_list if k.endswith(suffix)]
+            if matched:
+                keys_list.remove(matched[0])
         cfg[f'{platform}_api_keys'] = keys_list
         if len(keys_list) == 1:
             cfg[f'{platform}_api_key'] = keys_list[0]
@@ -297,7 +385,7 @@ def api_scan_keys_delete():
 
 @scan_bp.route('/api/scan/keys', methods=['PUT'])
 def api_scan_keys_update():
-    """更新一个 API Key（替换旧值）。"""
+    """更新一个 API Key（替换旧值，支持后缀匹配）。"""
     try:
         from scanner_integration.config_bridge import get_scan_config, save_scan_config
         from scanner_integration.key_manager import init_key_manager
@@ -314,15 +402,26 @@ def api_scan_keys_update():
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
-        if old_key not in keys_list:
-            return jsonify({'ok': False, 'error': '原 Key 不存在'}), 400
+        # 支持后缀匹配（前端传 ...xxx，后端存完整 key）
+        if old_key in keys_list:
+            idx = keys_list.index(old_key)
+        else:
+            suffix = old_key.lstrip('.')
+            matched = [(i, k) for i, k in enumerate(keys_list) if k.endswith(suffix)]
+            if not matched:
+                return jsonify({'ok': False, 'error': '原 Key 不存在'}), 400
+            idx = matched[0][0]
         if new_key in keys_list:
             return jsonify({'ok': False, 'error': '新 Key 已存在'}), 400
-        idx = keys_list.index(old_key)
         keys_list[idx] = new_key
         cfg[f'{platform}_api_keys'] = keys_list
         if len(keys_list) == 1:
             cfg[f'{platform}_api_key'] = keys_list[0]
+        # Fofa 需要同步 email
+        if platform == 'fofa':
+            email = data.get('email', '').strip()
+            if email:
+                cfg['fofa_email'] = email
         save_scan_config(cfg)
         init_key_manager()
         return jsonify({'ok': True, 'message': 'Key 已更新'})
@@ -493,3 +592,41 @@ def api_persistent_priority():
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@scan_bp.route('/api/detection/stream')
+def api_detection_stream():
+    """SSE 实时推送检测日志。"""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+
+    def generate():
+        import json
+        q = scanner.subscribe_detection_sse()
+        try:
+            from database import get_detection_logs
+            recent = get_detection_logs(limit=50)
+            if recent:
+                for entry in recent:
+                    yield f"event: log\ndata: {json.dumps(entry, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except Exception:
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            scanner.unsubscribe_detection_sse(q)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """web 包 — 测试控制 API 蓝图。"""
-from flask import Blueprint, request, jsonify
+import json as _json
+from flask import Blueprint, request, jsonify, Response
 
 import web.state as _state
 from web.test_runner import _start_test_background
@@ -182,3 +183,47 @@ def api_progress():
         'source': '',
         **sched_info,
     }})
+
+
+@test_control_bp.route('/api/test/stream')
+def api_test_stream():
+    """SSE 实时推送测试进度和日志。"""
+
+    def generate():
+        q = _state.subscribe_test_sse()
+        try:
+            scheduler_running, next_run_str = _scheduler_status()
+            with _state._progress_lock:
+                prog = dict(_state._test_progress)
+            snapshot = {
+                'running': prog.get('running', False),
+                'total': prog.get('total', 0),
+                'processed': prog.get('processed', 0),
+                'passed': prog.get('passed', 0),
+                'failed': prog.get('failed', 0),
+                'elapsed': prog.get('elapsed', 0),
+                'source': prog.get('source', ''),
+                'scheduler_running': scheduler_running,
+                'next_scheduled_run': next_run_str,
+            }
+            yield f"event: status\ndata: {_json.dumps(snapshot, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except Exception:
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            _state.unsubscribe_test_sse(q)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )

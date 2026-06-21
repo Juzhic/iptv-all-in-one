@@ -4,7 +4,9 @@
 所有模块从这里读写状态，避免循环导入。
 """
 import collections
+import json
 import os
+import queue
 import threading
 
 # ─── 允许通过 Web 编辑的数据 key ───
@@ -109,3 +111,40 @@ def get_test_progress_snapshot():
 def set_scheduler_lock_handle(handle):
     global _scheduler_lock_handle
     _scheduler_lock_handle = handle
+
+
+# ─── 测试进度 SSE 订阅 ───
+
+_test_sse_subscribers: list = []
+_test_sse_lock = threading.Lock()
+
+
+def subscribe_test_sse():
+    """注册一个测试 SSE 订阅者，返回 Queue。"""
+    q = queue.Queue(maxsize=500)
+    with _test_sse_lock:
+        _test_sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe_test_sse(q):
+    """取消测试 SSE 订阅。"""
+    with _test_sse_lock:
+        try:
+            _test_sse_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _broadcast_test_sse(event_type, data):
+    """向所有测试 SSE 订阅者广播事件（非阻塞，丢弃满队列）。"""
+    msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    with _test_sse_lock:
+        dead = []
+        for q in _test_sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _test_sse_subscribers.remove(q)

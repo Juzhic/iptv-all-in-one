@@ -29,6 +29,15 @@ function checkStatus(r) {
   return r
 }
 
+// 解包后端统一响应格式 {ok, data, ...} → data
+function unwrap(json) {
+  if (json && typeof json === 'object' && 'ok' in json) {
+    if (!json.ok) throw new Error(json.error || '请求失败')
+    return json.data ?? json
+  }
+  return json
+}
+
 // 给 fetch 套上超时控制：到时自动 abort，释放连接。
 function fetchWithTimeout(url, opts = {}) {
   const { timeout = DEFAULT_TIMEOUT, signal, ...rest } = opts
@@ -50,7 +59,7 @@ function fetchWithTimeout(url, opts = {}) {
 }
 
 export function fetchJSON(url, opts = {}) {
-  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json())
+  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json()).then(unwrap)
 }
 
 export function postJSON(url, data) {
@@ -75,7 +84,7 @@ export function deleteJSON(url, data) {
     opts.headers = { 'Content-Type': 'application/json' }
     opts.body = JSON.stringify(data)
   }
-  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json())
+  return fetchWithTimeout(url, opts).then(checkStatus).then(r => r.json()).then(unwrap)
 }
 
 export function fetchText(url) {
@@ -118,7 +127,7 @@ export function apiGetRuns(start, end) {
   if (start) params.set('start', start)
   if (end) params.set('end', end)
   const qs = params.toString()
-  return fetchJSON('/api/runs' + (qs ? '?' + qs : ''))
+  return fetchJSON('/api/runs' + (qs ? '?' + qs : '')).then(res => res.items ?? res)
 }
 export function apiGetRun(runId) {
   return fetchJSON(`/api/run/${runId}`)
@@ -165,6 +174,9 @@ export function apiPreviewResult(fmt) {
 // ─── 扫描 ───
 export function apiScanTrigger(provinces) {
   return postJSON('/api/scan/trigger', { provinces })
+}
+export function apiScanTriggerIncremental(data = {}) {
+  return postJSON('/api/scan/trigger-incremental', data)
 }
 export function apiScanStop() {
   return postJSON('/api/scan/stop')
@@ -217,11 +229,18 @@ export function apiDeleteProfile(name) {
 export function apiScanKeys() {
   return fetchJSON('/api/scan/keys')
 }
-export function apiScanKeyAdd(platform, key) {
-  return postJSON('/api/scan/keys', { platform, key })
+export function apiScanKeysCredits() {
+  return fetchJSON('/api/scan/keys/credits', { timeout: 60000 })
 }
-export function apiScanKeyUpdate(platform, oldKey, newKey) {
-  return putJSON('/api/scan/keys', { platform, old_key: oldKey, new_key: newKey })
+export function apiScanKeyAdd(platform, key, email) {
+  const body = { platform, key }
+  if (email) body.email = email
+  return postJSON('/api/scan/keys', body)
+}
+export function apiScanKeyUpdate(platform, oldKey, newKey, email) {
+  const body = { platform, old_key: oldKey, new_key: newKey }
+  if (email) body.email = email
+  return putJSON('/api/scan/keys', body)
 }
 export function apiScanKeyDelete(platform, key) {
   return deleteJSON('/api/scan/keys', { platform, key })
@@ -265,4 +284,26 @@ export function apiPersistentRecheck(url) {
 }
 export function apiPersistentPriority(url, priority) {
   return postJSON('/api/scan/persistent/priority', { url, priority })
+}
+
+// ─── SSE 连接 ───
+
+export function connectTestSse(handlers = {}) {
+  const es = new EventSource('/api/test/stream')
+  if (handlers.status) es.addEventListener('status', handlers.status)
+  if (handlers.progress) es.addEventListener('progress', handlers.progress)
+  if (handlers.log) es.addEventListener('log', handlers.log)
+  if (handlers.test_complete) es.addEventListener('test_complete', handlers.test_complete)
+  if (handlers.scheduler) es.addEventListener('scheduler', handlers.scheduler)
+  if (handlers.onerror) es.onerror = handlers.onerror
+  return es
+}
+
+export function connectDetectionSse(handlers = {}) {
+  const es = new EventSource('/api/detection/stream')
+  if (handlers.log) es.addEventListener('log', handlers.log)
+  if (handlers.cycle_start) es.addEventListener('cycle_start', handlers.cycle_start)
+  if (handlers.cycle_end) es.addEventListener('cycle_end', handlers.cycle_end)
+  if (handlers.onerror) es.onerror = handlers.onerror
+  return es
 }

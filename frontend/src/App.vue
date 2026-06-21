@@ -96,11 +96,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, provide, nextTick, reactive } from 'vue'
+import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount } from 'vue'
 import { useMagicKeys, whenever } from '@vueuse/core'
 import { useTheme } from './composables/useTheme.js'
-import { apiGetInitial, apiGetProgress } from './api.js'
-import { usePolling } from './composables/usePolling.js'
+import { useDialogDrag } from './composables/useDialogDrag.js'
+import { apiGetInitial, apiGetProgress, connectTestSse } from './api.js'
 import OverviewTab from './components/OverviewTab.vue'
 import HistoryTab from './components/HistoryTab.vue'
 import TestingTab from './components/TestingTab.vue'
@@ -112,6 +112,7 @@ import ScanResultsTab from './components/ScanResultsTab.vue'
 
 const globalConfig = {}
 const { theme, setTheme } = useTheme()
+useDialogDrag()
 
 const isDark = computed({
   get: () => theme.value === 'dark',
@@ -272,23 +273,115 @@ async function loadInitialData() {
 }
 
 let lastLogSeq = 0
-const { start: startPoll, stop: stopPoll, reportError, reportSuccess } = usePolling(async () => {
+let testEventSource = null
+let pollFallbackTimer = null
+
+function handleSseStatus(e) {
   try {
-    const data = await apiGetProgress(lastLogSeq)
-    reportSuccess()
-    testRunning.value = !!data.running
-    testProgress.running = !!data.running
+    const data = JSON.parse(e.data)
+    applyTestState(data)
+  } catch (_) {}
+}
+
+function handleSseProgress(e) {
+  try {
+    const data = JSON.parse(e.data)
+    testRunning.value = true
+    testProgress.running = true
     testProgress.processed = Number(data.processed) || 0
     testProgress.passed = data.passed || 0
     testProgress.failed = data.failed || 0
     testProgress.elapsed = Math.round(data.elapsed || 0)
     testProgress.total = Number(data.total) || 0
-    schedulerRunning.value = !!data.scheduler_running
-    nextScheduledRun.value = data.next_scheduled_run || ''
+    const pct = testProgress.total > 0 ? Math.round((testProgress.processed / testProgress.total) * 100) : 0
+    progressText.value = `${testProgress.processed}/${testProgress.total || '?'} ${pct}%`
+  } catch (_) {}
+}
 
-    if (data.running) {
-      const pct = testProgress.total > 0 ? Math.round((testProgress.processed / testProgress.total) * 100) : 0
-      progressText.value = `${testProgress.processed}/${testProgress.total || '?'} ${pct}%`
+function handleSseLog(e) {
+  try {
+    const line = JSON.parse(e.data)
+    if (line.seq > lastLogSeq) {
+      testProgress.lines.push(line)
+      if (testProgress.lines.length > 5000) {
+        testProgress.lines.splice(0, testProgress.lines.length - 5000)
+      }
+      lastLogSeq = line.seq
+    }
+  } catch (_) {}
+}
+
+function handleSseTestComplete(e) {
+  try {
+    const data = JSON.parse(e.data)
+    testRunning.value = false
+    testProgress.running = false
+    if (data.elapsed) testProgress.elapsed = Math.round(data.elapsed)
+    if (data.total) testProgress.total = Number(data.total)
+    if (data.processed) testProgress.processed = Number(data.processed)
+    if (data.passed != null) testProgress.passed = data.passed
+    if (data.failed != null) testProgress.failed = data.failed
+  } catch (_) {
+    testRunning.value = false
+    testProgress.running = false
+  }
+  disconnectTestSse()
+  loadInitialData()
+}
+
+function handleSseError() {
+  disconnectTestSse()
+  if (testRunning.value || schedulerRunning.value) {
+    startPollFallback()
+  }
+}
+
+function applyTestState(data) {
+  if (!data) return
+  testRunning.value = !!data.running
+  testProgress.running = !!data.running
+  testProgress.processed = Number(data.processed) || 0
+  testProgress.passed = data.passed || 0
+  testProgress.failed = data.failed || 0
+  testProgress.elapsed = Math.round(data.elapsed || 0)
+  testProgress.total = Number(data.total) || 0
+  schedulerRunning.value = !!data.scheduler_running
+  nextScheduledRun.value = data.next_scheduled_run || ''
+  if (data.running) {
+    const pct = testProgress.total > 0 ? Math.round((testProgress.processed / testProgress.total) * 100) : 0
+    progressText.value = `${testProgress.processed}/${testProgress.total || '?'} ${pct}%`
+  }
+}
+
+function connectTestStream() {
+  disconnectTestSse()
+  try {
+    testEventSource = connectTestSse({
+      status: handleSseStatus,
+      progress: handleSseProgress,
+      log: handleSseLog,
+      test_complete: handleSseTestComplete,
+      onerror: handleSseError,
+    })
+  } catch (_) {
+    startPollFallback()
+  }
+}
+
+function disconnectTestSse() {
+  if (testEventSource) {
+    testEventSource.close()
+    testEventSource = null
+  }
+  stopPollFallback()
+}
+
+function startPollFallback() {
+  stopPollFallback()
+  pollFallbackTimer = setInterval(async () => {
+    try {
+      const data = await apiGetProgress(lastLogSeq)
+      applyTestState(data)
       if (data.lines?.length) {
         data.lines.forEach((line) => {
           if (line.seq > lastLogSeq) {
@@ -300,20 +393,21 @@ const { start: startPoll, stop: stopPoll, reportError, reportSuccess } = usePoll
           }
         })
       }
-    } else if (schedulerRunning.value) {
-      stopPoll()
-      setTimeout(() => { startPoll() }, 30000)
-    } else {
-      stopPoll()
-    }
-  } catch (e) {
-    reportError()
-    console.warn('[poll] request failed')
+      if (!data.running && !schedulerRunning.value) {
+        stopPollFallback()
+      }
+    } catch (_) {}
+  }, 2000)
+}
+
+function stopPollFallback() {
+  if (pollFallbackTimer) {
+    clearInterval(pollFallbackTimer)
+    pollFallbackTimer = null
   }
-}, 2000)
+}
 
 provide('testProgress', testProgress)
-provide('startGlobalPoll', startPoll)
 provide('clearTestLogs', () => {
   testProgress.lines = []
   lastLogSeq = 0
@@ -342,8 +436,13 @@ function onTabChange(value) {
 
 onMounted(async () => {
   await loadInitialData()
-  startPoll()
+  connectTestStream()
   window.addEventListener('keydown', handleKeyDown)
+})
+
+onBeforeUnmount(() => {
+  disconnectTestSse()
+  window.removeEventListener('keydown', handleKeyDown)
 })
 </script>
 
@@ -353,6 +452,43 @@ body {
   margin: 0;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--td-bg-color-page, #f5f7fb);
+}
+
+/* ─── 全局弹窗样式：居中 + 拖拽手柄 + 内部滚动 ─── */
+.t-dialog__ctx .t-dialog__position {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.t-dialog {
+  max-height: 85vh !important;
+  max-width: 90vw !important;
+  display: flex !important;
+  flex-direction: column !important;
+  margin: 0 !important;
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
+}
+.t-dialog__header {
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+.t-dialog__body {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+.t-dialog__body .t-table__content {
+  max-height: calc(85vh - 200px) !important;
+  overflow-y: auto !important;
 }
 </style>
 

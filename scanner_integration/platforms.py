@@ -503,7 +503,7 @@ async def daydaymap_scan(api_key, query, target_size, session=None):
         logger.warning("[DayDayMap] 未配置 API Key，跳过")
         return []
     if session is None: session = get_session(limit=30, force_close=True)
-    if target_size is None: target_size = config_bridge.get_scan_config().get("quake_size", 200)
+    if target_size is None: target_size = config_bridge.get_scan_config().get("daydaymap_size", 200)
     BATCH_SIZE = 50
     all_items = []
     headers = {"api-key": api_key, "Content-Type": "application/json"}
@@ -1477,16 +1477,16 @@ async def collect_all(size=None, log_fn=None):
                 ddm_q += f' && province=="{prov}"'
                 fofa_q += f' && region="{prov}"'
 
-            # 并行执行 API 平台扫描（带 key 轮换）
+            # 并行执行 API 平台扫描（带 key 轮换），各平台读取各自的扫描数量配置
             api_tasks = []
             if "quake" in enabled_platforms and quake_key:
-                api_tasks.append(('Quake 360', _run_with_key_rotation('quake', quake_scan, qq, target_size, session=scan_session)))
+                api_tasks.append(('Quake 360', _run_with_key_rotation('quake', quake_scan, qq, None, session=scan_session)))
             if "hunter" in enabled_platforms and hunter_key:
-                api_tasks.append(('Hunter', _run_with_key_rotation('hunter', hunter_scan, hq, target_size, session=scan_session)))
+                api_tasks.append(('Hunter', _run_with_key_rotation('hunter', hunter_scan, hq, None, session=scan_session)))
             if "daydaymap" in enabled_platforms and ddm_key:
-                api_tasks.append(('DayDayMap', _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target_size, session=scan_session)))
+                api_tasks.append(('DayDayMap', _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, None, session=scan_session)))
             if "fofa" in enabled_platforms and fofa_key:
-                api_tasks.append(('Fofa', _run_with_key_rotation('fofa', fofa_scan, fofa_q, target_size, session=scan_session)))
+                api_tasks.append(('Fofa', _run_with_key_rotation('fofa', fofa_scan, fofa_q, None, session=scan_session)))
 
             if api_tasks:
                 _log(f"[采集] ({len(all_raw)}条) 并行扫描: {', '.join(n for n, _ in api_tasks)}...")
@@ -1506,19 +1506,20 @@ async def collect_all(size=None, log_fn=None):
 
         # 独立平台扫描（ZHGX, JSMpeg, Tvheadend, IPTV互动, DDGS）也并行执行
         independent_tasks = []
+        indep_size = size or config_bridge.get_scan_config().get("quake_size", 200)
 
         if enabled_platforms:
-            independent_tasks.append(('ZHGX', zhgx_scan(target_size, session=scan_session)))
+            independent_tasks.append(('ZHGX', zhgx_scan(indep_size, session=scan_session)))
 
         # JSMpeg 全国扫描（只执行一次，不限省份）
-        independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=target_size, session=scan_session)))
+        independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=indep_size, session=scan_session)))
 
         if hunter_key:
             independent_tasks.append(('Tvheadend', _run_with_key_rotation('hunter', tvheadend_scan, None, 30, session=scan_session)))
             independent_tasks.append(('IPTV互动', _run_with_key_rotation('hunter', iptv_interactive_scan, None, 30, session=scan_session)))
 
         if ddgs_enabled:
-            independent_tasks.append(('DDGS', ddgs_scan(None, target_size, session=scan_session)))
+            independent_tasks.append(('DDGS', ddgs_scan(None, indep_size, session=scan_session)))
 
         if independent_tasks:
             _log(f"[采集] ({len(all_raw)}条) 并行扫描独立平台: {', '.join(n for n, _ in independent_tasks)}...")

@@ -68,6 +68,13 @@ class DetectionManager:
             _db.insert_detection_log(level, message)
         except Exception:
             pass
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime('%H:%M:%S')
+            from . import broadcast_detection_sse
+            broadcast_detection_sse('log', {'ts': ts, 'level': level, 'message': message})
+        except Exception:
+            pass
 
     async def _loop(self):
         """主循环：等待间隔 → 执行检测 → 复活检查 → 循环。"""

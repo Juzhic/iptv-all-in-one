@@ -201,7 +201,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
-import { usePolling } from '../composables/usePolling.js'
 import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
@@ -210,6 +209,7 @@ import {
   apiPersistentRecheck,
   apiSaveScanConfig,
   apiScanConfig,
+  connectDetectionSse,
 } from '../api.js'
 
 const { theme } = useTheme()
@@ -278,6 +278,52 @@ async function saveDetConfig() {
 const detLogLines = ref([])
 const detAutoScroll = ref(true)
 const detLogPanelRef = ref(null)
+let detEventSource = null
+let detPollFallback = null
+
+function connectDetectionStream() {
+  disconnectDetectionSse()
+  try {
+    detEventSource = connectDetectionSse({
+      log(e) {
+        try {
+          const entry = JSON.parse(e.data)
+          detLogLines.value.push(entry)
+          const MAX_DET_LOG = 500
+          if (detLogLines.value.length > MAX_DET_LOG) {
+            detLogLines.value = detLogLines.value.slice(-400)
+          }
+        } catch (_) {}
+      },
+      onerror() {
+        disconnectDetectionSse()
+        startDetPollFallback()
+      },
+    })
+  } catch (_) {
+    startDetPollFallback()
+  }
+}
+
+function disconnectDetectionSse() {
+  if (detEventSource) {
+    detEventSource.close()
+    detEventSource = null
+  }
+  stopDetPollFallback()
+}
+
+function startDetPollFallback() {
+  stopDetPollFallback()
+  detPollFallback = setInterval(loadDetectionLogs, 10000)
+}
+
+function stopDetPollFallback() {
+  if (detPollFallback) {
+    clearInterval(detPollFallback)
+    detPollFallback = null
+  }
+}
 
 // ─── 下次检测倒计时 ───
 const nextCheckCountdown = ref('')
@@ -348,8 +394,6 @@ async function loadDetectionLogs() {
     }
   } catch (_) { /* ignore */ }
 }
-
-const { start: startDetPoll, stop: stopDetPoll } = usePolling(loadDetectionLogs, 10000, { pauseWhenHidden: true })
 
 watch(detLogLines, () => {
   if (!detAutoScroll.value) return
@@ -515,7 +559,7 @@ function passRateClass(row) {
 
 onMounted(() => {
   loadConfig()
-  startDetPoll()
+  connectDetectionStream()
   loadDetRuns().then(() => {
     updateCountdown()
     countdownTimer = setInterval(updateCountdown, 60000)
@@ -523,7 +567,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  stopDetPoll()
+  disconnectDetectionSse()
   if (countdownTimer) clearInterval(countdownTimer)
 })
 </script>

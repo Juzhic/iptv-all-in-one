@@ -841,20 +841,3 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 </style>
-
-<style>
-/* 弹窗全局样式（teleport 到 body，scoped 无法覆盖） */
-.detail-dialog.t-dialog {
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-}
-.detail-dialog .t-dialog__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.detail-dialog .t-table__content {
-  max-height: calc(85vh - 200px) !important;
-}
-</style>

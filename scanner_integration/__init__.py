@@ -40,12 +40,95 @@ def _scan_log(msg):
     except Exception:
         pass  # DB 写入失败不影响扫描流程。
     logger.info(msg)
+    # 广播给 SSE 订阅者
+    try:
+        _broadcast_sse('log', {'seq': _scan_log_seq, 'time': time_str, 'msg': msg})
+    except Exception:
+        pass
 
 
 _init_log_seq()
 
 
 # ==================== 扫描状态管理====================
+
+# SSE 订阅者列表（线程安全）
+import queue
+import threading as _threading
+
+_sse_subscribers: list[queue.Queue] = []
+_sse_lock = _threading.Lock()
+
+
+def subscribe_sse():
+    """注册一个 SSE 订阅者，返回 Queue。"""
+    q = queue.Queue(maxsize=500)
+    with _sse_lock:
+        _sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe_sse(q):
+    """取消 SSE 订阅。"""
+    with _sse_lock:
+        try:
+            _sse_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _broadcast_sse(event_type, data):
+    """向所有 SSE 订阅者广播事件（非阻塞，丢弃满队列）。"""
+    import json as _json
+    msg = f"event: {event_type}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+    with _sse_lock:
+        dead = []
+        for q in _sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_subscribers.remove(q)
+
+
+# ==================== 检测日志 SSE ====================
+
+_detection_sse_subscribers: list[queue.Queue] = []
+_detection_sse_lock = _threading.Lock()
+
+
+def subscribe_detection_sse():
+    """注册一个检测 SSE 订阅者，返回 Queue。"""
+    q = queue.Queue(maxsize=500)
+    with _detection_sse_lock:
+        _detection_sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe_detection_sse(q):
+    """取消检测 SSE 订阅。"""
+    with _detection_sse_lock:
+        try:
+            _detection_sse_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def broadcast_detection_sse(event_type, data):
+    """向所有检测 SSE 订阅者广播事件（非阻塞，丢弃满队列）。"""
+    import json as _json
+    msg = f"event: {event_type}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+    with _detection_sse_lock:
+        dead = []
+        for q in _detection_sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _detection_sse_subscribers.remove(q)
+
 
 class ScanState:
     """管理扫描运行时的可变状态，替代 state.py 的全局变量。"""
@@ -118,6 +201,32 @@ bridge = AsyncBridge()
 scan_state = ScanState()
 
 
+def _restore_from_persistent():
+    """从持久化结果集恢复频道到内存状态（缓存恢复机制）。"""
+    import database as _db
+    try:
+        rows = _db.get_all_persistent_for_check()
+        if not rows:
+            logger.info("[Bridge] 持久化结果集为空，等待首次扫描。")
+            return
+        # 仅恢复有效的（非软删除）条目，映射为 scan_state 兼容格式
+        channels = []
+        for r in rows:
+            channels.append({
+                'url': r['url'],
+                'name': r['name'],
+                'stability': r.get('stability', 0) or 0,
+                'delay': r.get('delay'),
+                'bandwidth': r.get('bandwidth'),
+            })
+        scan_state.channels = channels
+        scan_state.initialized = True
+        scan_state.last_update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"[Bridge] 从持久化结果集恢复 {len(channels)} 个频道，切换到增量模式。")
+    except Exception as e:
+        logger.warning(f"[Bridge] 从持久化结果集恢复失败: {e}")
+
+
 def init_bridge():
     """初始化桥接层，启动异步事件循环、加载别名、初始化 KeyManager、启动定时扫描。"""
     bridge.start()
@@ -134,6 +243,8 @@ def init_bridge():
         init_key_manager()
     except Exception as e:
         logger.warning(f"[Bridge] KeyManager 初始化失败: {e}")
+    # 从持久化结果集恢复频道缓存
+    _restore_from_persistent()
     # 启动定时扫描任务
     start_daily_task()
     # 启动每日数据库维护任务
@@ -185,6 +296,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         running=True, started_at=started_at, phase='collecting',
         total=0, processed=0, percent=0, message='正在采集频道...'
     )
+    _broadcast_sse('progress', {'phase': 'collecting', 'percent': 0, 'message': '正在采集频道...'})
 
     try:
         # 阶段1：采集
@@ -344,13 +456,180 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         except Exception:
             pass
         _db.update_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
+        _broadcast_sse('scan_complete', {'ok': False, 'error': str(e)})
 
-    # 刷新日志缓冲区。    try:
+    # 刷新日志缓冲区
+    try:
         _db.flush_log_buffer()
     except Exception:
         pass
 
     return scan_id
+
+
+async def _do_incremental_scan(platforms_override=None, provinces_override=None):
+    """增量扫描：先检查现有频道，再采集新源，仅对新 URL 做快速过滤和深度检测。"""
+    from .platforms import collect_all, deduplicate
+    from .video_check import fast_filter, background_deep_update, health_check_persistent
+    from .channel_utils import resolve_name
+    from .network import get_session
+    import database as _db
+
+    cfg = config_bridge.get_scan_config()
+    scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    scan_state.clear_stop()
+    global _scan_log_seq
+    _scan_log_seq = 0
+    try:
+        _db.clear_scan_logs()
+    except Exception:
+        pass
+
+    if platforms_override is not None:
+        cfg['enabled_platforms'] = platforms_override
+    if provinces_override is not None:
+        cfg['selected_provinces'] = provinces_override
+
+    _db.insert_scan_run({
+        'scan_id': scan_id,
+        'started_at': started_at,
+        'status': 'running',
+        'platforms_used': str(cfg.get('enabled_platforms', [])),
+    })
+    _db.update_scan_progress(
+        running=True, started_at=started_at, phase='health_check',
+        total=0, processed=0, percent=0, message='正在检查现有频道...'
+    )
+
+    try:
+        # 阶段1：健康检查现有持久化频道
+        _scan_log(f"[Incremental:{scan_id}] 增量模式启动，先检查现有频道...")
+        existing_urls = set()
+        try:
+            existing = _db.get_all_persistent_for_check()
+            existing_urls = {r['url'] for r in existing}
+            if existing:
+                _scan_log(f"[Incremental:{scan_id}] 现有 {len(existing_urls)} 个频道，开始健康检查...")
+                await health_check_persistent(existing, log_fn=_scan_log)
+        except Exception as e:
+            _scan_log(f"[Incremental:{scan_id}] 健康检查异常（继续扫描）: {e}")
+
+        # 阶段2：采集新源
+        _scan_log(f"[Incremental:{scan_id}] 开始采集新源...")
+        raw, actual_platforms = await collect_all(log_fn=_scan_log)
+        if actual_platforms:
+            _db.update_scan_run(scan_id, platforms_used=str(actual_platforms))
+        if scan_state.stop_requested:
+            _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
+            _db.clear_scan_progress()
+            return scan_id
+
+        if not raw:
+            _scan_log(f"[Incremental:{scan_id}] 采集完成，未发现新频道。")
+            _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(), total_raw=0)
+            _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
+            return scan_id
+
+        uniq = deduplicate(raw)
+        for ch in uniq:
+            if not ch.get('province'):
+                ch['province'] = '未知'
+            if not ch.get('city'):
+                ch['city'] = ''
+
+        # 过滤掉已知 URL，仅保留新发现的
+        new_channels = [ch for ch in uniq if ch['url'] not in existing_urls]
+        _scan_log(f"[Incremental:{scan_id}] 采集到 {len(raw)} 条，去重后 {len(uniq)} 条，新频道 {len(new_channels)} 条。")
+        _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
+
+        if not new_channels:
+            _scan_log(f"[Incremental:{scan_id}] 无新频道，跳过过滤。")
+            _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str())
+            _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
+            return scan_id
+
+        # 阶段3：仅对新频道做快速过滤
+        _db.update_scan_progress(phase='fast_filter', total=len(new_channels),
+                                 message=f'快速过滤 {len(new_channels)} 个新频道...')
+        _scan_log(f"[Incremental:{scan_id}] 快速过滤 {len(new_channels)} 个新频道...")
+        quick = await fast_filter(new_channels, log_fn=_scan_log)
+        if scan_state.stop_requested:
+            _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
+            _db.clear_scan_progress()
+            return scan_id
+
+        for ch in quick:
+            if 'category' not in ch or not ch['category']:
+                name_cat = resolve_name(ch.get('name', ''))
+                ch['category'] = name_cat[1] if isinstance(name_cat, tuple) else ''
+
+        _db.update_scan_run(scan_id, total_fast_pass=len(quick))
+        _db.insert_scan_results(scan_id, quick)
+        _scan_log(f"[Incremental:{scan_id}] 新频道快速过滤完成，{len(quick)} 个通过。")
+
+        # 阶段4：仅对新频道做深度检测
+        if quick:
+            _db.update_scan_progress(phase='deep_check', total=len(quick), processed=0,
+                                     percent=0, message=f'深度检测 {len(quick)} 个新频道...')
+            _scan_log(f"[Incremental:{scan_id}] 深度检测 {len(quick)} 个新频道...")
+            await background_deep_update(quick, log_fn=_scan_log)
+
+            from . import video_check as _vc
+            sorted_channels = list(_vc.QUICK_CHANNELS)
+            for ch in sorted_channels:
+                if ch.get('stability', 0) > 0:
+                    _db.update_scan_result_stability(
+                        scan_id, ch['url'], ch['stability'],
+                        delay=ch.get('delay'), bandwidth=ch.get('bandwidth'),
+                        resolution=ch.get('resolution'), codec=ch.get('codec')
+                    )
+
+        duration = (datetime.now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
+        _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
+                            duration_seconds=round(duration, 1))
+        _db.update_scan_progress(running=False, phase='idle', percent=100,
+                                 message=f'增量扫描完成，新频道 {len(quick)} 个。')
+        _scan_log(f"[Incremental:{scan_id}] 增量扫描完成，耗时 {duration:.1f}s，新频道 {len(quick)} 个。")
+
+        # 合并到持久化结果集
+        try:
+            from .persistence import merge_scan_to_persistent
+            await merge_scan_to_persistent(scan_id)
+            _scan_log(f"[Incremental:{scan_id}] 已合并到持久化结果集")
+        except Exception as e:
+            _scan_log(f"[Incremental:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
+
+        # 更新内存状态
+        scan_state.last_update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    except Exception as e:
+        _scan_log(f"[Incremental:{scan_id}] 增量扫描异常: {e}")
+        try:
+            _db.update_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e))
+        except Exception:
+            pass
+        _db.update_scan_progress(running=False, phase='idle', message=f'增量扫描失败: {e}')
+
+    try:
+        _db.flush_log_buffer()
+    except Exception:
+        pass
+
+    return scan_id
+
+
+def trigger_incremental_scan(platforms_override=None, provinces_override=None):
+    """触发增量扫描（入口，供路由或定时任务调用）。"""
+    import database as _db
+    progress = _db.get_scan_progress()
+    if progress and progress.get('running'):
+        return {'ok': False, 'error': '扫描正在进行中'}
+    bridge.run_background(_do_incremental_scan(
+        platforms_override=platforms_override,
+        provinces_override=provinces_override,
+    ))
+    return {'ok': True, 'mode': 'incremental'}
 
 
 def get_scan_status():

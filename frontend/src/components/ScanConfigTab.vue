@@ -112,12 +112,30 @@
           </div>
 
           <div class="config-field-list">
-            <div class="config-field">
+            <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>扫描数量</label>
-                <span>每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
+                <span>各平台每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
               </div>
-              <t-input-number v-model="scanCfg.quake_size" :min="1" :max="10000" :step="1" class="field-control" />
+
+              <div class="scan-size-grid">
+                <div class="scan-size-item">
+                  <label>Quake 360</label>
+                  <t-input-number v-model="scanCfg.quake_size" :min="1" :max="10000" :step="1" size="small" />
+                </div>
+                <div class="scan-size-item">
+                  <label>Hunter 鹰图</label>
+                  <t-input-number v-model="scanCfg.hunter_size" :min="1" :max="10000" :step="1" size="small" />
+                </div>
+                <div class="scan-size-item">
+                  <label>DayDayMap</label>
+                  <t-input-number v-model="scanCfg.daydaymap_size" :min="1" :max="10000" :step="1" size="small" />
+                </div>
+                <div class="scan-size-item">
+                  <label>Fofa</label>
+                  <t-input-number v-model="scanCfg.fofa_size" :min="1" :max="10000" :step="1" size="small" />
+                </div>
+              </div>
             </div>
 
             <div class="config-field config-field--stack">
@@ -154,28 +172,6 @@
                 </div>
                 <div class="field-inline-hint">
                   {{ scanCfg.ddgs_enabled ? '将通过搜索引擎查找公开 IPTV 源，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台（Quake/Hunter/DayDayMap）进行采集。' }}
-                </div>
-              </div>
-            </div>
-
-            <div class="config-field config-field--stack">
-              <div class="config-field-meta">
-                <label>Fofa 配置</label>
-                <span>配置 Fofa 平台的 API Key、邮箱和每次扫描返回的最大条数。</span>
-              </div>
-
-              <div class="fofa-config-card">
-                <div class="fofa-field">
-                  <label>API Key</label>
-                  <t-input v-model="scanCfg.fofa_api_key" placeholder="粘贴 Fofa API Key" />
-                </div>
-                <div class="fofa-field">
-                  <label>Email</label>
-                  <t-input v-model="scanCfg.fofa_email" placeholder="Fofa 注册邮箱" />
-                </div>
-                <div class="fofa-field">
-                  <label>扫描数量</label>
-                  <t-input-number v-model="scanCfg.fofa_size" :min="1" :max="10000" :step="100" />
                 </div>
               </div>
             </div>
@@ -379,6 +375,7 @@ import {
   apiScanKeyAdd,
   apiScanKeyDelete,
   apiScanKeys,
+  apiScanKeysCredits,
   apiScanKeyUpdate,
 } from '../api.js'
 
@@ -410,6 +407,8 @@ const scanCfg = reactive({
   selected_provinces: [],
   operator: '',
   quake_size: 200,
+  hunter_size: 200,
+  daydaymap_size: 200,
   enable_c_scan: true,
   update_time: '03:00',
   update_days: [0, 1, 2, 3, 4, 5, 6],
@@ -594,6 +593,8 @@ async function loadConfig() {
     scanCfg.selected_provinces = Array.isArray(cfg.selected_provinces) ? cfg.selected_provinces : []
     scanCfg.operator = cfg.operator || ''
     scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 200
+    scanCfg.hunter_size = typeof cfg.hunter_size === 'number' ? cfg.hunter_size : 200
+    scanCfg.daydaymap_size = typeof cfg.daydaymap_size === 'number' ? cfg.daydaymap_size : 200
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
@@ -621,6 +622,12 @@ function validateScanConfig() {
   }
   if (scanCfg.quake_size > 10000) {
     errors.push('Quake 扫描数量不能超过 10000')
+  }
+  if (scanCfg.hunter_size > 10000) {
+    errors.push('Hunter 扫描数量不能超过 10000')
+  }
+  if (scanCfg.daydaymap_size > 10000) {
+    errors.push('DayDayMap 扫描数量不能超过 10000')
   }
   if (scanCfg.fofa_size > 10000) {
     errors.push('Fofa 扫描数量不能超过 10000')
@@ -663,15 +670,12 @@ async function saveScanConfig() {
     }
 
     const res = await apiSaveScanConfig(data)
-    if (res.ok) {
-      MessagePlugin.success('扫描配置已保存')
-      if (res.config) {
-        Object.assign(scanCfg, res.config)
-      }
-      updateCountdown()
-    } else {
-      MessagePlugin.error(`保存失败: ${res.error || ''}`)
+    // unwrap() 返回 json.data，成功时是配置对象
+    MessagePlugin.success('扫描配置已保存')
+    if (res && typeof res === 'object') {
+      Object.assign(scanCfg, res)
     }
+    updateCountdown()
   } catch (_) {
     MessagePlugin.error('保存失败')
   } finally {
@@ -682,24 +686,44 @@ async function saveScanConfig() {
 async function loadKeys() {
   keysLoading.value = true
   try {
+    // 1. 快速加载 Key 列表
     const res = await apiScanKeys()
     if (res.ok) {
-      keyList.value = (res.keys || []).map((item) => {
-        let status = '正常'
-        const credit = item.credit != null ? Number(item.credit) : null
-
-        if (item.error) status = item.error
-        else if (credit === null) status = item.role || '余额未知'
-        else if (credit < 100) status = '余额不足'
-        else if (credit < 300) status = '偏低'
-
-        return {
-          ...item,
-          status,
-          credit: item.credit != null ? item.credit : null,
-        }
-      })
+      keyList.value = (res.data || []).map((item) => ({
+        ...item,
+        status: '加载中...',
+        credit: null,
+      }))
     }
+    
+    // 2. 异步获取余额 (不阻塞列表显示)
+    apiScanKeysCredits().then(creditsRes => {
+      if (creditsRes.ok) {
+        const creditsMap = {}
+        creditsRes.data.forEach(item => {
+          creditsMap[item.key_suffix] = item
+        })
+        
+        keyList.value = keyList.value.map(item => {
+          const creditInfo = creditsMap[item.key_suffix]
+          if (creditInfo) {
+            let status = '正常'
+            const credit = creditInfo.credit != null ? Number(creditInfo.credit) : null
+            
+            if (creditInfo.error) status = creditInfo.error
+            else if (credit === null) status = creditInfo.role || '余额未知'
+            else if (credit < 100) status = '余额不足'
+            else if (credit < 300) status = '偏低'
+            
+            return { ...item, ...creditInfo, status }
+          }
+          return item
+        })
+      }
+    }).catch(err => {
+      console.error('获取余额失败', err)
+    })
+    
   } catch (error) {
     console.error('加载 Key 列表失败', error)
     MessagePlugin.error('刷新余额失败')
@@ -1042,6 +1066,25 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.scan-size-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  width: 100%;
+}
+
+.scan-size-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scan-size-item label {
+  color: var(--surface-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .fofa-field {
   display: flex;
   flex-direction: column;
@@ -1166,6 +1209,10 @@ onBeforeUnmount(() => {
   .field-control--wide,
   .field-stack {
     width: 100%;
+  }
+
+  .scan-size-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .province-toolbar {

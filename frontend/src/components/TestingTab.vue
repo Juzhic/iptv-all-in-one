@@ -95,7 +95,6 @@ const emit = defineEmits(['test-finished'])
 
 const testProgress = inject('testProgress', { running: false, processed: 0, passed: 0, failed: 0, elapsed: 0, total: 0, lines: [] })
 const clearTestLogs = inject('clearTestLogs', () => {})
-const startGlobalPoll = inject('startGlobalPoll', () => {})
 
 const running = computed(() => testProgress.running)
 const processed = computed(() => testProgress.processed)
@@ -172,7 +171,6 @@ async function triggerTest() {
       testFinished.value = false
       progressVisible.value = true
       statusText.value = '运行中...'
-      startGlobalPoll()
     } else {
       MessagePlugin.error(res.error || '启动失败')
     }

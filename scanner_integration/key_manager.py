@@ -372,3 +372,20 @@ async def check_all_daydaymap_credits():
             'error': info.get('error', ''),
         })
     return results
+
+
+async def check_all_fofa_credits():
+    """Query all Fofa key/token points."""
+    km = KeyManager.instance()
+    keys = km.get_all_keys('fofa')
+    results = []
+    for key in keys:
+        # Fofa 没有标准的积分查询 API，返回基本结构
+        results.append({
+            'key_suffix': f"...{key[-6:]}",
+            'credit': None,
+            'role': '',
+            'role_limit': None,
+            'error': '',
+        })
+    return results

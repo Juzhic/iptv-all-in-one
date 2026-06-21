@@ -56,6 +56,16 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 'elapsed': round(time.time() - _start_time, 1),
                 'last_seq': _state._test_log_seq,
             })
+        try:
+            _state._broadcast_test_sse('progress', {
+                'total': info.get('total', 0),
+                'processed': info.get('processed', 0),
+                'passed': info.get('success', 0),
+                'failed': info.get('failed', 0),
+                'elapsed': round(time.time() - _start_time, 1),
+            })
+        except Exception:
+            pass
 
     def _on_log(msg):
         seq = _state.inc_test_log_seq()
@@ -66,6 +76,10 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 'time': now,
                 'msg': msg,
             })
+        try:
+            _state._broadcast_test_sse('log', {'seq': seq, 'time': now, 'msg': msg})
+        except Exception:
+            pass
 
     def _run():
         try:
@@ -131,6 +145,21 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 try:
                     from database import clear_run_progress
                     clear_run_progress()
+                except Exception:
+                    pass
+            if is_current_run:
+                try:
+                    with _state._progress_lock:
+                        snapshot = {
+                            'running': False,
+                            'elapsed': _state._test_progress.get('elapsed', 0),
+                            'total': _state._test_progress.get('total', 0),
+                            'processed': _state._test_progress.get('processed', 0),
+                            'passed': _state._test_progress.get('passed', 0),
+                            'failed': _state._test_progress.get('failed', 0),
+                            'error': _state._test_progress.get('error'),
+                        }
+                    _state._broadcast_test_sse('test_complete', snapshot)
                 except Exception:
                     pass
 
