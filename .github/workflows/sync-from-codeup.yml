@@ -23,5 +23,5 @@ jobs:
           git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
           git fetch codeup
           git merge codeup/master --strategy-option theirs --allow-unrelated-histories -m "Auto sync from Codeup" || true
-          git push origin master
+          git push origin main
           echo "✅ Synced"
