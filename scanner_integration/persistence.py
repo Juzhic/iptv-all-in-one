@@ -22,7 +22,7 @@ async def merge_scan_to_persistent(scan_id):
     rows = conn.execute(
         """SELECT name, url, category, province, city, source_ip,
                   platform, resolution, codec, delay, bandwidth, stability
-           FROM scan_results WHERE scan_id = ?""",
+           FROM scan_results WHERE scan_id = %s""",
         (scan_id,)
     ).fetchall()
 

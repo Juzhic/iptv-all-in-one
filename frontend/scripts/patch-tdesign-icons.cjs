@@ -5,22 +5,22 @@ const patchTargets = [
   {
     file: 'node_modules/tdesign-icons-vue-next/esm/svg-sprite/svg-sprite.js',
     search: 'https://tdesign.gtimg.com/icon/0.4.2/fonts/index.js',
-    replace: '/tdesign-icons/index.js',
+    replace: '/static/dist/tdesign-icons/index.js',
   },
   {
     file: 'node_modules/tdesign-icons-vue-next/esm/iconfont/icon.js',
     search: 'https://tdesign.gtimg.com/icon/0.4.2/fonts/index.css',
-    replace: '/tdesign-icons/index.css',
+    replace: '/static/dist/tdesign-icons/index.css',
   },
   {
     file: 'node_modules/tdesign-icons-vue-next/lib/svg-sprite/svg-sprite.js',
     search: 'https://tdesign.gtimg.com/icon/0.4.2/fonts/index.js',
-    replace: '/tdesign-icons/index.js',
+    replace: '/static/dist/tdesign-icons/index.js',
   },
   {
     file: 'node_modules/tdesign-icons-vue-next/lib/iconfont/icon.js',
     search: 'https://tdesign.gtimg.com/icon/0.4.2/fonts/index.css',
-    replace: '/tdesign-icons/index.css',
+    replace: '/static/dist/tdesign-icons/index.css',
   },
 ];
 

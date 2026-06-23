@@ -32,7 +32,7 @@ def _get_passed_results_with_codec(codec_filter=None, min_bw=None):
     if not run:
         return []
 
-    where = "WHERE run_id = ? AND passed = 1"
+    where = "WHERE run_id = %s AND passed = 1"
     params = [run['run_id']]
 
     if codec_filter == 'h265':
@@ -41,7 +41,7 @@ def _get_passed_results_with_codec(codec_filter=None, min_bw=None):
         where += " AND (is_h265 = 0 OR is_h265 IS NULL)"
 
     if min_bw is not None:
-        where += " AND COALESCE(bandwidth_MBps, 0) >= ?"
+        where += " AND COALESCE(bandwidth_MBps, 0) >= %s"
         params.append(min_bw)
 
     rows = conn.execute(

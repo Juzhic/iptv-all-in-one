@@ -10,7 +10,6 @@ from database.db import (  # noqa: F401
     migrate_from_json,
     now_str,
     timestamp_str,
-    DB_PATH,
     DEFAULT_DEMO,
     # 配置
     get_config_data,
@@ -34,6 +33,7 @@ from database.db import (  # noqa: F401
     vacuum_database,
     auto_vacuum_if_needed,
     flush_log_buffer,
+    flush_progress_buffer,
     # 测速进度/日志
     clear_run_progress,
     update_run_progress,

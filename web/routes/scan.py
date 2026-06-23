@@ -585,7 +585,7 @@ def api_persistent_priority():
     try:
         conn = db._get_conn()
         conn.execute(
-            "UPDATE persistent_scan_results SET priority = ? WHERE url = ?",
+            "UPDATE persistent_scan_results SET priority = %s WHERE url = %s",
             (priority, url)
         )
         conn.commit()

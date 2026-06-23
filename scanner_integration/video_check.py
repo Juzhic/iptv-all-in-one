@@ -423,3 +423,47 @@ async def quick_stream_check(session, url):
             return total > 0
     except Exception:
         return False
+
+
+async def health_check_persistent(items, log_fn=None):
+    """对持久化结果中的现有频道进行健康检查。"""
+    def _log(msg):
+        logger.info(msg)
+        if log_fn:
+            log_fn(msg)
+
+    if not items:
+        return
+
+    _log(f"[HealthCheck] 开始检查 {len(items)} 个现有频道...")
+    alive_count = 0
+    dead_count = 0
+
+    async with get_session(limit=20, timeout=8, force_close=True) as session:
+        sem = asyncio.Semaphore(20)
+
+        async def check_one(item):
+            nonlocal alive_count, dead_count
+            async with sem:
+                url = item.get('url', '')
+                if not url.startswith(('http://', 'https://')):
+                    return
+                try:
+                    alive = await quick_stream_check(session, url)
+                    if alive:
+                        alive_count += 1
+                    else:
+                        dead_count += 1
+                        # 更新数据库中的检查状态
+                        try:
+                            import database as _db
+                            _db.update_persistent_check(url, ok=False)
+                        except Exception:
+                            pass
+                except Exception:
+                    dead_count += 1
+
+        tasks = [check_one(item) for item in items]
+        await asyncio.gather(*tasks)
+
+    _log(f"[HealthCheck] 检查完成: {alive_count} 存活, {dead_count} 失效")

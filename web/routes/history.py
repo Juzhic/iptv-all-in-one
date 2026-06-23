@@ -194,9 +194,9 @@ def api_channel_trend(name):
                res.quality_score, res.resolution, res.codec, res.passed
         FROM run_results res
         JOIN runs r ON res.run_id = r.run_id
-        WHERE res.channel = ?
+        WHERE res.channel = %s
         ORDER BY r.id DESC
-        LIMIT ?
+        LIMIT %s
     """, (name, limit * 10)).fetchall()
 
     by_run = {}

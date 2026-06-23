@@ -673,7 +673,12 @@ async function saveScanConfig() {
     // unwrap() 返回 json.data，成功时是配置对象
     MessagePlugin.success('扫描配置已保存')
     if (res && typeof res === 'object') {
-      Object.assign(scanCfg, res)
+      // 保持 community_source_urls 为字符串格式（textarea 需要）
+      const saved = { ...res }
+      if (Array.isArray(saved.community_source_urls)) {
+        saved.community_source_urls = saved.community_source_urls.join('\n')
+      }
+      Object.assign(scanCfg, saved)
     }
     updateCountdown()
   } catch (_) {
@@ -688,21 +693,18 @@ async function loadKeys() {
   try {
     // 1. 快速加载 Key 列表
     const res = await apiScanKeys()
-    if (res.ok) {
-      keyList.value = (res.data || []).map((item) => ({
-        ...item,
-        status: '加载中...',
-        credit: null,
-      }))
-    }
+    keyList.value = (res || []).map((item) => ({
+      ...item,
+      status: '加载中...',
+      credit: null,
+    }))
     
     // 2. 异步获取余额 (不阻塞列表显示)
-    apiScanKeysCredits().then(creditsRes => {
-      if (creditsRes.ok) {
-        const creditsMap = {}
-        creditsRes.data.forEach(item => {
-          creditsMap[item.key_suffix] = item
-        })
+    apiScanKeysCredits().then(creditsData => {
+      const creditsMap = {}
+      ;(creditsData || []).forEach(item => {
+        creditsMap[item.key_suffix] = item
+      })
         
         keyList.value = keyList.value.map(item => {
           const creditInfo = creditsMap[item.key_suffix]
@@ -719,7 +721,6 @@ async function loadKeys() {
           }
           return item
         })
-      }
     }).catch(err => {
       console.error('获取余额失败', err)
     })

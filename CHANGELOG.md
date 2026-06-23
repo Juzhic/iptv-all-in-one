@@ -5,6 +5,35 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+**重要说明：每次代码修改都必须将更新内容写入本文件。**
+
+## [1.6.2] - 2026-06-23
+
+### 修复
+- 修复 `scanner_integration/__init__.py` 第430行和第868行注释与代码粘连导致的逻辑错误
+- 修复 `web/routes/health.py` 中引用不存在的 `_bridge` 变量，改为正确的 `bridge`
+- 修复 `scanner_integration/persistence.py`、`web/routes/history.py`、`web/routes/scan.py`、`web/routes/subscribe.py` 中SQL占位符从SQLite风格 `?` 改为MySQL兼容的 `%s`
+- 实现 `scanner_integration/video_check.py` 中缺失的 `health_check_persistent` 函数
+- 修复 `scanner_integration/__init__.py` 中引用不存在的 `_db.DB_PATH` 属性，适配MySQL架构
+
+### 改进
+- 重构 `scanner_integration/__init__.py` 中重复的去重代码，提取 `_deduplicate_and_normalize()` 辅助函数
+- 优化 `Dockerfile` 使用多阶段构建，减小镜像体积
+- 将 `Dockerfile` 中的Flask内置服务器替换为gunicorn生产服务器
+- 修复 `docker-compose.yml` 中已弃用的 `version` 字段
+- 修复 `.gitignore` 中重复的 `basic_auth.json` 条目
+- 优化 `frontend/vite.config.js` 添加try-catch处理配置文件缺失情况
+- 清理 `tests/` 目录中的测试报告JSON和截图文件
+- 创建 `.dockerignore` 文件优化Docker构建
+- 在 `requirements.txt` 中添加 `gunicorn>=21.2.0` 依赖
+
+### 安全
+- 将 `database/db_config.json` 添加到 `.gitignore` 忽略列表
+
+### 运维
+- 更新 `docker-compose.yml` 添加 `db_config.json` volume 挂载，支持MySQL数据库配置
+- 更新 README.md 版本号至 v1.6.2
+
 ## [1.6.1] - 2026-06-21
 
 ### 修复

@@ -122,8 +122,8 @@ def health_check():
 
     # 扫描模块状态
     try:
-        from scanner_integration import _bridge
-        result['checks']['scanner'] = 'ok' if _bridge and _bridge._loop else 'not_running'
+        from scanner_integration import bridge
+        result['checks']['scanner'] = 'ok' if bridge and bridge._loop and bridge._loop.is_running() else 'not_running'
     except ImportError:
         result['checks']['scanner'] = 'not_available'
     except Exception:

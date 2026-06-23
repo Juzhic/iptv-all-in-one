@@ -14,7 +14,7 @@ from engine.ffmpeg_test import (
     http_get,
     detect_non_live_media_url,
 )
-from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer
+from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer, flush_progress_buffer
 try:
     from scanner_integration.platforms import is_valid_stream_url
 except ImportError:
@@ -1305,6 +1305,11 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     # 刷新日志缓冲区，确保所有日志写入数据库
     try:
         flush_log_buffer()
+    except Exception:
+        pass
+    # 刷新进度缓冲区，确保进度数据写入数据库
+    try:
+        flush_progress_buffer()
     except Exception:
         pass
 

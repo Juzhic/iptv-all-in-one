@@ -2,7 +2,7 @@
   <div class="scan-results-tab">
     <!-- 视图切换 -->
     <div class="view-tabs-row">
-      <t-tabs v-model="viewMode" theme="normal" size="small" :destroy-on-hide="false">
+      <t-tabs v-model="viewMode" theme="normal" size="medium" :destroy-on-hide="false">
         <t-tab-panel value="grouped" label="按来源分组" />
         <t-tab-panel value="legacy" label="按扫描记录" />
       </t-tabs>

@@ -4,15 +4,15 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.1）
+## 当前版本说明（v1.6.2）
 
-本项目当前以 SQLite 作为主要数据存储，默认数据库文件为 `data/iptv.db`（可通过环境变量 `IPTV_DB_PATH` 自定义路径）。
+本项目当前以 MySQL 作为主要数据存储，数据库配置位于 `database/db_config.json`。
 
 旧版 README 中提到的 `config.json`、`subscribe.txt`、`alias.txt`、`demo.txt` 已不再作为日常配置入口。现在请通过 Web 后台的"系统配置"页面维护：
 
 | 数据 | 当前存储位置 | 说明 |
 | --- | --- | --- |
-| 系统参数 | `data/iptv.db` 的 `config_data` 表，key 为 `config` | 测速时长、并发数、分辨率阈值、运行模式等 |
+| 系统参数 | MySQL `config_data` 表，key 为 `config` | 测速时长、并发数、分辨率阈值、运行模式等 |
 | 订阅源 | `config_data` 表，key 为 `subscribe` | 每行一个 M3U 地址 |
 | 频道模板 | `config_data` 表，key 为 `demo` | 决定要匹配、测速和输出哪些频道 |
 | 别名映射 | `config_data` 表，key 为 `alias` | 将不同频道名归一到模板中的主名 |
@@ -25,7 +25,7 @@
 | 检测日志 | `detection_logs` | 定期检测模块日志 |
 | 持久化结果 | `persistent_scan_results` | 扫描结果持久化存储，支持自动复活机制 |
 
-如果根目录存在旧的 `config.json`，程序首次启动且数据库里没有系统配置时，会尝试迁移到 SQLite，并把原文件重命名为 `config.json.bak`。旧的 `output/history.json` 也会迁移到 SQLite，并重命名为 `.bak`。
+如果根目录存在旧的 `config.json`，程序首次启动且数据库里没有系统配置时，会尝试迁移到 MySQL，并把原文件重命名为 `config.json.bak`。旧的 `output/history.json` 也会迁移到 MySQL，并重命名为 `.bak`。
 
 ## 功能
 
@@ -934,6 +934,8 @@ IPTV-Test/
 ## 更新日志
 
 详细的版本更新记录请查看 [CHANGELOG.md](CHANGELOG.md)。
+
+**重要：每次代码修改都必须将更新内容写入 [CHANGELOG.md](CHANGELOG.md) 文件。** 请遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式规范。
 
 ## 许可证
 

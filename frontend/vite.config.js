@@ -3,10 +3,18 @@ import vue from '@vitejs/plugin-vue'
 import { readFileSync } from 'node:fs'
 
 function loadBasicAuthConfig() {
-  const raw = JSON.parse(readFileSync(new URL('../basic_auth.json', import.meta.url), 'utf8'))
-  return {
-    username: raw.username,
-    password: raw.password,
+  try {
+    const raw = JSON.parse(readFileSync(new URL('../basic_auth.json', import.meta.url), 'utf8'))
+    return {
+      username: raw.username,
+      password: raw.password,
+    }
+  } catch (e) {
+    console.warn('basic_auth.json not found, using default credentials')
+    return {
+      username: 'admin',
+      password: 'admin',
+    }
   }
 }
 
@@ -31,6 +39,11 @@ export default defineConfig(({ command }) => ({
             proxyReq.setHeader('Authorization', basicAuthHeader)
           })
         },
+      },
+      '/static/dist/tdesign-icons': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace('/static/dist/tdesign-icons', '/tdesign-icons'),
       },
     },
   },

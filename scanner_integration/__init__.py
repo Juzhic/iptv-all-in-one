@@ -259,9 +259,22 @@ def init_bridge():
 
 # ==================== 扫描编排协程 ====================
 
+
+def _deduplicate_and_normalize(raw):
+    """去重并标准化频道数据。"""
+    from .platforms import deduplicate
+    uniq = deduplicate(raw)
+    for ch in uniq:
+        if not ch.get('province'):
+            ch['province'] = '未知'
+        if not ch.get('city'):
+            ch['city'] = ''
+    return uniq
+
+
 async def _do_scan(platforms_override=None, provinces_override=None):
     """执行完整的扫描流程：采集 -> 快速过滤 -> 深度检测 -> 保存数据库。"""
-    from .platforms import collect_all, deduplicate
+    from .platforms import collect_all
     from .video_check import fast_filter, background_deep_update
     from .channel_utils import resolve_name
     from .network import get_session
@@ -320,12 +333,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             return scan_id
 
         # 去重
-        uniq = deduplicate(raw)
-        for ch in uniq:
-            if not ch.get('province'):
-                ch['province'] = '未知'
-            if not ch.get('city'):
-                ch['city'] = ''
+        uniq = _deduplicate_and_normalize(raw)
 
         _scan_log(f"[Scan:{scan_id}] 采集到 {len(raw)} 条，去重后 {len(uniq)} 条。")
         _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
@@ -340,12 +348,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 if isp_channels:
                     _scan_log(f"[Scan:{scan_id}] ISP Intelligence: 发现 {len(isp_channels)} 个频道，正在合并...")
                     raw.extend(isp_channels)
-                    uniq = deduplicate(raw)
-                    for ch in uniq:
-                        if not ch.get('province'):
-                            ch['province'] = '未知'
-                        if not ch.get('city'):
-                            ch['city'] = ''
+                    uniq = _deduplicate_and_normalize(raw)
                     _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
                     _scan_log(f"[Scan:{scan_id}] ISP Intelligence 合并完成，去重后 {len(uniq)} 条。")
                 else:
@@ -364,12 +367,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 if cs_channels:
                     _scan_log(f"[Scan:{scan_id}] 社区源：发现 {len(cs_channels)} 个频道，正在合并...")
                     raw.extend(cs_channels)
-                    uniq = deduplicate(raw)
-                    for ch in uniq:
-                        if not ch.get('province'):
-                            ch['province'] = '未知'
-                        if not ch.get('city'):
-                            ch['city'] = ''
+                    uniq = _deduplicate_and_normalize(raw)
                     _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
                     _scan_log(f"[Scan:{scan_id}] 社区源合并完成，去重后 {len(uniq)} 条。")
                 else:
@@ -427,7 +425,8 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                     resolution=ch.get('resolution'), codec=ch.get('codec')
                 )
 
-        # 更新最终结果。        if sorted_channels:
+        # 更新最终结果
+        if sorted_channels:
             scan_state.channels = sorted_channels
             _db.update_scan_run(scan_id, total_deep_pass=len([
                 c for c in sorted_channels if c.get('stability', 0) >= 30
@@ -469,7 +468,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
 
 async def _do_incremental_scan(platforms_override=None, provinces_override=None):
     """增量扫描：先检查现有频道，再采集新源，仅对新 URL 做快速过滤和深度检测。"""
-    from .platforms import collect_all, deduplicate
+    from .platforms import collect_all
     from .video_check import fast_filter, background_deep_update, health_check_persistent
     from .channel_utils import resolve_name
     from .network import get_session
@@ -531,12 +530,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
             _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
             return scan_id
 
-        uniq = deduplicate(raw)
-        for ch in uniq:
-            if not ch.get('province'):
-                ch['province'] = '未知'
-            if not ch.get('city'):
-                ch['city'] = ''
+        uniq = _deduplicate_and_normalize(raw)
 
         # 过滤掉已知 URL，仅保留新发现的
         new_channels = [ch for ch in uniq if ch['url'] not in existing_urls]
@@ -617,6 +611,36 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         pass
 
     return scan_id
+
+
+def trigger_scan(platforms=None, provinces=None):
+    """触发全量扫描（入口，供路由调用）。"""
+    import database as _db
+    progress = _db.get_scan_progress()
+    if progress and progress.get('running'):
+        return {'ok': False, 'error': '扫描正在进行中'}
+    bridge.start()  # 确保异步循环已启动
+    bridge.run_background(_do_scan(
+        platforms_override=platforms,
+        provinces_override=provinces,
+    ))
+    return {'ok': True, 'mode': 'full'}
+
+
+def trigger_stop():
+    """请求停止扫描。"""
+    scan_state.request_stop()
+    return {'ok': True, 'message': '已请求停止扫描'}
+
+
+def force_clear_scan():
+    """强制清除卡死的扫描状态。"""
+    import database as _db
+    # 清除数据库中的扫描进度
+    _db.clear_scan_progress()
+    # 重置内存状态
+    scan_state.clear_stop()
+    return {'ok': True, 'message': '扫描状态已清除'}
 
 
 def trigger_incremental_scan(platforms_override=None, provinces_override=None):
@@ -835,7 +859,8 @@ async def _daily_update_task():
                         f"(等待 {wait_seconds:.0f} 秒)")
             await asyncio.sleep(wait_seconds)
 
-            # 到达目标时间，检查是否有正在进行的扫描。            import database as _db
+            # 到达目标时间，检查是否有正在进行的扫描
+            import database as _db
             progress = _db.get_scan_progress()
             if progress and progress.get('running'):
                 logger.info("[Scheduler] 已有扫描在运行，跳过本次")
@@ -896,21 +921,16 @@ async def _daily_db_maintenance_task():
             except Exception as e:
                 logger.warning(f"[DBMaint] 清理 run_logs 失败: {e}")
 
-            # 2. VACUUM 压缩数据库（扫描运行时跳过，防止并发写入损坏数据库）
+            # 2. 数据库维护（MySQL 无需 VACUUM）
             try:
-                import os
                 progress = _db.get_scan_progress()
                 if progress.get('running'):
-                    logger.info("[DBMaint] 扫描正在进行中，跳过 VACUUM 以避免并发写入风险。")
+                    logger.info("[DBMaint] 扫描正在进行中，跳过维护。")
                 else:
-                    size_before = os.path.getsize(_db.DB_PATH)
-                    _db.vacuum_database()
-                    size_after = os.path.getsize(_db.DB_PATH)
-                    saved_mb = (size_before - size_after) / (1024 * 1024)
-                    logger.info(f"[DBMaint] VACUUM 完成: {size_before / 1024 / 1024:.1f}MB ->"
-                                f"{size_after / 1024 / 1024:.1f}MB (释放 {saved_mb:.1f}MB)")
+                    _db.vacuum_database()  # MySQL 下为空操作
+                    logger.info("[DBMaint] 数据库维护完成（MySQL 无需 VACUUM）")
             except Exception as e:
-                logger.warning(f"[DBMaint] VACUUM 失败: {e}")
+                logger.warning(f"[DBMaint] 维护异常: {e}")
 
             logger.info("[DBMaint] 每日维护完成")
             # 防止同一天重复触发
