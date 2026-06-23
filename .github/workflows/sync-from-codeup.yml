@@ -1,0 +1,33 @@
+name: Scheduled Sync from Codeup
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Sync from Codeup
+        env:
+          CODEUP_REPO: ${{ secrets.CODEUP_REPO_URL }}
+          CODEUP_TOKEN: ${{ secrets.CODEUP_TOKEN }}
+        run: |
+          git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
+          git fetch codeup
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse codeup/main)
+          if [ "$LOCAL" != "$REMOTE" ]; then
+            git merge codeup/main --allow-unrelated-histories -m "Auto sync"
+            git push origin main
+            echo "✅ Synced"
+          else
+            echo "⏭️ Already up to date"
+          fi
