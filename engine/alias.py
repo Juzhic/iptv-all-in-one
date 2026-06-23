@@ -4,24 +4,38 @@
 提供别名加载、频道名匹配、CCTV 归一化等功能，供测速模块和扫描模块共用。
 """
 import re
+import threading
 
 # 模块级缓存，首次调用 load_aliases() 后填充
+_alias_lock = threading.RLock()
 _name_to_canonical = {}
 _regex_aliases = []
 _canonical_to_aliases = {}
+_alias_cache_mtime = None
 
 
 def load_aliases():
     """
     从数据库读取频道别名，解析并缓存。
     返回 (canonical_to_aliases, name_to_canonical, regex_aliases)。
+    使用缓存机制避免重复解析。
     """
-    global _name_to_canonical, _regex_aliases, _canonical_to_aliases
-    from database import get_config_data
-    content = get_config_data('alias')
+    global _name_to_canonical, _regex_aliases, _canonical_to_aliases, _alias_cache_mtime
+    from database import get_config_data_with_mtime
+    
+    # 获取配置内容和更新时间
+    content, current_mtime = get_config_data_with_mtime('alias')
+    
+    # 如果配置未变化，直接返回缓存
+    with _alias_lock:
+        if _alias_cache_mtime is not None and _alias_cache_mtime == current_mtime:
+            return _canonical_to_aliases, _name_to_canonical, _regex_aliases
+    
+    # 配置有变化，重新解析
     canonical_to_aliases = {}
     name_to_canonical = {}
     regex_aliases = []
+    
     for line in content.split('\n'):
         line = line.strip()
         if not line or line.startswith('#'):
@@ -35,16 +49,24 @@ def load_aliases():
         name_to_canonical[canonical] = canonical
         for alias in aliases:
             if alias.startswith('re:'):
+                pattern_src = alias[3:]
+                # ReDoS protection: limit pattern length
+                if len(pattern_src) > 200:
+                    continue
                 try:
-                    regex_aliases.append((re.compile(alias[3:], re.IGNORECASE), canonical))
+                    regex_aliases.append((re.compile(pattern_src, re.IGNORECASE), canonical))
                 except re.error:
                     continue
             else:
                 name_to_canonical[alias] = canonical
+    
     # 写入模块缓存
-    _canonical_to_aliases = canonical_to_aliases
-    _name_to_canonical = name_to_canonical
-    _regex_aliases = regex_aliases
+    with _alias_lock:
+        _canonical_to_aliases = canonical_to_aliases
+        _name_to_canonical = name_to_canonical
+        _regex_aliases = regex_aliases
+        _alias_cache_mtime = current_mtime
+    
     return canonical_to_aliases, name_to_canonical, regex_aliases
 
 
@@ -70,9 +92,10 @@ def match_channel_name(name, name_to_canonical=None, regex_aliases=None):
 
 def get_cached_aliases():
     """返回当前缓存的别名数据，未加载时先触发加载。"""
-    if not _name_to_canonical:
-        load_aliases()
-    return _canonical_to_aliases, _name_to_canonical, _regex_aliases
+    with _alias_lock:
+        if not _name_to_canonical:
+            load_aliases()
+        return _canonical_to_aliases, _name_to_canonical, _regex_aliases
 
 
 def strip_quality_suffix(name):

@@ -7,10 +7,8 @@
 import asyncio
 import logging
 
-import aiohttp
-
 from . import config_bridge
-from .network import get_session
+from .network import get_session, quick_http_check
 
 logger = logging.getLogger('scanner.persistence')
 
@@ -24,7 +22,7 @@ async def merge_scan_to_persistent(scan_id):
     rows = conn.execute(
         """SELECT name, url, category, province, city, source_ip,
                   platform, resolution, codec, delay, bandwidth, stability
-           FROM scan_results WHERE scan_id = ?""",
+           FROM scan_results WHERE scan_id = %s""",
         (scan_id,)
     ).fetchall()
 
@@ -57,7 +55,7 @@ async def merge_scan_to_persistent(scan_id):
     try:
         await _validate_pending()
     except Exception as e:
-        logger.warning(f"[Persistence] 验证过程出错（数据已保留）: {e}")
+        logger.warning(f"[Persistence] 验证过程出错（数据已保留）: {type(e).__name__}: {e}")
 
 
 async def _validate_pending():
@@ -88,7 +86,29 @@ async def _validate_pending():
                     fail_reasons['non_http'] = fail_reasons.get('non_http', 0) + 1
                     return
 
-                # 快速连接检查
+                stability = item.get('stability', 0) or 0
+                delay = item.get('delay')
+                bandwidth = item.get('bandwidth')
+
+                # Channels with stability > 0 already passed deep_check;
+                # accept them directly without a redundant HTTP probe.
+                if stability > 0:
+                    _db.update_persistent_check(
+                        url, ok=True,
+                        stability=stability,
+                        delay=delay,
+                        bandwidth=bandwidth,
+                        resolution=item.get('resolution'),
+                        codec=item.get('codec'),
+                    )
+                    verified += 1
+                    if stability >= 60:
+                        good += 1
+                    elif stability >= 30:
+                        poor += 1
+                    return
+
+                # Truly unverified (stability is NULL or 0) – do a quick HTTP check
                 ok = await _quick_check(session, url)
                 if not ok:
                     _db.update_persistent_check(url, ok=False)
@@ -96,10 +116,6 @@ async def _validate_pending():
                     fail_reasons['http_check_failed'] = fail_reasons.get('http_check_failed', 0) + 1
                     return
 
-                # 使用扫描时已有的指标判定质量
-                stability = item.get('stability', 0)
-                delay = item.get('delay')
-                bandwidth = item.get('bandwidth')
                 _db.update_persistent_check(
                     url, ok=True,
                     stability=stability,
@@ -109,10 +125,6 @@ async def _validate_pending():
                     codec=item.get('codec'),
                 )
                 verified += 1
-                if stability >= 60:
-                    good += 1
-                elif stability >= 30:
-                    poor += 1
 
         await asyncio.gather(*[check_one(item) for item in pending])
 
@@ -124,16 +136,4 @@ async def _validate_pending():
 
 async def _quick_check(session, url):
     """快速检查 URL 是否可连接。"""
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=4),
-                               allow_redirects=True) as r:
-            if r.status != 200:
-                return False
-            total = 0
-            async for chunk in r.content.iter_chunked(2048):
-                total += len(chunk)
-                if total >= 4096:
-                    return True
-            return total > 0
-    except Exception:
-        return False
+    return quick_http_check(session, url)['alive']

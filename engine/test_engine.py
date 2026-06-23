@@ -1,7 +1,6 @@
 import time
 import threading
 import re
-import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -15,8 +14,11 @@ from engine.ffmpeg_test import (
     http_get,
     detect_non_live_media_url,
 )
-from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer
-from scanner_integration.platforms import is_valid_stream_url
+from database import init_db, insert_run, migrate_from_json, now_str, timestamp_str, flush_log_buffer, flush_progress_buffer
+try:
+    from scanner_integration.platforms import is_valid_stream_url
+except ImportError:
+    is_valid_stream_url = None
 
 try:
     import psutil
@@ -45,6 +47,8 @@ DEFAULT_CONFIG = {
     'run_times': [],
     'run_interval_minutes': 60,
     'include_scan_results_in_test': False,
+    'logo_base_url': 'https://www.xn--rgv465a.top/tvlogo',
+    'epg_url': '',
 }
 
 
@@ -276,6 +280,9 @@ class SystemMemoryLimiter:
 
 
 # --- 日志配置模块 ---
+_logging_setup_lock = threading.Lock()
+
+
 class _DBLogHandler(logging.Handler):
     """将日志写入 SQLite 数据库的 logging handler。"""
     def __init__(self):
@@ -296,24 +303,25 @@ _db_handler = _DBLogHandler()
 
 
 def setup_logging(run_id=''):
-    """配置日志系统：控制台输出 + 数据库写入。"""
-    root_logger = logging.getLogger()
-    if root_logger.handlers:
-        for handler in root_logger.handlers[:]:
-            handler.close()
-            root_logger.removeHandler(handler)
+    """配置日志系统：控制台输出 + 数据库写入。线程安全。"""
+    with _logging_setup_lock:
+        root_logger = logging.getLogger()
+        if root_logger.handlers:
+            for handler in root_logger.handlers[:]:
+                handler.close()
+                root_logger.removeHandler(handler)
 
-    _db_handler.run_id = run_id
-    _db_handler.setFormatter(logging.Formatter('%(message)s'))
+        _db_handler.run_id = run_id
+        _db_handler.setFormatter(logging.Formatter('%(message)s'))
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            _db_handler,
-            logging.StreamHandler()
-        ]
-    )
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                _db_handler,
+                logging.StreamHandler()
+            ]
+        )
 
     logger = logging.getLogger(__name__)
     logger.info(f"日志系统已启动（数据库 + 控制台）")
@@ -391,7 +399,7 @@ def parse_iptv_addresses(m3u_content):
             continue
 
         if is_url(line):
-            if not is_valid_stream_url(line):
+            if is_valid_stream_url is not None and not is_valid_stream_url(line):
                 current_channel = {}
                 continue
             if detect_non_live_media_url(line):
@@ -410,7 +418,7 @@ def parse_iptv_addresses(m3u_content):
             name = name.strip()
             url = url.strip()
             if name and is_url(url) and not detect_non_live_media_url(url):
-                if not is_valid_stream_url(url):
+                if is_valid_stream_url is not None and not is_valid_stream_url(url):
                     continue
                 channel_info = {'name': name}
                 if current_group:
@@ -880,7 +888,10 @@ def filter_and_save_playlist(
             if pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             else:
-                time.sleep(0.5)
+                if stop_event:
+                    stop_event.wait(0.5)
+                else:
+                    time.sleep(0.5)
                 done = set()
 
             for future in done:
@@ -932,6 +943,8 @@ def filter_and_save_playlist(
         # 不等待残留线程：主循环已通过 channel_timeout 标记并收集了所有结果，
         # 残留线程仅剩网络/FFmpeg 清理，无需阻塞主线程。
         executor.shutdown(wait=False, cancel_futures=True)
+        # 主动清空超时标记，避免残留线程继续读取旧标记
+        _clear_timeouts()
 
     # 任务结束日志
     total_elapsed = time.time() - start_time
@@ -1034,9 +1047,11 @@ def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex
             f.write(update_block)
 
 
-def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None):
+def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None, config=None):
     """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
-    logo_base = 'https://www.xn--rgv465a.top/tvlogo'
+    cfg = config or DEFAULT_CONFIG
+    logo_base = cfg.get('logo_base_url', DEFAULT_CONFIG['logo_base_url'])
+    epg_url = cfg.get('epg_url', DEFAULT_CONFIG['epg_url'])
     update_time_str = resolve_output_update_time(filtered_urls, update_time)
     update_entry = (
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
@@ -1045,7 +1060,7 @@ def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex
     )
 
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('#EXTM3U x-tvg-url="http://192.168.3.61:8080/epg/epg.gz"\n')
+        f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
 
         if show_update_time and update_time_position == 'top':
             f.write(update_entry)
@@ -1208,7 +1223,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     show_time = cfg.get('show_update_time', True)
     time_pos = cfg.get('update_time_position', 'top')
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
     _log("已清空旧输出文件，开始写入本轮实时结果")
 
     def _on_channel_pass(name, entry):
@@ -1221,7 +1236,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
                 filtered_urls[name].append(entry)
             filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
             save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
 
     # 测速筛选（实时写入）
     # 始终写入 SQLite 进度表，供 Web 端读取
@@ -1256,7 +1271,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
     save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
 
     # 运行结束，清空进度
     clear_run_progress()
@@ -1290,6 +1305,11 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     # 刷新日志缓冲区，确保所有日志写入数据库
     try:
         flush_log_buffer()
+    except Exception:
+        pass
+    # 刷新进度缓冲区，确保进度数据写入数据库
+    try:
+        flush_progress_buffer()
     except Exception:
         pass
 
@@ -1337,7 +1357,7 @@ if __name__ == "__main__":
         print(f"已从 history.json 迁移 {migrated} 轮历史数据到 SQLite")
 
     if not load_subscribe_urls():
-        print("订阅源为空，请先运行 python web.py 在后台配置订阅源")
+        print("订阅源为空，请先运行 python -m web 在后台配置订阅源")
     elif run_mode == 'once':
         run_test_cycle()
 

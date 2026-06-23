@@ -8,19 +8,7 @@ import aiohttp
 import json
 import math
 from .logger_bridge import logger
-
-
-def _safe_number(value):
-    """Return a finite number, or None for API placeholders like 'Invalid Number'."""
-    if value is None or value == '':
-        return None
-    try:
-        num = float(str(value).replace(',', '').strip())
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(num):
-        return None
-    return int(num) if num.is_integer() else num
+from engine.utils import safe_number as _safe_number
 
 
 def _first_number(data, names):
@@ -128,7 +116,7 @@ def get_keys_from_config(platform):
 def init_key_manager():
     """从配置初始化 KeyManager。"""
     km = KeyManager.instance()
-    for platform in ('quake', 'hunter', 'daydaymap'):
+    for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
         keys = get_keys_from_config(platform)
         km.load_keys(platform, keys)
         logger.info(f"[KeyMgr] {platform}: {len(keys)} 个 key")
@@ -170,10 +158,10 @@ async def check_hunter_credit(api_key):
             try:
                 url = "https://hunter.qianxin.com/openApi/userInfo"
                 async with s.get(url, params={"api-key": key}) as resp:
-                    print(f"[Hunter] userInfo status={resp.status}")
+                    logger.debug(f"[Hunter] userInfo status={resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
-                        print(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
+                        logger.debug(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
                         d = data.get('data') or {}
                         if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
                             points = _first_number(d, (
@@ -191,11 +179,11 @@ async def check_hunter_credit(api_key):
                                 'role': role,
                             }
                         else:
-                            print(f"[Hunter] userInfo unexpected: code={data.get('code')}")
+                            logger.warning(f"[Hunter] userInfo unexpected: code={data.get('code')}")
                     else:
-                        print(f"[Hunter] userInfo HTTP {resp.status}")
+                        logger.warning(f"[Hunter] userInfo HTTP {resp.status}")
             except Exception as e:
-                print(f"[Hunter] userInfo exception: {e}")
+                logger.debug(f"[Hunter] userInfo exception: {e}")
 
             # 2) 回退：openApi/search 最小查询，从 rest_quota 解析
             try:
@@ -205,7 +193,7 @@ async def check_hunter_credit(api_key):
                                  params={"api-key": key, "search": dummy_query,
                                          "page": 1, "page_size": 1, "is_web": 1},
                                  timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    print(f"[Hunter] search fallback status={resp.status}")
+                    logger.debug(f"[Hunter] search fallback status={resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         d = data.get('data') or {}
@@ -214,19 +202,19 @@ async def check_hunter_credit(api_key):
                             import re
                             m = re.search(r'(\d+)', rq)
                             points = int(m.group(1)) if m else None
-                            print(f"[Hunter] search rest_quota={rq} -> points={points}")
+                            logger.debug(f"[Hunter] search rest_quota={rq} -> points={points}")
                             return {'ok': True, 'points': points, 'role': ''}
-                        print(f"[Hunter] search unexpected: code={data.get('code')}")
+                        logger.warning(f"[Hunter] search unexpected: code={data.get('code')}")
                         return {'error': data.get('message', 'query failed')}
                     elif resp.status == 403:
                         return {'ok': True, 'points': 0, 'role': '',
                                 'error': '积分耗尽 (HTTP 403)'}
                     return {'error': f'HTTP {resp.status}'}
             except Exception as e:
-                print(f"[Hunter] search fallback exception: {e}")
+                logger.debug(f"[Hunter] search fallback exception: {e}")
                 return {'error': f'userInfo+search both failed: {e}'}
     except Exception as e:
-        print(f"[Hunter] check_hunter_credit fatal: {e}")
+        logger.warning(f"[Hunter] check_hunter_credit fatal: {e}")
         return {'error': str(e)}
 
 
@@ -382,5 +370,22 @@ async def check_all_daydaymap_credits():
             'role': info.get('role', ''),
             'role_limit': None,
             'error': info.get('error', ''),
+        })
+    return results
+
+
+async def check_all_fofa_credits():
+    """Query all Fofa key/token points."""
+    km = KeyManager.instance()
+    keys = km.get_all_keys('fofa')
+    results = []
+    for key in keys:
+        # Fofa 没有标准的积分查询 API，返回基本结构
+        results.append({
+            'key_suffix': f"...{key[-6:]}",
+            'credit': None,
+            'role': '',
+            'role_limit': None,
+            'error': '',
         })
     return results

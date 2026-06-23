@@ -49,12 +49,37 @@ def get_session(limit=50, timeout=15, force_close=False):
                                  cookie_jar=aiohttp.DummyCookieJar())
 
 
-def new_scan_session(limit=30, timeout=15):
-    connector = aiohttp.TCPConnector(
-        limit=limit, limit_per_host=10, force_close=True,
-        enable_cleanup_closed=True, ttl_dns_cache=300, use_dns_cache=True,
-        resolver=ThreadedResolver()
-    )
-    timeout_obj = aiohttp.ClientTimeout(total=timeout, connect=5)
-    return aiohttp.ClientSession(connector=connector, timeout=timeout_obj,
-                                 cookie_jar=aiohttp.DummyCookieJar())
+async def quick_http_check(session, url, min_bytes=4096, timeout=4):
+    """Quick HTTP check returning a result dict.
+
+    Returns:
+        dict: ``alive`` (bool), ``status`` (int), ``time_ms`` (float),
+              ``bytes`` (int).
+    """
+    result = {'alive': False, 'status': 0, 'time_ms': 0.0, 'bytes': 0}
+    try:
+        from datetime import datetime
+        start = datetime.now()
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=True,
+        ) as r:
+            result['status'] = r.status
+            if r.status != 200:
+                result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+                return result
+            total = 0
+            async for chunk in r.content.iter_chunked(2048):
+                total += len(chunk)
+                if total >= min_bytes:
+                    result['alive'] = True
+                    result['bytes'] = total
+                    result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+                    return result
+            result['alive'] = total > 0
+            result['bytes'] = total
+            result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
+            return result
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        return result

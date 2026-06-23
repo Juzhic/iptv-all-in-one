@@ -14,6 +14,11 @@ logs/
 *.db-wal
 *.db.corrupted.*
 
+# 配置文件（包含敏感信息）
+basic_auth.json
+database/db_config.json
+*.log
+
 # IDE
 .idea/
 .vscode/
@@ -21,8 +26,12 @@ logs/
 # 系统文件
 .DS_Store
 Thumbs.db
-/.idea
+
+# 测试报告
+tests/test_report_*.json
+tests/*.png
 
 # 前端构建产物
 dist/
 frontend/node_modules/
+/deploy

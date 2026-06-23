@@ -13,6 +13,16 @@
       </t-space>
     </t-card>
 
+    <!-- 对比按钮 -->
+    <div v-if="selectedRowKeys.length > 0" style="margin-bottom:8px">
+      <t-space>
+        <t-button theme="primary" size="small" :disabled="selectedRowKeys.length !== 2" @click="openCompare">
+          对比选中 ({{ selectedRowKeys.length }}/2)
+        </t-button>
+        <t-button variant="outline" size="small" @click="selectedRowKeys = []">取消选择</t-button>
+      </t-space>
+    </div>
+
     <!-- 历史表格 -->
     <t-table
       :columns="columns"
@@ -22,6 +32,7 @@
       :expand-icon="true"
       :expanded-row-keys="expandedKeys"
       @expand-change="onExpandChange"
+      :row-selection="{ selectedRowKeys, onChange: onSelectionChange }"
       size="small"
     >
       <template #summary_pass_rate="{ row }">
@@ -54,7 +65,7 @@
           <div v-if="!filteredChannelCount(row.run_id)" class="empty-hint">暂无匹配频道</div>
 
           <div class="detail-summary" v-if="filteredChannelCount(row.run_id)">
-            共 {{ filteredChannelCount(row.run_id) }} 个频道，第 {{ detailPage[row.run_id] || 1 }}/{{ detailTotalPages(row.run_id) }} 页
+            共 {{ getTotalChannels(row.run_id) }} 个频道，第 {{ detailPage[row.run_id] || 1 }}/{{ detailTotalPages(row.run_id) }} 页
           </div>
 
           <t-collapse expand-mutex v-if="filteredChannelCount(row.run_id)">
@@ -131,15 +142,15 @@
             </t-collapse-panel>
           </t-collapse>
 
-          <div class="detail-pagination" v-if="filteredChannelCount(row.run_id) > DETAIL_PAGE_SIZE">
+          <div class="detail-pagination" v-if="getTotalChannels(row.run_id) > DETAIL_PAGE_SIZE">
             <t-pagination
-              :total="filteredChannelCount(row.run_id)"
+              :total="getTotalChannels(row.run_id)"
               :pageSize="DETAIL_PAGE_SIZE"
               :current="detailPage[row.run_id] || 1"
               :showPageSize="false"
               :showJumper="true"
               size="small"
-              @current-change="(page) => { detailPage[row.run_id] = page }"
+              @current-change="(page) => onDetailPageChange(row.run_id, page)"
             />
           </div>
         </div>
@@ -167,13 +178,87 @@
         <t-input v-model="logSearch" placeholder="搜索日志内容..." clearable style="width:300px" />
         <span style="font-size:12px;color:var(--td-text-color-placeholder)">{{ logEntries.length }} 条</span>
       </t-space>
-      <div class="log-panel">
-        <div v-for="(l, i) in filteredLogs" :key="i" class="log-line">
-          <span class="log-time">[{{ l.ts }}]</span>
-          <span :class="logClass(l)">[{{ l.level === 'ERROR' ? 'ERROR' : l.level === 'WARNING' ? 'WARN' : 'INFO' }}]</span>
-          <span :class="logMsgClass(l)">{{ l.message }}</span>
-        </div>
-        <div v-if="!filteredLogs.length" style="color:var(--td-text-color-placeholder);padding:8px">暂无日志</div>
+      <LogPanel
+        :entries="filteredLogs"
+        :show-count="false"
+        empty-text="暂无日志"
+        @clear="logEntries = []"
+      />
+    </t-dialog>
+
+    <!-- 对比弹窗 -->
+    <t-dialog
+      v-model:visible="compareVisible"
+      header="测试结果对比"
+      :footer="false"
+      width="1200px"
+      destroy-on-close
+    >
+      <div v-if="compareLoading" style="text-align:center;padding:40px;color:var(--td-text-color-placeholder)">加载中...</div>
+      <div v-else-if="compareData">
+        <!-- 顶部：两个 run 概览 -->
+        <t-row :gutter="16" style="margin-bottom:16px">
+          <t-col :span="6">
+            <t-card size="small" header="A (基准)">
+              <div style="font-size:13px;line-height:2">
+                <div>时间：{{ compareData.run_a.finished_at }}</div>
+                <div>通过率：{{ compareData.run_a.pass_rate }}%</div>
+                <div>频道覆盖：{{ compareData.run_a.unique_channels_passed }}/{{ compareData.run_a.unique_channels_total }}</div>
+                <div>耗时：{{ Math.round(compareData.run_a.duration_seconds / 60) }} 分钟</div>
+              </div>
+            </t-card>
+          </t-col>
+          <t-col :span="6">
+            <t-card size="small" header="B (比较)">
+              <div style="font-size:13px;line-height:2">
+                <div>时间：{{ compareData.run_b.finished_at }}</div>
+                <div>通过率：{{ compareData.run_b.pass_rate }}%</div>
+                <div>频道覆盖：{{ compareData.run_b.unique_channels_passed }}/{{ compareData.run_b.unique_channels_total }}</div>
+                <div>耗时：{{ Math.round(compareData.run_b.duration_seconds / 60) }} 分钟</div>
+              </div>
+            </t-card>
+          </t-col>
+        </t-row>
+
+        <!-- 中间：delta 标签 -->
+        <t-space :size="12" style="margin-bottom:16px">
+          <t-tag theme="success" variant="light">改善 {{ compareData.summary.channels_improved }}</t-tag>
+          <t-tag theme="danger" variant="light">退步 {{ compareData.summary.channels_regressed }}</t-tag>
+          <t-tag theme="primary" variant="light">新增 {{ compareData.summary.new_channels }}</t-tag>
+          <t-tag variant="light">消失 {{ compareData.summary.removed_channels }}</t-tag>
+          <t-tag variant="outline">通过率 {{ fmtDelta(compareData.summary.pass_rate_delta, '%') }}</t-tag>
+          <t-tag variant="outline">带宽 {{ fmtDelta(compareData.summary.avg_bandwidth_delta, ' MB/s') }}</t-tag>
+          <t-tag variant="outline">延迟 {{ fmtDelta(compareData.summary.avg_latency_delta, ' ms') }}</t-tag>
+        </t-space>
+
+        <!-- 底部：频道级对比表 -->
+        <t-table
+          :columns="compareChannelColumns"
+          :data="compareData.channels"
+          :bordered="false"
+          size="small"
+          row-key="channel"
+          :pagination="{ pageSize: 30 }"
+          max-height="480"
+        >
+          <template #a_passed="{ row }">
+            <t-tag v-if="row.a_passed != null" :theme="row.a_passed ? 'success' : 'danger'" size="small">{{ row.a_passed ? '是' : '否' }}</t-tag>
+            <span v-else>-</span>
+          </template>
+          <template #b_passed="{ row }">
+            <t-tag v-if="row.b_passed != null" :theme="row.b_passed ? 'success' : 'danger'" size="small">{{ row.b_passed ? '是' : '否' }}</t-tag>
+            <span v-else>-</span>
+          </template>
+          <template #a_bandwidth="{ row }">{{ fmtNum(row.a_bandwidth, 2) }}</template>
+          <template #b_bandwidth="{ row }">{{ fmtNum(row.b_bandwidth, 2) }}</template>
+          <template #a_score="{ row }">{{ fmtNum(row.a_score) }}</template>
+          <template #b_score="{ row }">{{ fmtNum(row.b_score) }}</template>
+          <template #status="{ row }">
+            <t-tag :theme="statusMap[row.status]?.theme || 'default'" size="small" variant="light">
+              {{ statusMap[row.status]?.label || row.status }}
+            </t-tag>
+          </template>
+        </t-table>
       </div>
     </t-dialog>
   </div>
@@ -182,29 +267,26 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
-import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs } from '../api.js'
+import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
+import { useClipboard } from '../composables/useClipboard.js'
+import { platformTheme } from '../utils/platform.js'
+import { daysAgo as daysAgoUtil } from '../utils/date.js'
+import LogPanel from './LogPanel.vue'
+
+const { copyText: rawCopy } = useClipboard()
+async function copyText(text) {
+  await rawCopy(text)
+  MessagePlugin.success('已复制')
+}
 
 const props = defineProps({ initialRuns: Array })
 const emit = defineEmits(['update-overview'])
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    MessagePlugin.success('已复制')
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
-    document.body.removeChild(ta)
-    MessagePlugin.success('已复制')
-  }
-}
 
 const historyRuns = ref(props.initialRuns || [])
 const startDate = ref('')
 const endDate = ref('')
 const expandedKeys = ref([])
-const channelCache = reactive({})
+const channelCache = reactive({})     // { [runId]: { channels, total_channels, page, page_size } }
 const detailSearch = reactive({})
 const detailFilter = reactive({})
 const detailPage = reactive({})
@@ -216,15 +298,21 @@ const logMeta = ref('')
 const logEntries = ref([])
 const logSearch = ref('')
 
+// 对比弹窗
+const selectedRowKeys = ref([])
+const compareVisible = ref(false)
+const compareLoading = ref(false)
+const compareData = ref(null)
+
 // 日期初始化
 const now = new Date()
-const daysAgo = (n) => new Date(now - n * 86400000)
 const fmt = (d) => {
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
+const daysAgo = (n) => new Date(now.getTime() - n * 86400000)
 startDate.value = fmt(daysAgo(3))
 endDate.value = fmt(now)
 
@@ -283,33 +371,43 @@ async function onExpandChange(keys, extra) {
   const target = row || historyRuns.value.find(r => keys.includes(r.run_id) && !channelCache[r.run_id])
   if (!target) return
   if (keys.includes(target.run_id) && !channelCache[target.run_id]) {
-    try {
-      const data = await apiGetRunChannels(target.run_id)
-      channelCache[target.run_id] = data || {}
-      detailSearch[target.run_id] = ''
-      detailFilter[target.run_id] = 'all'
-      detailPage[target.run_id] = 1
-    } catch (e) { MessagePlugin.error('加载详情失败') }
+    await loadChannelPage(target.run_id, 1)
   }
+}
+
+async function loadChannelPage(runId, page) {
+  try {
+    const data = await apiGetRunChannels(runId, page, DETAIL_PAGE_SIZE)
+    // 服务端分页格式：{ channels: {}, total_channels, page, page_size }
+    channelCache[runId] = data || {}
+    detailSearch[runId] = detailSearch[runId] || ''
+    detailFilter[runId] = detailFilter[runId] || 'all'
+    detailPage[runId] = page
+  } catch (e) { MessagePlugin.error('加载详情失败') }
+}
+
+function getChannelData(runId) {
+  const cached = channelCache[runId]
+  if (!cached) return {}
+  // 兼容新格式 { channels, total_channels } 和旧格式（直接是频道字典）
+  return cached.channels || cached
+}
+
+function getTotalChannels(runId) {
+  const cached = channelCache[runId]
+  if (!cached) return 0
+  if (cached.total_channels != null) return cached.total_channels
+  return Object.keys(cached).length
 }
 
 function hasH265(info) {
   return (info.urls || []).some(u => u.is_h265)
 }
 
-function platformTheme(platform) {
-  if (!platform) return 'default'
-  const p = platform.toLowerCase()
-  if (p.includes('quake')) return 'primary'
-  if (p.includes('hunter')) return 'warning'
-  if (p.includes('daydaymap') || p.includes('dayday')) return 'success'
-  return 'default'
-}
-
 function filteredChannels(runId) {
   const q = (detailSearch[runId] || '').toLowerCase()
   const f = detailFilter[runId] || 'all'
-  const src = channelCache[runId] || {}
+  const src = getChannelData(runId)
   const result = {}
   for (const [name, info] of Object.entries(src)) {
     if (q && !name.toLowerCase().includes(q)) {
@@ -320,10 +418,6 @@ function filteredChannels(runId) {
     if (f === 'fail' && info.passed > 0) continue
     result[name] = info
   }
-  // 搜索/筛选变化时重置页码，避免页码越界
-  const total = Object.keys(result).length
-  const maxPage = Math.max(1, Math.ceil(total / DETAIL_PAGE_SIZE))
-  if ((detailPage[runId] || 1) > maxPage) detailPage[runId] = maxPage
   return result
 }
 
@@ -336,18 +430,23 @@ function filteredChannelCount(runId) {
 }
 
 function detailTotalPages(runId) {
-  return Math.max(1, Math.ceil(filteredChannelCount(runId) / DETAIL_PAGE_SIZE))
+  return Math.max(1, Math.ceil(getTotalChannels(runId) / DETAIL_PAGE_SIZE))
 }
 
+// 服务端分页后，当前页频道已是分页结果，直接返回过滤后的名称
 function paginatedChannelNames(runId) {
-  const page = detailPage[runId] || 1
-  const names = filteredChannelNames(runId)
-  return names.slice((page - 1) * DETAIL_PAGE_SIZE, page * DETAIL_PAGE_SIZE)
+  return filteredChannelNames(runId)
 }
 
 function paginatedChannelInfo(runId, name) {
-  const src = channelCache[runId] || {}
+  const src = getChannelData(runId)
   return src[name] || { passed: 0, total: 0, sources: [], urls: [] }
+}
+
+// 切换页码时请求服务端
+async function onDetailPageChange(runId, page) {
+  detailPage[runId] = page
+  await loadChannelPage(runId, page)
 }
 
 async function deleteRun(runId) {
@@ -387,11 +486,56 @@ const filteredLogs = computed(() => {
   return logEntries.value.filter(l => ((l.ts || '') + ' ' + (l.level || '') + ' ' + (l.message || '')).toLowerCase().includes(q))
 })
 
-function logClass(l) { return l.level === 'ERROR' ? 'log-level-error' : l.level === 'WARNING' ? 'log-level-warn' : 'log-level-info' }
-function logMsgClass(l) {
-  if (/失败|异常|error/i.test(l.message || '')) return 'log-msg-fail'
-  if (/通过|完成|pass/i.test(l.message || '')) return 'log-msg-pass'
-  return 'log-msg-info'
+// ── 对比功能 ──
+const compareChannelColumns = [
+  { colKey: 'channel', title: '频道', width: 180, ellipsis: true },
+  { colKey: 'a_passed', title: 'A通过', width: 70 },
+  { colKey: 'b_passed', title: 'B通过', width: 70 },
+  { colKey: 'a_bandwidth', title: 'A带宽', width: 90 },
+  { colKey: 'b_bandwidth', title: 'B带宽', width: 90 },
+  { colKey: 'a_score', title: 'A评分', width: 80 },
+  { colKey: 'b_score', title: 'B评分', width: 80 },
+  { colKey: 'status', title: '变化状态', width: 100 },
+]
+
+const statusMap = {
+  improved: { label: '改善', theme: 'success' },
+  regressed: { label: '退步', theme: 'danger' },
+  new: { label: '新增', theme: 'primary' },
+  removed: { label: '消失', theme: 'default' },
+  stable: { label: '稳定', theme: 'default' },
+}
+
+function onSelectionChange(keys) {
+  selectedRowKeys.value = keys
+}
+
+async function openCompare() {
+  if (selectedRowKeys.value.length !== 2) return
+  const [a, b] = selectedRowKeys.value
+  compareVisible.value = true
+  compareLoading.value = true
+  compareData.value = null
+  try {
+    compareData.value = await apiCompareRuns(a, b)
+  } catch (e) {
+    MessagePlugin.error('对比失败: ' + e.message)
+    compareVisible.value = false
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+function fmtNum(v, digits = 2) {
+  if (v == null) return '-'
+  return Number(v).toFixed(digits)
+}
+
+function fmtDelta(v, unit = '', digits = 2) {
+  if (v == null) return '-'
+  const n = Number(v)
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${n.toFixed(digits)}${unit}`
 }
 
 onMounted(() => {
@@ -407,15 +551,6 @@ onMounted(() => {
 .detail-panel { padding: 12px 0; }
 .detail-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .no-data { text-align: center; padding: 40px; color: var(--td-text-color-placeholder); font-size: 13px; }
-.log-panel { background: #1e1e2e; color: #cdd6f4; font-family: 'Cascadia Code','Fira Code',Consolas,monospace; font-size: 12px; line-height: 1.7; height: 500px; overflow-y: auto; border-radius: 8px; padding: 12px; }
-.log-line { white-space: pre-wrap; word-break: break-all; }
-.log-time { color: #89b4fa; margin-right: 8px; }
-.log-level-error { color: #f38ba8; }
-.log-level-warn { color: #f59e0b; }
-.log-level-info { color: #cba6f7; margin-right: 4px; }
-.log-msg-fail { color: #f38ba8; }
-.log-msg-pass { color: #a6e3a1; }
-.log-msg-info { color: #cdd6f4; }
 .codec-tag-h265 { background: var(--td-brand-color-light); color: var(--td-brand-color); }
 .codec-tag-codec { background: var(--td-bg-color-component); color: var(--td-text-color-secondary); }
 .ch-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }

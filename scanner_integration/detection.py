@@ -2,16 +2,17 @@
 """
 定期检测模块。
 在后台定期检测 persistent_scan_results 中的所有源，
-连续失败达到阈值的自动删除。
+连续失败达到阈值的自动软删除，并定期尝试复活已删除的条目。
 """
 import asyncio
 import logging
+import random
 import uuid
-
-import aiohttp
+from collections import defaultdict
+from urllib.parse import urlparse
 
 from . import config_bridge
-from .network import get_session
+from .network import get_session, quick_http_check
 from .video_check import deep_check
 
 logger = logging.getLogger('scanner.detection')
@@ -25,6 +26,7 @@ class DetectionManager:
         self._running = False
         self._last_cycle_at = None
         self._last_cycle_result = None
+        self._last_resurrection_at = None
 
     @property
     def status(self):
@@ -33,6 +35,7 @@ class DetectionManager:
             'running': self._running,
             'last_cycle_at': self._last_cycle_at,
             'last_cycle_result': self._last_cycle_result,
+            'last_resurrection_at': self._last_resurrection_at,
         }
 
     def start(self):
@@ -65,9 +68,16 @@ class DetectionManager:
             _db.insert_detection_log(level, message)
         except Exception:
             pass
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime('%H:%M:%S')
+            from . import broadcast_detection_sse
+            broadcast_detection_sse('log', {'ts': ts, 'level': level, 'message': message})
+        except Exception:
+            pass
 
     async def _loop(self):
-        """主循环：等待间隔 → 执行检测 → 循环。"""
+        """主循环：等待间隔 → 执行检测 → 复活检查 → 循环。"""
         while self._running:
             cfg = config_bridge.get_scan_config()
             interval = cfg.get('detection_interval_minutes', 120)
@@ -82,19 +92,48 @@ class DetectionManager:
                 break
             await self._run_detection_cycle(trigger_source='auto')
 
+            # 检查是否需要执行复活检测
+            if cfg.get('resurrection_enabled', True):
+                resurrection_interval_hours = cfg.get('resurrection_interval_hours', 24)
+                should_run = False
+                if self._last_resurrection_at is None:
+                    should_run = True
+                else:
+                    from datetime import datetime, timedelta
+                    elapsed = datetime.now() - self._last_resurrection_at
+                    if elapsed >= timedelta(hours=resurrection_interval_hours):
+                        should_run = True
+                if should_run:
+                    await self._run_resurrection_check()
+
     async def _run_detection_cycle(self, trigger_source='auto'):
         """执行一次完整的检测周期，结果持久化到数据库。"""
+        cfg = config_bridge.get_scan_config()
+        timeout_minutes = cfg.get('detection_cycle_timeout_minutes', 30)
+        try:
+            await asyncio.wait_for(
+                self._run_detection_cycle_inner(cfg, trigger_source),
+                timeout=timeout_minutes * 60,
+            )
+        except asyncio.TimeoutError:
+            self._log('WARNING', f"[Detection] 检测周期超时 ({timeout_minutes} 分钟)，已中止")
+            self._last_cycle_at = None
+
+    async def _run_detection_cycle_inner(self, cfg, trigger_source='auto'):
+        """执行一次完整的检测周期（内部实现）。"""
         import database as _db
         from datetime import datetime
-
-        cfg = config_bridge.get_scan_config()
         threshold = cfg.get('deletion_threshold', 3)
 
-        all_items = _db.get_all_persistent_for_check()
+        # 使用分层检测：稳定频道降低检测频率
+        try:
+            all_items = _db.get_persistent_for_check_tiered()
+        except Exception:
+            all_items = _db.get_all_persistent_for_check()
         if not all_items:
             self._log('INFO', "[Detection] 持久化结果集为空，跳过检测")
             self._last_cycle_at = _db.now_str()
-            self._last_cycle_result = {'total': 0, 'ok': 0, 'failed': 0, 'deleted': 0}
+            self._last_cycle_result = {'total': 0, 'ok': 0, 'failed': 0, 'skipped': 0, 'deleted': 0}
             return
 
         # 创建本轮检测记录
@@ -108,57 +147,123 @@ class DetectionManager:
         ok_count = 0
         fail_count = 0
         results_list = []
+        updates_to_apply = []
+
+        # Pre-fetch consecutive_failures for local tracking
+        all_urls = [item['url'] for item in all_items]
+        try:
+            cf_cache = _db.get_consecutive_failures_batch(all_urls)
+        except Exception:
+            cf_cache = {}
+
+        # 按 source_ip (URL host) 分组，实现熔断机制
+        groups = defaultdict(list)
+        for item in all_items:
+            try:
+                host = urlparse(item['url']).hostname or item['url']
+            except Exception:
+                host = item['url']
+            groups[host].append(item)
 
         sem = asyncio.Semaphore(10)
+        skipped_count = 0
         async with get_session(limit=10, timeout=6) as session:
             async def check_one(item):
                 nonlocal ok_count, fail_count
-                async with sem:  # 统一限流：含非 http 分支，避免一次性铺开数千协程同步写 DB
+                async with sem:
                     url = item['url']
                     name = item.get('name', '')
 
                     if not url.startswith(('http://', 'https://')):
-                        _db.update_persistent_check(url, ok=False)
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
                         fail_count += 1
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': False,
                             'http_status': 0, 'response_time_ms': 0,
-                            'response_size_bytes': 0, 'consecutive_failures': 0,
+                            'response_size_bytes': 0,
+                            'consecutive_failures': cf_cache.get(url, 0),
                             'quality_status': 'unreachable',
                         })
-                        return
+                        return False
 
                     perf = await deep_check(session, url)
+                    if perf is None:
+                        await asyncio.sleep(2)
+                        perf = await deep_check(session, url)
                     if perf is not None:
-                        _db.update_persistent_check(
-                            url, ok=True,
-                            stability=perf['stability'],
-                            delay=perf['delay'],
-                            bandwidth=perf['bandwidth'],
-                        )
+                        updates_to_apply.append({
+                            'url': url, 'ok': True, 'name': name,
+                            'stability': perf['stability'],
+                            'delay': perf['delay'],
+                            'bandwidth': perf['bandwidth'],
+                            'jitter': perf.get('jitter'),
+                        })
                         ok_count += 1
-                        psr = _db.get_persistent_by_url(url)
+                        quality_status = _db._evaluate_quality(
+                            perf['stability'], perf['delay'], perf['bandwidth']
+                        )
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': True,
                             'http_status': 200,
                             'response_time_ms': perf['delay'],
                             'response_size_bytes': 0,
                             'consecutive_failures': 0,
-                            'quality_status': psr['quality_status'] if psr else 'good',
+                            'quality_status': quality_status,
                         })
+                        return True
                     else:
-                        _db.update_persistent_check(url, ok=False)
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
                         fail_count += 1
-                        psr = _db.get_persistent_by_url(url)
                         results_list.append({
                             'url': url, 'name': name, 'check_ok': False,
                             'http_status': 0, 'response_time_ms': 0,
                             'response_size_bytes': 0,
-                            'consecutive_failures': psr['consecutive_failures'] if psr else 0,
-                            'quality_status': psr['quality_status'] if psr else 'unreachable',
+                            'consecutive_failures': cf_cache.get(url, 0),
+                            'quality_status': 'unreachable',
                         })
+                        return False
 
-            await asyncio.gather(*[check_one(item) for item in all_items])
+            async def check_group(host, items):
+                nonlocal skipped_count
+                sample_size = min(5, len(items))
+                if sample_size < 5:
+                    for item in items:
+                        await check_one(item)
+                    return
+                sample = random.sample(items, sample_size) if len(items) > sample_size else items
+                rest = [item for item in items if item not in sample]
+
+                sample_results = await asyncio.gather(*[check_one(item) for item in sample])
+                all_sample_failed = all(not ok for ok in sample_results)
+
+                if all_sample_failed and rest:
+                    skipped_count += len(rest)
+                    for item in rest:
+                        url = item['url']
+                        name = item.get('name', '')
+                        updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                        cf_cache[url] = cf_cache.get(url, 0) + 1
+                        results_list.append({
+                            'url': url, 'name': name, 'check_ok': False,
+                            'http_status': 0, 'response_time_ms': 0,
+                            'response_size_bytes': 0,
+                            'consecutive_failures': cf_cache.get(url, 0),
+                            'quality_status': 'circuit_breaker_skipped',
+                        })
+                        self._log(
+                            'WARNING',
+                            f"[Detection] 熔断跳过: {name} ({url})"
+                        )
+                else:
+                    for item in rest:
+                        await check_one(item)
+
+            await asyncio.gather(*[check_group(host, items) for host, items in groups.items()])
+
+        # 批量更新所有检测结果
+        _db.batch_update_persistent_checks(updates_to_apply)
 
         # 删除达到阈值的记录
         deleted = _db.delete_persistent_by_threshold(threshold)
@@ -170,6 +275,7 @@ class DetectionManager:
             'total': len(all_items),
             'ok': ok_count,
             'failed': fail_count,
+            'skipped': skipped_count,
             'deleted': deleted,
             'elapsed_seconds': round(elapsed, 1),
         }
@@ -182,17 +288,23 @@ class DetectionManager:
             round(elapsed, 1),
         )
         _db.cleanup_old_detection_runs(keep=20)
+        try:
+            keep_days = cfg.get('quality_history_keep_days', 90)
+            _db.cleanup_quality_history(keep_days=keep_days)
+        except Exception:
+            pass
         # 兜底清理过期的测速日志
         try:
-            _db.cleanup_old_run_logs(days=30)
+            from database.db import RUN_LOGS_RETENTION_DAYS
+            _db.cleanup_old_run_logs(days=RUN_LOGS_RETENTION_DAYS)
         except Exception:
             pass
 
         self._log(
             'INFO',
             f"[Detection] 检测完成: 总计={len(all_items)}, "
-            f"通过={ok_count}, 失败={fail_count}, 删除={deleted}, "
-            f"耗时={elapsed:.1f}s"
+            f"通过={ok_count}, 失败={fail_count}, 熔断跳过={skipped_count}, "
+            f"删除={deleted}, 耗时={elapsed:.1f}s"
         )
         try:
             _db.flush_log_buffer()
@@ -203,33 +315,79 @@ class DetectionManager:
         except Exception:
             pass
 
-
-async def _quick_check(session, url):
-    """快速检查 URL，返回详细结果字典。"""
-    result = {'alive': False, 'status': 0, 'time_ms': 0, 'bytes': 0}
-    try:
+    async def _run_resurrection_check(self):
+        """检查已软删除的条目，尝试复活仍可访问的源。"""
+        import database as _db
         from datetime import datetime
-        start = datetime.now()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=4),
-                               allow_redirects=True) as r:
-            result['status'] = r.status
-            if r.status != 200:
-                result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
-                return result
-            total = 0
-            async for chunk in r.content.iter_chunked(2048):
-                total += len(chunk)
-                if total >= 4096:
-                    result['alive'] = True
-                    result['bytes'] = total
-                    result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
-                    return result
-            result['alive'] = total > 0
-            result['bytes'] = total
-            result['time_ms'] = (datetime.now() - start).total_seconds() * 1000
-            return result
-    except Exception:
-        return result
+
+        cfg = config_bridge.get_scan_config()
+        if not cfg.get('resurrection_enabled', True):
+            return
+
+        deleted_items = _db.get_deleted_persistent_for_resurrection(limit=100)
+        if not deleted_items:
+            self._log('INFO', "[Resurrection] 无软删除条目需要检查")
+            self._last_resurrection_at = datetime.now()
+            return
+
+        self._log('INFO', f"[Resurrection] 开始检查 {len(deleted_items)} 条软删除记录...")
+        resurrected = 0
+        checked = 0
+
+        sem = asyncio.Semaphore(10)
+        async with get_session(limit=10, timeout=6) as session:
+            async def check_one(item):
+                nonlocal resurrected, checked
+                async with sem:
+                    url = item['url']
+                    name = item.get('name', '')
+                    checked += 1
+
+                    if not url.startswith(('http://', 'https://')):
+                        return
+
+                    result = await quick_http_check(session, url)
+                    if result['alive']:
+                        perf = await deep_check(session, url)
+                        if perf is not None:
+                            _db.restore_persistent(url)
+                            _db.update_persistent_check(
+                                url, ok=True,
+                                stability=perf['stability'],
+                                delay=perf['delay'],
+                                bandwidth=perf['bandwidth'],
+                                jitter=perf.get('jitter'),
+                            )
+                            resurrected += 1
+                            self._log(
+                                'INFO',
+                                f"[Resurrection] 复活成功: {name} ({url}) "
+                                f"[stability={perf['stability']}, delay={perf['delay']}ms, "
+                                f"bandwidth={perf['bandwidth']}]"
+                            )
+                        else:
+                            _db.restore_persistent(url)
+                            _db.update_persistent_check(url, ok=False)
+                            self._log(
+                                'INFO',
+                                f"[Resurrection] 复活但质量检测失败: {name} ({url}) "
+                                f"[status={result['status']}, {result['time_ms']:.0f}ms]"
+                            )
+
+            await asyncio.gather(*[check_one(item) for item in deleted_items])
+
+        self._last_resurrection_at = datetime.now()
+        self._log(
+            'INFO',
+            f"[Resurrection] 检查完成: 检查={checked}, 复活={resurrected}"
+        )
+        try:
+            _db.flush_log_buffer()
+        except Exception:
+            pass
+
+
+
 
 
 # 全局单例

@@ -13,21 +13,25 @@ from requests.exceptions import SSLError
 
 # 超时 URL 注册表，供流读取循环主动退出并释放连接
 _timed_out_urls = set()
+_timed_out_lock = threading.Lock()
 
 
 def register_timeout(url):
     """将 URL 标记为超时，正在进行的流读取会尽快退出。"""
-    _timed_out_urls.add(url)
+    with _timed_out_lock:
+        _timed_out_urls.add(url)
 
 
 def clear_timeouts():
     """清除上一轮的超时标记，在新一轮测试开始前调用。"""
-    _timed_out_urls.clear()
+    with _timed_out_lock:
+        _timed_out_urls.clear()
 
 
 def _is_timed_out(url):
     """检查 URL 是否已被标记为超时。"""
-    return url in _timed_out_urls
+    with _timed_out_lock:
+        return url in _timed_out_urls
 
 
 def request_timeout(deadline, connect_timeout=3, read_timeout=3):
@@ -51,6 +55,7 @@ _DEFAULT_FFMPEG_WORKERS = int(os.environ.get('MAX_FFMPEG_WORKERS', '6') or 6)
 _ffmpeg_limit = max(1, _DEFAULT_FFMPEG_WORKERS)
 _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
 _ffmpeg_lock = threading.Lock()
+_ffmpeg_timeout = 5
 NON_LIVE_MEDIA_EXTENSIONS = frozenset({
     '.mp4',
     '.m4v',
@@ -92,7 +97,9 @@ STATIC_HLS_CONFIRM_MAX_WAIT = 12.0
 
 
 def set_ffmpeg_max_workers(limit):
-    """限制同时运行的 FFmpeg 子进程数量，避免服务器瞬时进程/连接压力过高。"""
+    """限制同时运行的 FFmpeg 子进程数量，避免服务器瞬时进程/连接压力过高。
+    注意：已在旧信号量上获取许可的线程将在旧对象上释放，不影响新信号量。
+    """
     global _ffmpeg_limit, _ffmpeg_semaphore
     try:
         limit = max(1, int(limit))
@@ -102,8 +109,19 @@ def set_ffmpeg_max_workers(limit):
     with _ffmpeg_lock:
         if limit != _ffmpeg_limit:
             _ffmpeg_limit = limit
-            _ffmpeg_semaphore = threading.BoundedSemaphore(_ffmpeg_limit)
+            # 使用普通 Semaphore 替代 BoundedSemaphore，避免旧持有者在旧对象上释放时抛异常
+            _ffmpeg_semaphore = threading.Semaphore(_ffmpeg_limit)
     return _ffmpeg_limit
+
+
+def set_ffmpeg_timeout(t):
+    """设置 FFmpeg 子进程超时秒数。"""
+    global _ffmpeg_timeout
+    try:
+        _ffmpeg_timeout = max(1, int(t))
+    except (TypeError, ValueError):
+        _ffmpeg_timeout = 5
+    return _ffmpeg_timeout
 
 
 def detect_non_live_media_url(url):
@@ -163,6 +181,8 @@ def http_get(url, timeout, stream=False):
     try:
         return requests.get(url, timeout=timeout, stream=stream, headers=DEFAULT_HEADERS, allow_redirects=True)
     except SSLError:
+        import logging
+        logging.getLogger(__name__).warning(f"SSL 证书验证失败，回退到 verify=False: {url[:100]}")
         return requests.get(
             url,
             timeout=timeout,
@@ -255,25 +275,28 @@ def ffmpeg_test(url):
 
     try:
         with _ffmpeg_semaphore:
-            completed = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',
-                timeout=5
             )
-            stderr_output = completed.stderr
-    except subprocess.TimeoutExpired as e:
-        stderr_output = e.stderr or ''
+            try:
+                _, stderr_bytes = proc.communicate(timeout=_ffmpeg_timeout)
+                stderr_output = stderr_bytes.decode('utf-8', errors='ignore') if stderr_bytes else ''
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, stderr_bytes = proc.communicate()
+                stderr_output = stderr_bytes.decode('utf-8', errors='ignore') if stderr_bytes else ''
     except Exception as e:
         return {'success': False, 'width': 0, 'height': 0, 'error': f"FFmpeg 启动失败: {e}"}
 
     if isinstance(stderr_output, bytes):
         stderr_output = stderr_output.decode('utf-8', errors='ignore')
 
-    resolution_match = re.search(r'(\d{3,5})x(\d{3,5})', stderr_output)
+    resolution_match = re.search(r'(?:Stream.*?Video:|Video:).*?(\d{3,5})x(\d{3,5})', stderr_output)
+    if not resolution_match:
+        # Fallback: match any resolution pattern in stderr
+        resolution_match = re.search(r'(\d{3,5})x(\d{3,5})', stderr_output)
 
     # 提取视频编码格式：匹配 "Video: h264" / "Video: hevc" 等
     codec = ''

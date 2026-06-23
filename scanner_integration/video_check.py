@@ -1,9 +1,6 @@
 # video_check.py
 import asyncio
 import time
-import re
-import os
-import struct
 import statistics
 from urllib.parse import urlparse
 import aiohttp
@@ -101,7 +98,7 @@ def parse_h264_resolution(data: bytes):
         width = (pic_width_in_mbs + 1) * 16
         height = (pic_height_in_mbs + 1) * 16 * (2 - frame_mbs_only_flag)
         return width, height
-    except:
+    except Exception:
         return None, None
 
 async def get_video_info_light(url):
@@ -113,7 +110,7 @@ async def get_video_info_light(url):
         w, h = parse_h264_resolution(data)
         if w and h:
             return (f"{w}×{h}", "h264")
-    except:
+    except Exception:
         pass
     return await get_video_info(url)
 
@@ -168,7 +165,7 @@ def filter_hd(channels, min_width=MIN_WIDTH, min_height=MIN_HEIGHT, drop_unknown
                     hd.append(c)
                 else:
                     dropped += 1
-            except:
+            except Exception:
                 if drop_unknown:
                     dropped += 1
                 else:
@@ -187,24 +184,28 @@ def filter_high_delay(channels, max_delay=MAX_DELAY_MS):
 
 async def fast_check_with_fallback(session, url):
     async with global_sem:
-        try:
-            async with session.head(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT), allow_redirects=True) as r:
-                if r.status == 200:
-                    return True
-        except:
-            pass
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT + 2), allow_redirects=True) as r:
-                if r.status != 200:
-                    return False
-                total = 0
-                async for chunk in r.content.iter_chunked(2048):
-                    total += len(chunk)
-                    if total >= 4096:
+        for attempt in range(2):
+            if attempt > 0:
+                await asyncio.sleep(0.5)
+            try:
+                async with session.head(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT), allow_redirects=True) as r:
+                    if r.status == 200:
                         return True
-                return total > 0
-        except:
-            return False
+            except Exception:
+                pass
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=HEAD_TIMEOUT + 2), allow_redirects=True) as r:
+                    if r.status != 200:
+                        return False
+                    total = 0
+                    async for chunk in r.content.iter_chunked(2048):
+                        total += len(chunk)
+                        if total >= 4096:
+                            return True
+                    return total > 0
+            except Exception:
+                pass
+        return False
 
 async def fast_filter(sources, log_fn=None):
     def _log(msg):
@@ -281,48 +282,37 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测�
 
                 # 计算抖动：相邻 chunk 间隔的标准差 (单位秒)
                 jitter = statistics.stdev(intervals) if len(intervals) > 1 else 0.0
-                # 稳定性评分基础 100
-                stability = 100.0
+                _cfg = config_bridge.get_scan_config()
+                _weights = _cfg.get('stability_weights', {})
+                W_BANDWIDTH = _weights.get('bandwidth', 0.35)
+                W_STUTTER = _weights.get('stutter', 0.25)
+                W_JITTER = _weights.get('jitter', 0.20)
+                W_EMPTY = _weights.get('empty_rate', 0.15)
+                W_DELAY = _weights.get('delay', 0.05)
 
-                # 1. 空包惩罚
-                if chunk_count > 0:
-                    empty_rate = empty_count / chunk_count
-                    if empty_rate > 0.1:
-                        stability -= 35
-                    elif empty_rate > 0.05:
-                        stability -= 20
+                _thresholds = _cfg.get('quality_thresholds', {})
+                BW_NORM_DENOM = _thresholds.get('min_bandwidth_kbps', 300)
+                STUTTER_FLOOR = 0.3
+                STUTTER_SCALE = 100
+                JITTER_SCALE = 200
+                EMPTY_SCALE = 1000
+                DELAY_DIVISOR = 30
 
-                # 2. 最大间隔惩罚（卡顿时长）
-                if max_interval > 1.5:
-                    stability -= 30
-                elif max_interval > 0.8:
-                    stability -= 15
-                elif max_interval > 0.5:
-                    stability -= 8
+                empty_rate = empty_count / chunk_count if chunk_count > 0 else 0
 
-                # 3. 抖动惩罚：间隔波动大影响播放平滑度
-                if jitter > 0.5:
-                    stability -= 25
-                elif jitter > 0.2:
-                    stability -= 12
-                elif jitter > 0.1:
-                    stability -= 5
+                bw_score = min(100, (bandwidth / BW_NORM_DENOM) * 100) if bandwidth else 0
+                stutter_score = max(0, 100 - max(0, (max_interval - STUTTER_FLOOR) * STUTTER_SCALE)) if max_interval else 100
+                jitter_score = max(0, 100 - jitter * JITTER_SCALE) if jitter is not None else 100
+                empty_score = max(0, 100 - empty_rate * EMPTY_SCALE) if empty_rate is not None else 100
+                delay_score = max(0, 100 - (delay / DELAY_DIVISOR)) if delay else 100
 
-                # 4. 带宽惩罚（至少 200KB/s 流畅）
-                if bandwidth < 200:
-                    stability -= 40
-                elif bandwidth < 300:
-                    stability -= 20
-                elif bandwidth < 500:
-                    stability -= 10
-
-                # 5. 延迟惩罚
-                if delay > 2000:
-                    stability -= 20
-                elif delay > 1000:
-                    stability -= 10
-
-                # 限制在 0-100 之间
+                stability = int(
+                    W_BANDWIDTH * bw_score +
+                    W_STUTTER * stutter_score +
+                    W_JITTER * jitter_score +
+                    W_EMPTY * empty_score +
+                    W_DELAY * delay_score
+                )
                 stability = max(0, min(100, stability))
 
                 return {
@@ -379,7 +369,8 @@ async def background_deep_update(initial_list, log_fn=None):
             for ch in updated:
                 s = ch.get('stability', 0)
                 bw = ch.get('bandwidth', 0)
-                if s >= 30:
+                _thresholds = _cfg.get('quality_thresholds', {})
+                if s >= _thresholds.get('stability_low', 30):
                     stable_upd.append(ch)
                     stats['stable'] += 1
                 elif bw < MIN_BANDWIDTH:
@@ -430,53 +421,49 @@ async def quick_stream_check(session, url):
                 if total >= 4096:
                     return True
             return total > 0
-    except:
+    except Exception:
         return False
 
-# NOTE: health_check() 目前为死代码——没有任何 Flask 路由调用 trigger_health_check()。
-# 实际的健康检测由 detection.py 的 DetectionManager 执行（使用 deletion_threshold 配置）。
-# 保留此函数供将来可能的独立健康检查功能使用。
-async def health_check():
-    global QUICK_CHANNELS, LATEST_CHANNELS, failure_count, LAST_UPDATE_TIME
-    channels = QUICK_CHANNELS.copy() or []
-    if not channels:
-        return
-    sem = asyncio.Semaphore(30)
-    async with get_session(limit=30, timeout=6) as session:
-        async def check_one(ch):
-            if urlparse(ch['url']).scheme not in ('http', 'https'):
-                return ch, True
-            async with sem:
-                ok = await quick_stream_check(session, ch['url'])
-                if not ok:
-                    failure_count[ch['url']] = failure_count.get(ch['url'], 0) + 1
-                    if failure_count[ch['url']] >= FAIL_THRESHOLD:
-                        return ch, False
-                else:
-                    failure_count[ch['url']] = 0
-                return ch, True
-        results = await asyncio.gather(*[check_one(c) for c in channels])
-    kept = [r[0] for r in results if r[1]]
-    removed = len(channels) - len(kept)
-    if removed > 0:
-        kept.sort(key=lambda c: (-c.get('stability', 0), -c.get('bandwidth', 0), c.get('delay', 9999)))
-        QUICK_CHANNELS = LATEST_CHANNELS = kept
-        LAST_UPDATE_TIME = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"[健康检查] 移除 {removed} 个，保留 {len(kept)}")
 
-async def trigger_refill():
-    global QUICK_CHANNELS, LATEST_CHANNELS
-    from .platforms import collect_all
-    new_entries, _ = await collect_all(size=AUTO_REFILL_QUAKE_SIZE)
-    if not new_entries:
+async def health_check_persistent(items, log_fn=None):
+    """对持久化结果中的现有频道进行健康检查。"""
+    def _log(msg):
+        logger.info(msg)
+        if log_fn:
+            log_fn(msg)
+
+    if not items:
         return
-    existing = {c['url'] for c in QUICK_CHANNELS}
-    unique_new = [e for e in new_entries if e['url'] not in existing]
-    if not unique_new:
-        return
-    verified = await fast_filter(unique_new)
-    if verified:
-        combined = QUICK_CHANNELS + verified
-        combined.sort(key=lambda c: (-c.get('stability', 0), -c.get('bandwidth', 0), c.get('delay', 9999)))
-        QUICK_CHANNELS = LATEST_CHANNELS = combined
-        asyncio.create_task(background_deep_update(combined))
+
+    _log(f"[HealthCheck] 开始检查 {len(items)} 个现有频道...")
+    alive_count = 0
+    dead_count = 0
+
+    async with get_session(limit=20, timeout=8, force_close=True) as session:
+        sem = asyncio.Semaphore(20)
+
+        async def check_one(item):
+            nonlocal alive_count, dead_count
+            async with sem:
+                url = item.get('url', '')
+                if not url.startswith(('http://', 'https://')):
+                    return
+                try:
+                    alive = await quick_stream_check(session, url)
+                    if alive:
+                        alive_count += 1
+                    else:
+                        dead_count += 1
+                        # 更新数据库中的检查状态
+                        try:
+                            import database as _db
+                            _db.update_persistent_check(url, ok=False)
+                        except Exception:
+                            pass
+                except Exception:
+                    dead_count += 1
+
+        tasks = [check_one(item) for item in items]
+        await asyncio.gather(*tasks)
+
+    _log(f"[HealthCheck] 检查完成: {alive_count} 存活, {dead_count} 失效")

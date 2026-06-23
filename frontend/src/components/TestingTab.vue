@@ -29,20 +29,13 @@
 
     <!-- 日志面板 -->
     <t-card size="small" :bordered="false" style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div class="card-label" style="margin:0">实时日志</div>
-        <t-space>
-          <t-button :theme="autoScroll ? 'primary' : 'default'" variant="outline" size="small" @click="autoScroll = !autoScroll">自动滚动</t-button>
-          <t-button variant="outline" size="small" @click="logLines = []">清空</t-button>
-        </t-space>
-      </div>
-      <div class="log-panel" ref="logPanelRef">
-        <div v-for="(l, i) in logLines" :key="i" class="log-line">
-          <span class="log-time">[{{ l.time }}]</span>
-          <span :class="logMsgClass(l.msg)">{{ l.msg }}</span>
-        </div>
-        <div v-if="!logLines.length" style="color:#6b7280">等待测试开始...</div>
-      </div>
+      <div class="card-label" style="margin-bottom:8px">实时日志</div>
+      <LogPanel
+        :entries="logLines"
+        :show-count="false"
+        empty-text="等待测试开始..."
+        @clear="clearLogLines"
+      />
     </t-card>
 
     <!-- 下载链接 -->
@@ -56,6 +49,22 @@
         <t-link :href="downloadUrl(fmt)" target="_blank" theme="primary">{{ downloadUrl(fmt) }}</t-link>
         <t-button variant="outline" size="small" @click="copyLink(fmt)">复制</t-button>
         <t-button variant="outline" size="small" @click="previewResult(fmt)">预览</t-button>
+      </div>
+
+      <div class="subscribe-section">
+        <div class="subscribe-header">
+          <span class="subscribe-title">📺 播放器订阅地址（M3U）</span>
+        </div>
+        <div class="subscribe-body">
+          <div class="subscribe-url-row">
+            <t-input :value="subscribeUrl" readonly size="small" />
+            <t-button theme="primary" size="small" @click="copySubscribeUrl">复制</t-button>
+          </div>
+          <div v-if="qrDataUrl" class="qr-section">
+            <img :src="qrDataUrl" alt="扫码订阅" class="qr-image" />
+            <span class="qr-hint">手机扫码添加订阅</span>
+          </div>
+        </div>
       </div>
 
       <!-- 预览 -->
@@ -75,85 +84,81 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, inject } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
-import { apiTriggerTest, apiStopTest, apiGetProgress, apiPreviewResult, apiDownloadUrl } from '../api.js'
-import { usePolling } from '../composables/usePolling.js'
+import { ref, watch, inject, computed, onMounted } from 'vue'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import QRCode from 'qrcode'
+import { apiTriggerTest, apiStopTest, apiPreviewResult, apiDownloadUrl } from '../api.js'
+import { useTheme } from '../composables/useTheme.js'
+import LogPanel from './LogPanel.vue'
 
 const emit = defineEmits(['test-finished'])
 
-// 从 App.vue 注入全局测试状态和轮询重启函数
-const appTestRunning = inject('testRunning', ref(false))
-const startGlobalPoll = inject('startGlobalPoll', () => {})
+const testProgress = inject('testProgress', { running: false, processed: 0, passed: 0, failed: 0, elapsed: 0, total: 0, lines: [] })
+const clearTestLogs = inject('clearTestLogs', () => {})
 
-const running = ref(false)
+const running = computed(() => testProgress.running)
+const processed = computed(() => testProgress.processed)
+const passed = computed(() => testProgress.passed)
+const failed = computed(() => testProgress.failed)
+const elapsed = computed(() => testProgress.elapsed)
+const logLines = computed(() => testProgress.lines)
+const progressPct = computed(() => {
+  const t = testProgress.total || 0
+  return t > 0 ? Math.min(100, Math.round(testProgress.processed / t * 100)) : 0
+})
+
 const starting = ref(false)
 const stopping = ref(false)
 const statusText = ref('空闲')
 const progressVisible = ref(false)
-const progressLabel = ref('')
-const progressPct = ref(0)
-const processed = ref(0)
-const passed = ref(0)
-const failed = ref(0)
-const elapsed = ref(0)
-const logLines = ref([])
-const logPanelRef = ref(null)
-const autoScroll = ref(true)
+const wasRunning = ref(false)
+const testFinished = ref(false)
+const progressLabel = computed(() => {
+  if (testFinished.value) return '测试完成'
+  const t = testProgress.total || 0
+  return t > 0 ? `${testProgress.processed} / ${t}` : '准备中...'
+})
 const previewVisible = ref(false)
 const previewTitle = ref('')
 const previewContent = ref('')
 const previewStats = ref('')
 
-let lastLogSeq = 0
-let wasRunning = false
+const { theme } = useTheme()
+const qrDataUrl = ref('')
+const subscribeUrl = computed(() => `${window.location.origin}/api/subscribe.m3u`)
 
-function logMsgClass(msg) {
-  if (/通过|pass/i.test(msg)) return 'log-msg-pass'
-  if (/拒绝|失败/i.test(msg)) return 'log-msg-fail'
-  return 'log-msg-info'
+async function generateQR() {
+  try {
+    const isDark = theme.value === 'dark'
+    qrDataUrl.value = await QRCode.toDataURL(subscribeUrl.value, {
+      width: 200,
+      margin: 2,
+      color: {
+        dark: isDark ? '#e5edf7' : '#000000',
+        light: isDark ? '#1e293b' : '#ffffff',
+      }
+    })
+  } catch (e) {
+    console.warn('QR generation failed:', e)
+  }
 }
 
-const { start: startPoll, stop: stopPoll } = usePolling(async () => {
+watch(theme, () => { generateQR() })
+onMounted(() => { generateQR() })
+
+async function copySubscribeUrl() {
   try {
-    const data = await apiGetProgress(lastLogSeq)
-    running.value = !!data.running
-    if (data.running) {
-      wasRunning = true
-      const total = Number(data.total) || 0
-      processed.value = Number(data.processed) || 0
-      passed.value = data.passed || 0
-      failed.value = data.failed || 0
-      elapsed.value = Math.round(data.elapsed || 0)
-      progressPct.value = total > 0 ? Math.min(100, Math.round(processed.value / total * 100)) : 0
-      progressLabel.value = total > 0 ? `${processed.value} / ${total}` : '准备中...'
-      if (data.lines?.length) {
-        data.lines.forEach(l => {
-          if (l.seq > lastLogSeq) {
-            logLines.value.push(l)
-            lastLogSeq = l.seq
-          }
-        })
-        if (autoScroll.value) {
-          nextTick(() => {
-            const el = logPanelRef.value
-            if (el) el.scrollTop = el.scrollHeight
-          })
-        }
-      }
-    } else if (wasRunning) {
-      wasRunning = false
-      statusText.value = '已完成'
-      progressLabel.value = '测试完成'
-      if (data.lines?.length) {
-        data.lines.forEach(l => { if (l.seq > lastLogSeq) { logLines.value.push(l); lastLogSeq = l.seq } })
-      }
-      stopPoll()
-      emit('test-finished')
-      MessagePlugin.success('测试已完成')
-    }
-  } catch (_) {}
-}, 2000)
+    await navigator.clipboard.writeText(subscribeUrl.value)
+    MessagePlugin.success('订阅地址已复制')
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = subscribeUrl.value
+    ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
+    document.body.removeChild(ta)
+    MessagePlugin.success('订阅地址已复制')
+  }
+}
 
 async function triggerTest() {
   starting.value = true
@@ -161,14 +166,11 @@ async function triggerTest() {
     const res = await apiTriggerTest()
     if (res.ok) {
       MessagePlugin.success('测试已启动')
-      logLines.value = []
-      lastLogSeq = 0
-      running.value = true
-      wasRunning = true
+      clearTestLogs()
+      testProgress.running = true
+      testFinished.value = false
       progressVisible.value = true
       statusText.value = '运行中...'
-      startPoll()
-      startGlobalPoll()  // 通知 App.vue 重启全局轮询
     } else {
       MessagePlugin.error(res.error || '启动失败')
     }
@@ -177,15 +179,30 @@ async function triggerTest() {
 }
 
 async function stopTest() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认终止',
+    body: '终止后当前进度将丢失，确认终止？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
   stopping.value = true
   try {
     await apiStopTest()
     MessagePlugin.success('已请求终止')
-    wasRunning = false
-    running.value = false
-    stopPoll()
   } catch (e) { MessagePlugin.error('终止失败: ' + e.message) }
   finally { stopping.value = false }
+}
+
+async function clearLogLines() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认清空',
+    body: '清空后日志将无法恢复，确认清空？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
+  clearTestLogs()
 }
 
 function downloadUrl(fmt) { return location.origin + apiDownloadUrl(fmt) }
@@ -224,28 +241,36 @@ function copyPreview() {
     .catch(() => MessagePlugin.error('复制失败'))
 }
 
-// 监听 App.vue 的全局测试状态：测试开始时启动本地轮询，结束后停止
-watch(appTestRunning, (isRunning) => {
-  if (isRunning && !running.value) {
-    // 测试由其他入口触发（如调度器、scan feed），启动本地轮询
-    running.value = true
-    wasRunning = true
+// 监听全局测试状态变化
+watch(() => testProgress.running, (isRunning) => {
+  if (isRunning) {
+    wasRunning.value = true
+    testFinished.value = false
     progressVisible.value = true
     statusText.value = '运行中...'
-    startPoll()
+  } else if (wasRunning.value) {
+    wasRunning.value = false
+    testFinished.value = true
+    statusText.value = '已完成'
+    emit('test-finished')
+    MessagePlugin.success('测试已完成')
   }
-})
+}, { immediate: true })
+
+// Auto-scroll is handled internally by LogPanel component
 </script>
 
 <style scoped>
 .testing-tab { padding-top: 4px; }
 .card-label { font-size: 12px; font-weight: 600; color: var(--td-text-color-secondary); margin-bottom: 12px; }
 .download-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.log-panel { background: #1e1e2e; color: #cdd6f4; font-family: 'Cascadia Code','Fira Code',Consolas,monospace; font-size: 12px; line-height: 1.7; height: 400px; overflow-y: auto; border-radius: 8px; padding: 12px; scroll-behavior: smooth; }
-.log-line { white-space: pre-wrap; word-break: break-all; }
-.log-time { color: #89b4fa; margin-right: 8px; }
-.log-msg-pass { color: #a6e3a1; }
-.log-msg-fail { color: #f38ba8; }
-.log-msg-info { color: #cba6f7; }
 .preview-content { background: #1e1e2e; color: #cdd6f4; font-family: 'Cascadia Code','Fira Code',Consolas,monospace; font-size: 12px; line-height: 1.6; max-height: 400px; overflow: auto; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.subscribe-section { margin-top: 12px; border: 1px solid var(--td-border-level-1-color); border-radius: 8px; overflow: hidden; }
+.subscribe-header { background: var(--td-bg-color-secondarycontainer); padding: 8px 16px; }
+.subscribe-title { font-weight: 600; font-size: 14px; }
+.subscribe-body { padding: 16px; }
+.subscribe-url-row { display: flex; gap: 8px; align-items: center; }
+.qr-section { margin-top: 12px; text-align: center; }
+.qr-image { width: 160px; height: 160px; border-radius: 4px; }
+.qr-hint { display: block; margin-top: 8px; font-size: 12px; color: var(--td-text-color-placeholder); }
 </style>

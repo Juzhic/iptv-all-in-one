@@ -2,7 +2,7 @@
   <div class="scan-results-tab">
     <!-- 视图切换 -->
     <div class="view-tabs-row">
-      <t-tabs v-model="viewMode" theme="normal" size="small" :destroy-on-hide="false">
+      <t-tabs v-model="viewMode" theme="normal" size="medium" :destroy-on-hide="false">
         <t-tab-panel value="grouped" label="按来源分组" />
         <t-tab-panel value="legacy" label="按扫描记录" />
       </t-tabs>
@@ -20,6 +20,14 @@
         <t-tag theme="warning" variant="light" v-if="persistentStats.poor">差 {{ persistentStats.poor }}</t-tag>
         <t-tag theme="danger" variant="light" v-if="persistentStats.unreachable">不可达 {{ persistentStats.unreachable }}</t-tag>
         <t-tag theme="primary" variant="light" v-if="persistentStats.pending">待检测 {{ persistentStats.pending }}</t-tag>
+        <div class="quality-bar-container">
+          <div class="quality-bar">
+            <div v-if="persistentStats.good" class="quality-segment quality-good" :style="{ width: qualityPct('good') + '%' }" :title="'好: ' + persistentStats.good"></div>
+            <div v-if="persistentStats.poor" class="quality-segment quality-poor" :style="{ width: qualityPct('poor') + '%' }" :title="'差: ' + persistentStats.poor"></div>
+            <div v-if="persistentStats.unreachable" class="quality-segment quality-unreachable" :style="{ width: qualityPct('unreachable') + '%' }" :title="'不可达: ' + persistentStats.unreachable"></div>
+            <div v-if="persistentStats.pending" class="quality-segment quality-pending" :style="{ width: qualityPct('pending') + '%' }" :title="'待检测: ' + persistentStats.pending"></div>
+          </div>
+        </div>
       </div>
 
       <!-- 分组视图过滤栏 -->
@@ -48,7 +56,7 @@
             <div>
               <div style="font-size:16px;font-weight:600">{{ detailSourceIp }}</div>
               <div style="font-size:12px;color:var(--td-text-color-placeholder);margin-top:4px">
-                共 {{ allDetailData.length }} 个频道
+                共 {{ detailTotal }} 个频道
               </div>
             </div>
           </div>
@@ -73,6 +81,7 @@
           <div style="flex:1"></div>
           <t-button variant="outline" size="small" @click="selectAllDetail">全选/取消</t-button>
           <t-button theme="primary" size="small" @click="exportDetailM3U">导出 M3U</t-button>
+          <t-button theme="primary" size="small" variant="outline" @click="exportDetailCSV">导出 CSV</t-button>
         </div>
         <t-table
           :columns="detailColumns"
@@ -109,6 +118,21 @@
           <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
           <template #quality_status="{ row }">
             <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">{{ qualityLabel(row.quality_status) }}</t-tag>
+          </template>
+          <template #priority="{ row }">
+            <t-select
+              :model-value="row.priority ?? 0"
+              size="small"
+              style="width:90px"
+              @change="(val) => onPriorityChange(row.url, val)"
+            >
+              <t-option :value="0" label="普通" />
+              <t-option :value="1" label="高" />
+              <t-option :value="2" label="最高" />
+            </t-select>
+          </template>
+          <template #op="{ row }">
+            <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">重新检测</t-button>
           </template>
         </t-table>
       </t-dialog>
@@ -235,21 +259,17 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import {
   apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
-  apiPersistentManualCheck,
+  apiPersistentManualCheck, apiPersistentRecheck, apiPersistentPriority,
 } from '../api.js'
+import { useClipboard } from '../composables/useClipboard.js'
+import { platformLabel } from '../utils/platform.js'
+import { qualityTheme, qualityLabel } from '../utils/quality.js'
+import { formatDateShort } from '../utils/date.js'
 
-// ─── 复制工具 ───
+const { copyText: rawCopy } = useClipboard()
 async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    MessagePlugin.success('已复制')
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
-    document.body.removeChild(ta)
-    MessagePlugin.success('已复制')
-  }
+  await rawCopy(text)
+  MessagePlugin.success('已复制')
 }
 
 // ─── 视图模式 ───
@@ -309,7 +329,8 @@ function filteredSources(plat) {
 // ─── 详情弹窗状态 ───
 const detailDialogVisible = ref(false)
 const detailSourceIp = ref('')
-const allDetailData = ref([])
+const allDetailData = ref([])       // 当前页数据
+const detailTotal = ref(0)          // 服务端返回的总条数
 const selectedDetailKeys = ref([])
 const detailPage = ref(1)
 const detailPerPage = ref(50)
@@ -319,34 +340,14 @@ const detailCategoryFilter = ref('')
 const detailProvinceFilter = ref('')
 const detailSortInfo = ref({})
 
-const detailCategories = computed(() => {
-  const cats = new Set()
-  allDetailData.value.forEach(r => { if (r.category) cats.add(r.category) })
-  return [...cats].sort()
-})
+const detailCategories = ref([])
+const detailProvinces = ref([])
 
-const detailProvinces = computed(() => {
-  const provs = new Set()
-  allDetailData.value.forEach(r => { if (r.province) provs.add(r.province) })
-  return [...provs].sort()
-})
-
-const filteredDetailAll = computed(() => {
-  const q = detailSearch.value.toLowerCase()
-  const qf = detailQualityFilter.value
-  const cat = detailCategoryFilter.value
-  const prov = detailProvinceFilter.value
-  return allDetailData.value.filter(r => {
-    if (q && !(r.name || '').toLowerCase().includes(q)) return false
-    if (qf && r.quality_status !== qf) return false
-    if (cat && r.category !== cat) return false
-    if (prov && r.province !== prov) return false
-    return true
-  })
-})
-
-const filteredDetailSorted = computed(() => {
-  let data = [...filteredDetailAll.value]
+const filteredDetailData = computed(() => {
+  // 服务端已分页，allDetailData 即当前页数据
+  let data = [...allDetailData.value]
+  // NOTE: Client-side sorting only affects the current page of server-paginated data.
+  // This is acceptable for ad-hoc re-sorting within a page; primary ordering comes from the server.
   const { sortBy, descending } = detailSortInfo.value
   if (sortBy) {
     data.sort((a, b) => {
@@ -359,28 +360,40 @@ const filteredDetailSorted = computed(() => {
   return data
 })
 
-const filteredDetailData = computed(() => {
-  const start = (detailPage.value - 1) * detailPerPage.value
-  return filteredDetailSorted.value.slice(start, start + detailPerPage.value)
-})
-
 const detailPagination = computed(() => ({
   current: detailPage.value,
   pageSize: detailPerPage.value,
-  total: filteredDetailSorted.value.length,
+  total: detailTotal.value,
   showJumper: true,
   pageSizeOptions: [20, 50, 100, 200],
 }))
 
 function onDetailSortChange(sort) {
   detailSortInfo.value = sort
-  detailPage.value = 1
 }
 
 function onDetailPageChange(info) {
   detailPage.value = info.current
   detailPerPage.value = info.pageSize
   selectedDetailKeys.value = []
+  loadDetailPage()
+}
+
+async function loadDetailPage() {
+  try {
+    const data = await apiPersistentDetails(detailSourceIp.value, detailPage.value, detailPerPage.value)
+    if (data && data.items) {
+      allDetailData.value = data.items
+      detailTotal.value = data.total || 0
+    } else {
+      // 兼容旧格式（直接返回数组）
+      allDetailData.value = Array.isArray(data) ? data : []
+      detailTotal.value = allDetailData.value.length
+    }
+  } catch (e) {
+    allDetailData.value = []
+    detailTotal.value = 0
+  }
 }
 
 // ─── Legacy 视图状态 ───
@@ -420,6 +433,8 @@ const detailColumns = [
   { colKey: 'delay', title: '延迟(ms)', width: 100, sorter: true },
   { colKey: 'bandwidth', title: '带宽(KB/s)', width: 120, sorter: true },
   { colKey: 'quality_status', title: '质量', width: 90, sorter: true },
+  { colKey: 'priority', title: '优先级', width: 120 },
+  { colKey: 'op', title: '操作', width: 100 },
 ]
 
 const legacyColumns = [
@@ -452,37 +467,14 @@ function stabilityClass(v) {
   return 'stability-bad'
 }
 
-function qualityTheme(status) {
-  if (status === 'good') return 'success'
-  if (status === 'poor') return 'warning'
-  if (status === 'unreachable') return 'danger'
-  return 'default'
+const formatDate = formatDateShort
+
+function qualityPct(status) {
+  const t = persistentStats.value.total || 1
+  return ((persistentStats.value[status] || 0) / t * 100).toFixed(1)
 }
 
-function qualityLabel(status) {
-  if (status === 'good') return '好'
-  if (status === 'poor') return '差'
-  if (status === 'unreachable') return '不可达'
-  return '待检测'
-}
 
-function platformLabel(platform) {
-  const map = {
-    'Quake 360': '🔍 Quake 360',
-    'Hunter': '🦅 Hunter 鹰图',
-    'DayDayMap': '🗺️ DayDayMap',
-    'ZHGX': '📡 ZHGX',
-    'JSMpeg': '📺 JSMpeg',
-    'Tvheadend': '📻 Tvheadend',
-    '未知': '❓ 未知平台',
-  }
-  return map[platform] || `📌 ${platform}`
-}
-
-function formatDate(s) {
-  if (!s) return '-'
-  return s.substring(0, 19)
-}
 
 // ─── 分组视图加载 ───
 async function loadGrouped() {
@@ -516,6 +508,7 @@ async function loadGrouped() {
 async function openSourceDetail(sourceIp) {
   detailSourceIp.value = sourceIp
   detailPage.value = 1
+  detailPerPage.value = 50
   selectedDetailKeys.value = []
   detailSearch.value = ''
   detailQualityFilter.value = ''
@@ -524,10 +517,28 @@ async function openSourceDetail(sourceIp) {
   detailSortInfo.value = {}
   detailDialogVisible.value = true
   try {
-    const data = await apiPersistentDetails(sourceIp)
-    allDetailData.value = Array.isArray(data) ? data : (data.items || [])
+    const data = await apiPersistentDetails(sourceIp, 1, 50)
+    if (data && data.items) {
+      allDetailData.value = data.items
+      detailTotal.value = data.total || 0
+    } else {
+      allDetailData.value = Array.isArray(data) ? data : []
+      detailTotal.value = allDetailData.value.length
+    }
+    // NOTE: Filter options are extracted from the current page only (server-paginated).
+    // If the first page doesn't cover all categories/provinces, some options may be missing.
+    // This is a known limitation; a dedicated API endpoint would be needed for exhaustive options.
+    const cats = new Set()
+    const provs = new Set()
+    allDetailData.value.forEach(r => {
+      if (r.category) cats.add(r.category)
+      if (r.province) provs.add(r.province)
+    })
+    detailCategories.value = [...cats].sort()
+    detailProvinces.value = [...provs].sort()
   } catch (e) {
     allDetailData.value = []
+    detailTotal.value = 0
   }
 }
 
@@ -541,10 +552,33 @@ function selectAllDetail() {
 
 function exportDetailM3U() {
   const items = selectedDetailKeys.value.length
-    ? filteredDetailSorted.value.filter(r => selectedDetailKeys.value.includes(r.id))
-    : filteredDetailSorted.value
+    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
+    : filteredDetailData.value
   if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
   downloadM3U(items, `scan_${detailSourceIp.value}.m3u`)
+}
+
+function exportDetailCSV() {
+  const items = selectedDetailKeys.value.length
+    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
+    : filteredDetailData.value
+  if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
+  const headers = ['name', 'url', 'category', 'province', 'stability', 'delay', 'bandwidth', 'quality_status', 'source_ip']
+  const headerLabels = ['频道名', '频道地址', '分类', '省份', '稳定性', '延迟', '带宽', '质量状态', '来源IP']
+  const escapeCSV = (v) => {
+    const s = v == null ? '' : String(v)
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  let csv = '\uFEFF' + headerLabels.join(',') + '\n'
+  items.forEach(r => {
+    csv += headers.map(h => escapeCSV(h === 'source_ip' ? detailSourceIp.value : r[h])).join(',') + '\n'
+  })
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `scan_${detailSourceIp.value}.csv`; a.click()
+  URL.revokeObjectURL(url)
+  MessagePlugin.success(`已导出 ${items.length} 个频道`)
 }
 
 async function triggerManualCheck() {
@@ -560,6 +594,32 @@ async function triggerManualCheck() {
     MessagePlugin.error('触发失败')
   } finally {
     manualChecking.value = false
+  }
+}
+
+async function recheckChannel(url) {
+  try {
+    const res = await apiPersistentRecheck(url)
+    if (res.ok) {
+      MessagePlugin.success('已触发重新检测')
+    } else {
+      MessagePlugin.error(res.error || '重新检测失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('重新检测失败')
+  }
+}
+
+async function onPriorityChange(url, priority) {
+  try {
+    const res = await apiPersistentPriority(url, priority)
+    if (res.ok) {
+      MessagePlugin.success('优先级已更新')
+    } else {
+      MessagePlugin.error(res.error || '更新优先级失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('更新优先级失败')
   }
 }
 
@@ -643,7 +703,10 @@ function selectAllLegacy() {
 function downloadM3U(items, filename) {
   let m3u = '#EXTM3U\n'
   items.forEach(ch => {
-    m3u += `#EXTINF:-1 group-title="${ch.category || ''}",${ch.name || ''}\n`
+    // Escape commas in channel name — M3U EXTINF uses comma to separate attributes from the display name
+    const safeName = (ch.name || '').replace(/,/g, '\\,')
+    const safeCategory = (ch.category || '').replace(/,/g, '\\,')
+    m3u += `#EXTINF:-1 group-title="${safeCategory}",${safeName}\n`
     m3u += `${ch.url || ''}\n`
   })
   const blob = new Blob([m3u], { type: 'audio/x-mpegurl' })
@@ -692,7 +755,29 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+  align-items: center;
 }
+
+.quality-bar-container {
+  flex-basis: 100%;
+}
+
+.quality-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--td-border-level-1-color, #e5e7eb);
+}
+
+.quality-segment {
+  transition: width 0.3s;
+}
+
+.quality-good { background: #22c55e; }
+.quality-poor { background: #f59e0b; }
+.quality-unreachable { background: #ef4444; }
+.quality-pending { background: #3b82f6; }
 
 .filter-bar {
   display: flex;
@@ -754,22 +839,5 @@ onBeforeUnmount(() => {
 }
 .url-with-copy:hover .copy-btn {
   opacity: 1;
-}
-</style>
-
-<style>
-/* 弹窗全局样式（teleport 到 body，scoped 无法覆盖） */
-.detail-dialog.t-dialog {
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-}
-.detail-dialog .t-dialog__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.detail-dialog .t-table__content {
-  max-height: calc(85vh - 200px) !important;
 }
 </style>

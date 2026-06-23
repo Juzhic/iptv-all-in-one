@@ -17,6 +17,15 @@ HOTEL_TARGET_KEYWORDS = [
     "1000.json"
 ]
 
+CRT_SH_PATTERNS = [
+    "%.iptv%.cn",
+    "%.hotel%.tv",
+    "%.live%.cn",
+    "%.tv%.cn",
+    "%zhgx%",
+    "%iptv%",
+]
+
 def is_potential_hotel_domain(domain: str) -> bool:
     domain_lower = domain.lower()
     return any(keyword in domain_lower for keyword in HOTEL_TARGET_KEYWORDS)
@@ -73,6 +82,35 @@ async def search_censys_hosts(session: aiohttp.ClientSession, query: str) -> Lis
         logger.warning(f"Censys主机搜索失败: {e}")
     return results
 
+async def search_crt_sh(session: aiohttp.ClientSession, query_patterns: List[str]) -> set:
+    """Query crt.sh certificate transparency logs for domains matching patterns."""
+    all_domains = set()
+    for pattern in query_patterns:
+        url = f"https://crt.sh/?q={pattern}&output=json"
+        logger.info(f"[CT日志] 查询 crt.sh: {pattern}")
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logger.warning(f"[CT日志] crt.sh 查询 {pattern} 返回状态码 {resp.status}")
+                    continue
+                data = await resp.json()
+                if not isinstance(data, list):
+                    logger.warning(f"[CT日志] crt.sh 查询 {pattern} 返回非预期格式")
+                    continue
+                for entry in data:
+                    name_value = entry.get('name_value', '')
+                    for line in name_value.split('\n'):
+                        domain = line.strip().lower()
+                        if domain and '*' not in domain and '.' in domain:
+                            all_domains.add(domain)
+                logger.info(f"[CT日志] 模式 {pattern} 发现 {len(data)} 条证书记录")
+        except asyncio.TimeoutError:
+            logger.warning(f"[CT日志] crt.sh 查询 {pattern} 超时")
+        except Exception as e:
+            logger.warning(f"[CT日志] crt.sh 查询 {pattern} 失败: {e}")
+    logger.info(f"[CT日志] 从 crt.sh 共提取 {len(all_domains)} 个唯一域名")
+    return all_domains
+
 async def enumerate_domains_from_ip(session: aiohttp.ClientSession, ip: str) -> List[str]:
     domains = []
     try:
@@ -118,6 +156,12 @@ async def domain_ip_scan(
                         resolved_ips = await get_ip_for_domain(sess, domain)
                         for resolved_ip in resolved_ips:
                             entries.append({'ip': resolved_ip, 'domain': domain, 'source': 'censys_cert'})
+        crt_domains = await search_crt_sh(sess, CRT_SH_PATTERNS)
+        for domain in crt_domains:
+            if is_potential_hotel_domain(domain):
+                resolved_ips = await get_ip_for_domain(sess, domain)
+                for resolved_ip in resolved_ips:
+                    entries.append({'ip': resolved_ip, 'domain': domain, 'source': 'crt_sh'})
         seen = set()
         unique = []
         for e in entries:

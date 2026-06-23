@@ -6,8 +6,8 @@
           <h1 class="app-title">IPTV 测速管理后台</h1>
         </div>
 
-        <div class="header-right">
-          <div class="header-live" v-if="testRunning">
+        <nav class="header-right" aria-label="工具栏">
+          <div class="header-live" v-if="testRunning" aria-live="polite">
             <t-tag theme="warning" variant="light" shape="round">
               <template #icon><t-loading size="12px" /></template>
               测试运行中 {{ progressText }}
@@ -17,7 +17,7 @@
           <div class="mode-chip">
             <span class="mode-chip-dot" :class="{ 'is-dark': isDark }"></span>
             <span class="mode-chip-label">{{ isDark ? '深色模式' : '浅色模式' }}</span>
-            <t-switch v-model="isDark" size="small" />
+            <t-switch v-model="isDark" size="small" aria-label="切换深色/浅色模式" />
           </div>
 
           <div class="header-facts" v-if="headerFacts.length">
@@ -27,10 +27,10 @@
               <span class="header-fact-value">{{ item.value }}</span>
             </span>
           </div>
-        </div>
+        </nav>
       </header>
 
-      <section v-if="latestRun" class="summary-cards">
+      <section v-if="latestRun" class="summary-cards" aria-label="概览统计">
         <t-row :gutter="[16, 16]" align="stretch">
           <t-col
             v-for="card in topSummaryCards"
@@ -49,54 +49,58 @@
                 :percentage="card.progress"
                 :status="card.progressStatus"
                 size="small"
+                :aria-label="`${card.label} ${card.value}`"
               />
             </t-card>
           </t-col>
         </t-row>
       </section>
 
-      <t-tabs v-model="activeTab" @change="onTabChange" class="main-tabs">
-        <t-tab-panel value="overview" label="总览" :destroy-on-hide="false">
-          <OverviewTab
-            v-if="visitedTabs.has('overview')"
-            ref="overviewRef"
-            :latest="latestRun"
-            :runs="runs"
-            :channel-summary="channelSummary"
-            :codec-stats="codecStats"
-          />
-        </t-tab-panel>
-        <t-tab-panel value="history" label="历史明细" :destroy-on-hide="false">
-          <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
-        </t-tab-panel>
-        <t-tab-panel value="testing" label="系统测试" :destroy-on-hide="false">
-          <TestingTab v-if="visitedTabs.has('testing')" @test-finished="onTestFinished" />
-        </t-tab-panel>
-        <t-tab-panel value="settings" label="系统配置" :destroy-on-hide="false">
-          <SettingsTab v-if="visitedTabs.has('settings')" />
-        </t-tab-panel>
-        <t-tab-panel value="scanner" label="频道扫描" :destroy-on-hide="false">
-          <ScannerTab v-if="visitedTabs.has('scanner')" />
-        </t-tab-panel>
-        <t-tab-panel value="scan-config" label="扫描配置" :destroy-on-hide="false">
-          <ScanConfigTab v-if="visitedTabs.has('scan-config')" />
-        </t-tab-panel>
-        <t-tab-panel value="detection" label="检测监控" :destroy-on-hide="false">
-          <DetectionTab v-if="visitedTabs.has('detection')" />
-        </t-tab-panel>
-        <t-tab-panel value="scan-results" label="扫描结果" :destroy-on-hide="false">
-          <ScanResultsTab v-if="visitedTabs.has('scan-results')" />
-        </t-tab-panel>
-      </t-tabs>
+      <main class="main-content" aria-label="主要功能区域">
+        <t-tabs v-model="activeTab" @change="onTabChange" class="main-tabs" role="tablist" aria-label="功能导航">
+          <t-tab-panel value="overview" label="总览" :destroy-on-hide="false">
+            <OverviewTab
+              v-if="visitedTabs.has('overview')"
+              ref="overviewRef"
+              :latest="latestRun"
+              :runs="runs"
+              :channel-summary="channelSummary"
+              :codec-stats="codecStats"
+            />
+          </t-tab-panel>
+          <t-tab-panel value="history" label="历史明细" :destroy-on-hide="false">
+            <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
+          </t-tab-panel>
+          <t-tab-panel value="testing" label="系统测试" :destroy-on-hide="false">
+            <TestingTab v-if="visitedTabs.has('testing')" @test-finished="onTestFinished" />
+          </t-tab-panel>
+          <t-tab-panel value="settings" label="系统配置" :destroy-on-hide="false">
+            <SettingsTab v-if="visitedTabs.has('settings')" />
+          </t-tab-panel>
+          <t-tab-panel value="scanner" label="频道扫描" :destroy-on-hide="false">
+            <ScannerTab v-if="visitedTabs.has('scanner')" />
+          </t-tab-panel>
+          <t-tab-panel value="scan-config" label="扫描配置" :destroy-on-hide="false">
+            <ScanConfigTab v-if="visitedTabs.has('scan-config')" />
+          </t-tab-panel>
+          <t-tab-panel value="detection" label="检测监控" :destroy-on-hide="false">
+            <DetectionTab v-if="visitedTabs.has('detection')" />
+          </t-tab-panel>
+          <t-tab-panel value="scan-results" label="扫描结果" :destroy-on-hide="false">
+            <ScanResultsTab v-if="visitedTabs.has('scan-results')" />
+          </t-tab-panel>
+        </t-tabs>
+      </main>
     </div>
   </t-config-provider>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, provide, nextTick, reactive } from 'vue'
+import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount } from 'vue'
+import { useMagicKeys, whenever } from '@vueuse/core'
 import { useTheme } from './composables/useTheme.js'
-import { apiGetInitial, apiGetProgress } from './api.js'
-import { usePolling } from './composables/usePolling.js'
+import { useDialogDrag } from './composables/useDialogDrag.js'
+import { apiGetInitial, apiGetProgress, connectTestSse } from './api.js'
 import OverviewTab from './components/OverviewTab.vue'
 import HistoryTab from './components/HistoryTab.vue'
 import TestingTab from './components/TestingTab.vue'
@@ -108,6 +112,7 @@ import ScanResultsTab from './components/ScanResultsTab.vue'
 
 const globalConfig = {}
 const { theme, setTheme } = useTheme()
+useDialogDrag()
 
 const isDark = computed({
   get: () => theme.value === 'dark',
@@ -126,6 +131,41 @@ const channelSummary = ref({})
 const codecStats = ref({})
 const overviewRef = ref(null)
 const historyRef = ref(null)
+
+// Keyboard shortcuts
+const { ctrl_s, ctrl_f, escape } = useMagicKeys()
+
+const TAB_LIST = ['overview', 'history', 'testing', 'settings', 'scanner', 'scan-config', 'detection', 'scan-results']
+
+// Ctrl+S 保存配置
+whenever(ctrl_s, () => {
+  if (activeTab.value === 'settings') {
+    const settingsEl = document.querySelector('.settings-tab')
+    if (settingsEl) {
+      const saveBtn = settingsEl.querySelector('.t-button--theme-primary')
+      if (saveBtn) saveBtn.click()
+    }
+  }
+})
+
+// Ctrl+F 聚焦搜索
+whenever(ctrl_f, (e) => {
+  e.preventDefault()
+  const searchInput = document.querySelector('.search-input input, .t-input input[placeholder*="搜索"]')
+  if (searchInput) searchInput.focus()
+})
+
+// 数字键切换Tab
+function handleKeyDown(e) {
+  if (e.altKey && e.key >= '1' && e.key <= '8') {
+    e.preventDefault()
+    const tabIndex = parseInt(e.key) - 1
+    if (tabIndex < TAB_LIST.length) {
+      activeTab.value = TAB_LIST[tabIndex]
+      visitedTabs.add(TAB_LIST[tabIndex])
+    }
+  }
+}
 
 const latestSummary = computed(() => latestRun.value?.summary || {})
 const topSummaryCards = computed(() => {
@@ -205,6 +245,16 @@ const schedulerRunning = ref(false)
 const nextScheduledRun = ref('')
 const progressText = ref('')
 
+const testProgress = reactive({
+  running: false,
+  processed: 0,
+  passed: 0,
+  failed: 0,
+  elapsed: 0,
+  total: 0,
+  lines: [],
+})
+
 async function loadInitialData() {
   try {
     const data = await apiGetInitial()
@@ -223,32 +273,145 @@ async function loadInitialData() {
 }
 
 let lastLogSeq = 0
-const { start: startPoll, stop: stopPoll } = usePolling(async () => {
-  try {
-    const data = await apiGetProgress(lastLogSeq)
-    testRunning.value = !!data.running
-    schedulerRunning.value = !!data.scheduler_running
-    nextScheduledRun.value = data.next_scheduled_run || ''
+let testEventSource = null
+let pollFallbackTimer = null
 
-    if (data.running) {
-      const pct = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0
-      progressText.value = `${data.processed}/${data.total || '?'} ${pct}%`
-      if (data.lines?.length) {
-        data.lines.forEach((line) => {
-          if (line.seq > lastLogSeq) lastLogSeq = line.seq
-        })
+function handleSseStatus(e) {
+  try {
+    const data = JSON.parse(e.data)
+    applyTestState(data)
+  } catch (_) {}
+}
+
+function handleSseProgress(e) {
+  try {
+    const data = JSON.parse(e.data)
+    testRunning.value = true
+    testProgress.running = true
+    testProgress.processed = Number(data.processed) || 0
+    testProgress.passed = data.passed || 0
+    testProgress.failed = data.failed || 0
+    testProgress.elapsed = Math.round(data.elapsed || 0)
+    testProgress.total = Number(data.total) || 0
+    const pct = testProgress.total > 0 ? Math.round((testProgress.processed / testProgress.total) * 100) : 0
+    progressText.value = `${testProgress.processed}/${testProgress.total || '?'} ${pct}%`
+  } catch (_) {}
+}
+
+function handleSseLog(e) {
+  try {
+    const line = JSON.parse(e.data)
+    if (line.seq > lastLogSeq) {
+      testProgress.lines.push(line)
+      if (testProgress.lines.length > 5000) {
+        testProgress.lines.splice(0, testProgress.lines.length - 5000)
       }
-    } else if (schedulerRunning.value) {
-      stopPoll()
-      setTimeout(() => { startPoll() }, 30000)
-    } else {
-      stopPoll()
+      lastLogSeq = line.seq
     }
   } catch (_) {}
-}, 2000)
+}
 
-provide('testRunning', testRunning)
-provide('startGlobalPoll', startPoll)
+function handleSseTestComplete(e) {
+  try {
+    const data = JSON.parse(e.data)
+    testRunning.value = false
+    testProgress.running = false
+    if (data.elapsed) testProgress.elapsed = Math.round(data.elapsed)
+    if (data.total) testProgress.total = Number(data.total)
+    if (data.processed) testProgress.processed = Number(data.processed)
+    if (data.passed != null) testProgress.passed = data.passed
+    if (data.failed != null) testProgress.failed = data.failed
+  } catch (_) {
+    testRunning.value = false
+    testProgress.running = false
+  }
+  disconnectTestSse()
+  loadInitialData()
+}
+
+function handleSseError() {
+  disconnectTestSse()
+  if (testRunning.value || schedulerRunning.value) {
+    startPollFallback()
+  }
+}
+
+function applyTestState(data) {
+  if (!data) return
+  testRunning.value = !!data.running
+  testProgress.running = !!data.running
+  testProgress.processed = Number(data.processed) || 0
+  testProgress.passed = data.passed || 0
+  testProgress.failed = data.failed || 0
+  testProgress.elapsed = Math.round(data.elapsed || 0)
+  testProgress.total = Number(data.total) || 0
+  schedulerRunning.value = !!data.scheduler_running
+  nextScheduledRun.value = data.next_scheduled_run || ''
+  if (data.running) {
+    const pct = testProgress.total > 0 ? Math.round((testProgress.processed / testProgress.total) * 100) : 0
+    progressText.value = `${testProgress.processed}/${testProgress.total || '?'} ${pct}%`
+  }
+}
+
+function connectTestStream() {
+  disconnectTestSse()
+  try {
+    testEventSource = connectTestSse({
+      status: handleSseStatus,
+      progress: handleSseProgress,
+      log: handleSseLog,
+      test_complete: handleSseTestComplete,
+      onerror: handleSseError,
+    })
+  } catch (_) {
+    startPollFallback()
+  }
+}
+
+function disconnectTestSse() {
+  if (testEventSource) {
+    testEventSource.close()
+    testEventSource = null
+  }
+  stopPollFallback()
+}
+
+function startPollFallback() {
+  stopPollFallback()
+  pollFallbackTimer = setInterval(async () => {
+    try {
+      const data = await apiGetProgress(lastLogSeq)
+      applyTestState(data)
+      if (data.lines?.length) {
+        data.lines.forEach((line) => {
+          if (line.seq > lastLogSeq) {
+            testProgress.lines.push(line)
+            if (testProgress.lines.length > 5000) {
+              testProgress.lines.splice(0, testProgress.lines.length - 5000)
+            }
+            lastLogSeq = line.seq
+          }
+        })
+      }
+      if (!data.running && !schedulerRunning.value) {
+        stopPollFallback()
+      }
+    } catch (_) {}
+  }, 2000)
+}
+
+function stopPollFallback() {
+  if (pollFallbackTimer) {
+    clearInterval(pollFallbackTimer)
+    pollFallbackTimer = null
+  }
+}
+
+provide('testProgress', testProgress)
+provide('clearTestLogs', () => {
+  testProgress.lines = []
+  lastLogSeq = 0
+})
 
 function onTestFinished() {
   loadInitialData()
@@ -273,7 +436,13 @@ function onTabChange(value) {
 
 onMounted(async () => {
   await loadInitialData()
-  startPoll()
+  connectTestStream()
+  window.addEventListener('keydown', handleKeyDown)
+})
+
+onBeforeUnmount(() => {
+  disconnectTestSse()
+  window.removeEventListener('keydown', handleKeyDown)
 })
 </script>
 
@@ -283,6 +452,43 @@ body {
   margin: 0;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--td-bg-color-page, #f5f7fb);
+}
+
+/* ─── 全局弹窗样式：居中 + 拖拽手柄 + 内部滚动 ─── */
+.t-dialog__ctx .t-dialog__position {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.t-dialog {
+  max-height: 85vh !important;
+  max-width: 90vw !important;
+  display: flex !important;
+  flex-direction: column !important;
+  margin: 0 !important;
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
+}
+.t-dialog__header {
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+.t-dialog__body {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+.t-dialog__body .t-table__content {
+  max-height: calc(85vh - 200px) !important;
+  overflow-y: auto !important;
 }
 </style>
 
@@ -390,6 +596,10 @@ body {
 
 .summary-cards {
   margin-bottom: 18px;
+}
+
+.main-content {
+  outline: none;
 }
 
 .summary-cards :deep(.t-col) {

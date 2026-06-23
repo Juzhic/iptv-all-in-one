@@ -1,0 +1,150 @@
+# -*- coding: utf-8 -*-
+"""web 包 — 共享可变状态。
+
+所有模块从这里读写状态，避免循环导入。
+"""
+import collections
+import json
+import os
+import queue
+import threading
+
+# ─── 允许通过 Web 编辑的数据 key ───
+ALLOWED_DATA_KEYS = {'alias', 'demo', 'subscribe', 'profiles'}
+
+
+def is_allowed_data_key(key):
+    """检查 key 是否允许通过 Web 编辑（支持 profile:* 通配）。"""
+    if key in ALLOWED_DATA_KEYS:
+        return True
+    return key.startswith('profile:')
+
+# ─── BasicAuth 免认证路径 ───
+BASIC_AUTH_EXEMPT_PATHS = {'/api/download/txt', '/api/download/m3u', '/api/health', '/api/subscribe.m3u'}
+
+# ─── 测试运行状态 ───
+_test_running = False
+_test_lock = threading.Lock()
+_test_stop_event = threading.Event()
+_test_active_token = None
+
+# 测试进度追踪
+_test_progress = {
+    'running': False,
+    'started_at': None,
+    'total': 0,
+    'processed': 0,
+    'passed': 0,
+    'failed': 0,
+    'elapsed': 0,
+    'finished_at': None,
+    'error': None,
+    'source': '',
+    'last_seq': 0,
+}
+_test_log_lines = collections.deque(maxlen=200)
+_progress_lock = threading.Lock()
+_test_log_seq = 0
+
+# ─── 调度器状态 ───
+_next_scheduled_run = None
+_scheduler_running = False
+_scheduler_thread = None
+_scheduler_thread_lock = threading.Lock()
+_scheduler_lock_handle = None
+_scheduler_owner = f'pid:{os.getpid()}'
+
+# ─── 扫描模块引用（__init__.py 启动时填充） ───
+_scanner_module = None
+
+
+# ─── setter 函数（处理需要 global 声明的重新赋值） ───
+
+def set_test_running(value):
+    global _test_running
+    _test_running = value
+
+
+def set_test_stop_event(event):
+    global _test_stop_event
+    _test_stop_event = event
+
+
+def set_test_active_token(token):
+    global _test_active_token
+    _test_active_token = token
+
+
+def inc_test_log_seq():
+    global _test_log_seq
+    with _progress_lock:
+        _test_log_seq += 1
+        return _test_log_seq
+
+
+def reset_test_log_seq():
+    global _test_log_seq
+    with _progress_lock:
+        _test_log_seq = 0
+
+
+def set_scheduler_running(value):
+    global _scheduler_running
+    _scheduler_running = value
+
+
+def set_scheduler_thread(thread):
+    global _scheduler_thread
+    _scheduler_thread = thread
+
+
+def set_next_scheduled_run(value):
+    global _next_scheduled_run
+    _next_scheduled_run = value
+
+
+def get_test_progress_snapshot():
+    with _progress_lock:
+        return dict(_test_progress)
+
+
+def set_scheduler_lock_handle(handle):
+    global _scheduler_lock_handle
+    _scheduler_lock_handle = handle
+
+
+# ─── 测试进度 SSE 订阅 ───
+
+_test_sse_subscribers: list = []
+_test_sse_lock = threading.Lock()
+
+
+def subscribe_test_sse():
+    """注册一个测试 SSE 订阅者，返回 Queue。"""
+    q = queue.Queue(maxsize=500)
+    with _test_sse_lock:
+        _test_sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe_test_sse(q):
+    """取消测试 SSE 订阅。"""
+    with _test_sse_lock:
+        try:
+            _test_sse_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _broadcast_test_sse(event_type, data):
+    """向所有测试 SSE 订阅者广播事件（非阻塞，丢弃满队列）。"""
+    msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    with _test_sse_lock:
+        dead = []
+        for q in _test_sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _test_sse_subscribers.remove(q)

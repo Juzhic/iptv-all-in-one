@@ -6,6 +6,7 @@
         <div>
           <div class="section-title section-title--flush">检测概览</div>
           <p class="section-desc">每次定期检测的执行记录，按时间倒序排列。点击"日志"查看该轮每个频道的检测明细。</p>
+          <p v-if="nextCheckCountdown" class="next-check-countdown">{{ nextCheckCountdown }}</p>
         </div>
       </div>
 
@@ -36,6 +37,13 @@
         <template #duration_seconds="{ row }">
           {{ row.duration_seconds != null ? row.duration_seconds.toFixed(1) + 's' : '-' }}
         </template>
+        <template #pass_rate="{ row }">
+          <span v-if="row.total_checked" :class="passRateClass(row)">{{ passRate(row) }}%</span>
+          <span v-else class="det-val-muted">-</span>
+          <span v-if="row._trend === 'up'" class="det-trend det-trend-up">↑</span>
+          <span v-else-if="row._trend === 'down'" class="det-trend det-trend-down">↓</span>
+          <span v-else-if="row._trend === 'flat'" class="det-trend det-trend-flat">→</span>
+        </template>
         <template #op="{ row }">
           <t-button size="small" variant="outline" theme="primary" @click="openDetDetail(row)">日志</t-button>
         </template>
@@ -65,7 +73,7 @@
                 <label>检测间隔（分钟）</label>
                 <span>每隔多久对持久化结果执行一轮健康检查。设为 0 暂停检测。</span>
               </div>
-              <t-input-number v-model="detCfg.detection_interval_minutes" :min="0" :step="10" class="field-control" />
+              <t-input-number v-model="detCfg.detection_interval_minutes" :min="0" :max="10080" :step="10" class="field-control" />
             </div>
 
             <div class="config-field">
@@ -73,7 +81,15 @@
                 <label>连续失败删除阈值</label>
                 <span>源连续检测失败几次后自动从结果池中删除。</span>
               </div>
-              <t-input-number v-model="detCfg.deletion_threshold" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="detCfg.deletion_threshold" :min="1" :max="100" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>稳定频道检测倍数</label>
+                <span>stability≥80 的稳定频道检测间隔 = 检测间隔 × 此倍数。设为 3 表示每 3 个周期检测一次。</span>
+              </div>
+              <t-input-number v-model="detCfg.stable_channel_multiplier" :min="1" :max="10" :step="1" class="field-control" />
             </div>
           </div>
         </section>
@@ -89,7 +105,7 @@
             <t-button size="small" variant="outline" @click="detAutoScroll = !detAutoScroll">
               {{ detAutoScroll ? '暂停滚动' : '自动滚动' }}
             </t-button>
-            <t-button size="small" variant="outline" @click="detLogLines = []">清空</t-button>
+            <t-button size="small" variant="outline" @click="clearDetLogLines">清空</t-button>
           </div>
 
           <div class="detection-log-panel" ref="detLogPanelRef">
@@ -117,36 +133,42 @@
       :footer="false"
       width="90%"
       destroy-on-close
-      @close="detDetailSearch = ''"
+      @close="detDetailPage = 1"
     >
       <div class="det-detail-toolbar">
-        <t-input
-          v-model="detDetailSearch"
-          placeholder="搜索频道名或 URL..."
-          size="small"
-          clearable
-          style="width: 320px"
-        />
+        <t-input v-model="detDetailSearch" placeholder="搜索频道名/URL..." clearable size="small" style="width:200px" />
+        <t-select v-model="detDetailCheckFilter" size="small" style="width:120px" clearable placeholder="检测结果">
+          <t-option value="" label="全部结果" />
+          <t-option value="pass" label="通过" />
+          <t-option value="fail" label="失败" />
+        </t-select>
+        <t-select v-model="detDetailQualityFilter" size="small" style="width:120px" clearable placeholder="质量状态">
+          <t-option value="" label="全部状态" />
+          <t-option value="good" label="正常" />
+          <t-option value="poor" label="较差" />
+          <t-option value="unreachable" label="不可达" />
+        </t-select>
         <span class="det-detail-count">
           共 {{ filteredDetDetails.length }} 条
-          <template v-if="detDetailSearch">（已过滤）</template>
         </span>
       </div>
 
       <t-table
         :columns="detDetailColumns"
-        :data="paginatedDetDetails"
+        :data="filteredDetDetails"
         :bordered="false"
         row-key="url"
         size="small"
+        :sort="detDetailSortInfo"
+        @sort-change="onDetDetailSortChange"
         :pagination="{
           current: detDetailPage,
           pageSize: detDetailPageSize,
-          total: filteredDetDetails.length,
+          total: detDetailTotal,
           pageSizeOptions: [20, 50, 100, 200],
           showJumper: true,
         }"
-        @page-change="(p) => { detDetailPage = p.current; detDetailPageSize = p.pageSize }"
+        @page-change="onDetDetailPageChange"
       >
         <template #check_ok="{ row }">
           <t-tag :theme="row.check_ok ? 'success' : 'danger'" size="small" variant="light">
@@ -154,9 +176,12 @@
           </t-tag>
         </template>
         <template #quality_status="{ row }">
-          <t-tag :theme="detStatusTheme(row.quality_status)" size="small" variant="light">
-            {{ detStatusLabel(row.quality_status) }}
+          <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">
+            {{ qualityLabel(row.quality_status) }}
           </t-tag>
+        </template>
+        <template #op="{ row }">
+          <t-button size="small" variant="outline" theme="primary" @click="recheckChannel(row.url)">重新检测</t-button>
         </template>
         <template #http_status="{ row }">
           <span :class="row.http_status === 200 ? 'det-val-ok' : 'det-val-fail'">{{ row.http_status || '-' }}</span>
@@ -174,15 +199,17 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
-import { usePolling } from '../composables/usePolling.js'
+import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
   apiDetectionRuns,
   apiDetectionRunResults,
+  apiPersistentRecheck,
   apiSaveScanConfig,
   apiScanConfig,
+  connectDetectionSse,
 } from '../api.js'
 
 const { theme } = useTheme()
@@ -193,6 +220,7 @@ const saving = ref(false)
 const detCfg = reactive({
   detection_interval_minutes: 120,
   deletion_threshold: 3,
+  stable_channel_multiplier: 3,
 })
 
 async function loadConfig() {
@@ -200,12 +228,32 @@ async function loadConfig() {
     const cfg = await apiScanConfig()
     detCfg.detection_interval_minutes = typeof cfg.detection_interval_minutes === 'number' ? cfg.detection_interval_minutes : 120
     detCfg.deletion_threshold = typeof cfg.deletion_threshold === 'number' ? cfg.deletion_threshold : 3
+    detCfg.stable_channel_multiplier = typeof cfg.stable_channel_multiplier === 'number' ? cfg.stable_channel_multiplier : 3
   } catch (_) {
     MessagePlugin.error('加载检测配置失败')
   }
 }
 
+function validateDetConfig() {
+  const errors = []
+  if (detCfg.detection_interval_minutes < 0 || detCfg.detection_interval_minutes > 10080) {
+    errors.push('检测间隔需在 0-10080 分钟之间')
+  }
+  if (detCfg.deletion_threshold < 1 || detCfg.deletion_threshold > 100) {
+    errors.push('连续失败删除阈值需在 1-100 之间')
+  }
+  if (detCfg.stable_channel_multiplier < 1 || detCfg.stable_channel_multiplier > 10) {
+    errors.push('稳定频道检测倍数需在 1-10 之间')
+  }
+  return errors
+}
+
 async function saveDetConfig() {
+  const errors = validateDetConfig()
+  if (errors.length) {
+    MessagePlugin.warning(errors[0])
+    return
+  }
   saving.value = true
   try {
     const res = await apiSaveScanConfig({ ...detCfg })
@@ -214,6 +262,7 @@ async function saveDetConfig() {
       if (res.config) {
         detCfg.detection_interval_minutes = typeof res.config.detection_interval_minutes === 'number' ? res.config.detection_interval_minutes : detCfg.detection_interval_minutes
         detCfg.deletion_threshold = typeof res.config.deletion_threshold === 'number' ? res.config.deletion_threshold : detCfg.deletion_threshold
+        detCfg.stable_channel_multiplier = typeof res.config.stable_channel_multiplier === 'number' ? res.config.stable_channel_multiplier : detCfg.stable_channel_multiplier
       }
     } else {
       MessagePlugin.error(`保存失败: ${res.error || ''}`)
@@ -229,6 +278,107 @@ async function saveDetConfig() {
 const detLogLines = ref([])
 const detAutoScroll = ref(true)
 const detLogPanelRef = ref(null)
+let detEventSource = null
+let detPollFallback = null
+
+function connectDetectionStream() {
+  disconnectDetectionSse()
+  try {
+    detEventSource = connectDetectionSse({
+      log(e) {
+        try {
+          const entry = JSON.parse(e.data)
+          detLogLines.value.push(entry)
+          const MAX_DET_LOG = 500
+          if (detLogLines.value.length > MAX_DET_LOG) {
+            detLogLines.value = detLogLines.value.slice(-400)
+          }
+        } catch (_) {}
+      },
+      onerror() {
+        disconnectDetectionSse()
+        startDetPollFallback()
+      },
+    })
+  } catch (_) {
+    startDetPollFallback()
+  }
+}
+
+function disconnectDetectionSse() {
+  if (detEventSource) {
+    detEventSource.close()
+    detEventSource = null
+  }
+  stopDetPollFallback()
+}
+
+function startDetPollFallback() {
+  stopDetPollFallback()
+  detPollFallback = setInterval(loadDetectionLogs, 10000)
+}
+
+function stopDetPollFallback() {
+  if (detPollFallback) {
+    clearInterval(detPollFallback)
+    detPollFallback = null
+  }
+}
+
+// ─── 下次检测倒计时 ───
+const nextCheckCountdown = ref('')
+let countdownTimer = null
+
+function updateCountdown() {
+  if (!detCfg.detection_interval_minutes || detCfg.detection_interval_minutes <= 0) {
+    nextCheckCountdown.value = ''
+    return
+  }
+  const lastCycle = detRuns.value?.[0]?.started_at
+  if (!lastCycle) {
+    nextCheckCountdown.value = ''
+    return
+  }
+  const lastTime = new Date(lastCycle).getTime()
+  const intervalMs = detCfg.detection_interval_minutes * 60 * 1000
+  const nextTime = lastTime + intervalMs
+  const diffMs = nextTime - Date.now()
+  if (diffMs <= 0) {
+    nextCheckCountdown.value = '即将执行'
+    return
+  }
+  const totalMin = Math.floor(diffMs / 60000)
+  const hours = Math.floor(totalMin / 60)
+  const mins = totalMin % 60
+  let text = '下次检测：'
+  if (hours > 0) text += hours + '小时'
+  if (mins > 0 || hours === 0) text += mins + '分钟后'
+  nextCheckCountdown.value = text
+}
+
+async function recheckChannel(url) {
+  try {
+    const res = await apiPersistentRecheck(url)
+    if (res.ok) {
+      MessagePlugin.success('已触发重新检测')
+    } else {
+      MessagePlugin.error(res.error || '重新检测失败')
+    }
+  } catch (_) {
+    MessagePlugin.error('重新检测失败')
+  }
+}
+
+async function clearDetLogLines() {
+  const confirmed = await DialogPlugin.confirm({
+    header: '确认清空',
+    body: '清空后日志将无法恢复，确认清空？',
+    theme: 'warning',
+    confirmBtn: { theme: 'danger' }
+  })
+  if (!confirmed) return
+  detLogLines.value = []
+}
 
 function detLogClass(message) {
   if (/通过|完成|检测完成/.test(message)) return 'det-log-pass'
@@ -244,8 +394,6 @@ async function loadDetectionLogs() {
     }
   } catch (_) { /* ignore */ }
 }
-
-const { start: startDetPoll, stop: stopDetPoll } = usePolling(loadDetectionLogs, 10000)
 
 watch(detLogLines, () => {
   if (!detAutoScroll.value) return
@@ -275,6 +423,7 @@ const detRunColumns = [
   { colKey: 'failed_count', title: '失败', width: 70, align: 'center' },
   { colKey: 'deleted_count', title: '删除', width: 70, align: 'center' },
   { colKey: 'duration_seconds', title: '耗时', width: 90, align: 'center' },
+  { colKey: 'pass_rate', title: '通过率', width: 90, align: 'center' },
   { colKey: 'op', title: '操作', width: 80, align: 'center' },
 ]
 
@@ -283,7 +432,23 @@ async function loadDetRuns() {
     const start = detDateRange.value?.[0] || null
     const end = detDateRange.value?.[1] || null
     const data = await apiDetectionRuns(start, end)
-    if (Array.isArray(data)) detRuns.value = data
+    if (Array.isArray(data)) {
+      // Compute pass rate trend between consecutive runs
+      for (let i = 0; i < data.length; i++) {
+        const curr = data[i]
+        const prev = data[i + 1] // data is time-descending, so next index is older
+        if (curr.total_checked && prev?.total_checked) {
+          const currRate = (curr.ok_count / curr.total_checked) * 100
+          const prevRate = (prev.ok_count / prev.total_checked) * 100
+          const diff = currRate - prevRate
+          if (diff > 1) curr._trend = 'up'
+          else if (diff < -1) curr._trend = 'down'
+          else curr._trend = 'flat'
+        }
+      }
+      detRuns.value = data
+    }
+    updateCountdown()
   } catch (e) {
     MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
   }
@@ -293,61 +458,85 @@ async function loadDetRuns() {
 const detDetailVisible = ref(false)
 const detDetailCycleId = ref('')
 const detRunDetails = ref([])
-const detDetailSearch = ref('')
 const detDetailPage = ref(1)
 const detDetailPageSize = ref(20)
+const detDetailTotal = ref(0)
+const detDetailSearch = ref('')
+const detDetailCheckFilter = ref('')
+const detDetailQualityFilter = ref('')
+const detDetailSortInfo = ref({})
+
+function onDetDetailSortChange(sort) {
+  detDetailSortInfo.value = sort
+}
+
+const filteredDetDetails = computed(() => {
+  let data = [...detRunDetails.value]
+  const q = detDetailSearch.value?.toLowerCase()
+  if (q) {
+    data = data.filter(r =>
+      (r.name || '').toLowerCase().includes(q) || (r.url || '').toLowerCase().includes(q)
+    )
+  }
+  if (detDetailCheckFilter.value === 'pass') data = data.filter(r => r.check_ok)
+  else if (detDetailCheckFilter.value === 'fail') data = data.filter(r => !r.check_ok)
+  if (detDetailQualityFilter.value) data = data.filter(r => r.quality_status === detDetailQualityFilter.value)
+  const { sortBy, descending } = detDetailSortInfo.value
+  if (sortBy) {
+    data.sort((a, b) => {
+      const va = a[sortBy] ?? (descending ? -Infinity : Infinity)
+      const vb = b[sortBy] ?? (descending ? -Infinity : Infinity)
+      if (typeof va === 'number' && typeof vb === 'number') return descending ? vb - va : va - vb
+      return descending ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb))
+    })
+  }
+  return data
+})
 
 const detDetailColumns = [
   { colKey: 'name', title: '频道名称', width: 160, ellipsis: true },
   { colKey: 'url', title: 'URL', width: 280, ellipsis: true },
   { colKey: 'check_ok', title: '检测结果', width: 90, align: 'center' },
   { colKey: 'http_status', title: 'HTTP', width: 70, align: 'center' },
-  { colKey: 'response_time_ms', title: '响应时间', width: 100, align: 'center' },
+  { colKey: 'response_time_ms', title: '响应时间', width: 100, align: 'center', sorter: true },
   { colKey: 'response_size_bytes', title: '大小', width: 80, align: 'center' },
-  { colKey: 'consecutive_failures', title: '连续失败', width: 90, align: 'center' },
+  { colKey: 'consecutive_failures', title: '连续失败', width: 90, align: 'center', sorter: true },
   { colKey: 'quality_status', title: '状态', width: 90, align: 'center' },
+  { colKey: 'op', title: '操作', width: 90, align: 'center' },
 ]
 
-const filteredDetDetails = computed(() => {
-  const q = detDetailSearch.value.toLowerCase().trim()
-  if (!q) return detRunDetails.value
-  return detRunDetails.value.filter(r =>
-    (r.name || '').toLowerCase().includes(q) ||
-    (r.url || '').toLowerCase().includes(q)
-  )
-})
-
-const paginatedDetDetails = computed(() => {
-  const start = (detDetailPage.value - 1) * detDetailPageSize.value
-  return filteredDetDetails.value.slice(start, start + detDetailPageSize.value)
-})
-
-watch(detDetailSearch, () => { detDetailPage.value = 1 })
-
-async function openDetDetail(row) {
-  detDetailCycleId.value = row.cycle_id
-  detDetailSearch.value = ''
-  detDetailPage.value = 1
-  detDetailVisible.value = true
+async function loadDetDetail() {
   try {
-    const data = await apiDetectionRunResults(row.cycle_id)
-    if (Array.isArray(data)) detRunDetails.value = data
+    const data = await apiDetectionRunResults(detDetailCycleId.value, detDetailPage.value, detDetailPageSize.value)
+    if (data && Array.isArray(data.items)) {
+      detRunDetails.value = data.items
+      detDetailTotal.value = data.total || 0
+    } else if (Array.isArray(data)) {
+      detRunDetails.value = data
+      detDetailTotal.value = data.length
+    }
   } catch (e) {
     detRunDetails.value = []
+    detDetailTotal.value = 0
     MessagePlugin.error('加载检测明细失败: ' + (e?.message || ''))
   }
 }
 
-function detStatusTheme(status) {
-  if (status === 'good') return 'success'
-  if (status === 'poor') return 'warning'
-  if (status === 'unreachable') return 'danger'
-  return 'default'
+function onDetDetailPageChange(pageInfo) {
+  detDetailPage.value = pageInfo.current
+  detDetailPageSize.value = pageInfo.pageSize
+  loadDetDetail()
 }
 
-function detStatusLabel(status) {
-  const map = { good: '正常', poor: '较差', unreachable: '不可达', pending: '待检测' }
-  return map[status] || status
+async function openDetDetail(row) {
+  detDetailCycleId.value = row.cycle_id
+  detDetailPage.value = 1
+  detDetailVisible.value = true
+  detDetailSearch.value = ''
+  detDetailCheckFilter.value = ''
+  detDetailQualityFilter.value = ''
+  detDetailSortInfo.value = {}
+  await loadDetDetail()
 }
 
 function formatBytes(bytes) {
@@ -356,14 +545,30 @@ function formatBytes(bytes) {
   return (bytes / 1024).toFixed(1) + ' KB'
 }
 
+function passRate(row) {
+  if (!row.total_checked) return 0
+  return ((row.ok_count / row.total_checked) * 100).toFixed(1)
+}
+
+function passRateClass(row) {
+  const rate = row.total_checked ? (row.ok_count / row.total_checked) * 100 : 0
+  if (rate > 80) return 'det-val-ok'
+  if (rate > 50) return 'det-val-warn'
+  return 'det-val-fail'
+}
+
 onMounted(() => {
   loadConfig()
-  startDetPoll()
-  loadDetRuns()
+  connectDetectionStream()
+  loadDetRuns().then(() => {
+    updateCountdown()
+    countdownTimer = setInterval(updateCountdown, 60000)
+  })
 })
 
 onBeforeUnmount(() => {
-  stopDetPoll()
+  disconnectDetectionSse()
+  if (countdownTimer) clearInterval(countdownTimer)
 })
 </script>
 
@@ -451,6 +656,13 @@ onBeforeUnmount(() => {
   color: var(--surface-text-secondary);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.next-check-countdown {
+  margin: 6px 0 0;
+  color: var(--surface-accent);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .config-panel-grid {
@@ -639,6 +851,33 @@ onBeforeUnmount(() => {
 .det-val-fail {
   color: #dc2626;
   font-weight: 600;
+}
+
+.det-val-warn {
+  color: #ca8a04;
+  font-weight: 600;
+}
+
+.det-val-muted {
+  color: #94a3b8;
+}
+
+.det-trend {
+  margin-left: 4px;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.det-trend-up {
+  color: #16a34a;
+}
+
+.det-trend-down {
+  color: #dc2626;
+}
+
+.det-trend-flat {
+  color: #94a3b8;
 }
 
 @media (max-width: 1100px) {

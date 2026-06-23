@@ -80,7 +80,7 @@
                 <label>最低分辨率宽度</label>
                 <span>低于该宽度的频道会被过滤。</span>
               </div>
-              <t-input-number v-model="config.min_width" :min="0" :step="1" class="field-control" />
+              <t-input-number v-model="config.min_width" :min="0" :step="1" class="field-control" :status="fieldErrors.min_width ? 'error' : ''" :tips="fieldErrors.min_width || ''" @change="onFieldChange('min_width')" />
             </div>
 
             <div class="config-field">
@@ -88,7 +88,7 @@
                 <label>最低分辨率高度</label>
                 <span>和宽度一起决定清晰度基线。</span>
               </div>
-              <t-input-number v-model="config.min_height" :min="0" :step="1" class="field-control" />
+              <t-input-number v-model="config.min_height" :min="0" :step="1" class="field-control" :status="fieldErrors.min_height ? 'error' : ''" :tips="fieldErrors.min_height || ''" @change="onFieldChange('min_height')" />
             </div>
 
             <div class="config-field">
@@ -96,7 +96,7 @@
                 <label>最低带宽 (MB/s)</label>
                 <span>低于该值时判定为带宽不足。</span>
               </div>
-              <t-input-number v-model="config.min_bandwidth_MBps" :min="0" :step="0.1" class="field-control" />
+              <t-input-number v-model="config.min_bandwidth_MBps" :min="0" :step="0.1" class="field-control" :status="fieldErrors.min_bandwidth_MBps ? 'error' : ''" :tips="fieldErrors.min_bandwidth_MBps || ''" @change="onFieldChange('min_bandwidth_MBps')" />
             </div>
 
             <div class="config-field">
@@ -104,7 +104,7 @@
                 <label>带宽补偿阈值</label>
                 <span>给测速波动预留缓冲，避免边缘值误杀。</span>
               </div>
-              <t-input-number v-model="config.bandwidth_compensation_MBps" :min="0" :step="0.1" class="field-control" />
+              <t-input-number v-model="config.bandwidth_compensation_MBps" :min="0" :step="0.1" class="field-control" :status="fieldErrors.bandwidth_compensation_MBps ? 'error' : ''" :tips="fieldErrors.bandwidth_compensation_MBps || ''" @change="onFieldChange('bandwidth_compensation_MBps')" />
             </div>
 
             <div class="config-field">
@@ -112,7 +112,7 @@
                 <label>H.265 带宽比例</label>
                 <span>对 H.265 频道做带宽折算，建议保持在 0 到 1 之间。</span>
               </div>
-              <t-input-number v-model="config.h265_bandwidth_ratio" :min="0" :max="1" :step="0.05" class="field-control" />
+              <t-input-number v-model="config.h265_bandwidth_ratio" :min="0" :max="1" :step="0.05" class="field-control" :status="fieldErrors.h265_bandwidth_ratio ? 'error' : ''" :tips="fieldErrors.h265_bandwidth_ratio || ''" @change="onFieldChange('h265_bandwidth_ratio')" />
             </div>
           </div>
         </section>
@@ -130,7 +130,7 @@
                 <label>单频道测试时长 (秒)</label>
                 <span>每个频道地址的采样时长，越长越稳但整体更慢。</span>
               </div>
-              <t-input-number v-model="config.test_duration" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="config.test_duration" :min="1" :step="1" class="field-control" :status="fieldErrors.test_duration ? 'error' : ''" :tips="fieldErrors.test_duration || ''" @change="onFieldChange('test_duration')" />
             </div>
 
             <div class="config-field">
@@ -138,7 +138,7 @@
                 <label>最大并发线程数</label>
                 <span>控制同时测试的频道数量。</span>
               </div>
-              <t-input-number v-model="config.max_workers" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="config.max_workers" :min="1" :step="1" class="field-control" :status="fieldErrors.max_workers ? 'error' : ''" :tips="fieldErrors.max_workers || ''" @change="onFieldChange('max_workers')" />
             </div>
 
             <div class="config-field">
@@ -146,7 +146,7 @@
                 <label>FFmpeg 并发数</label>
                 <span>分辨率检测的并发上限，过高会明显吃 CPU。</span>
               </div>
-              <t-input-number v-model="config.max_ffmpeg_workers" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="config.max_ffmpeg_workers" :min="1" :step="1" class="field-control" :status="fieldErrors.max_ffmpeg_workers ? 'error' : ''" :tips="fieldErrors.max_ffmpeg_workers || ''" @change="onFieldChange('max_ffmpeg_workers')" />
             </div>
 
             <div class="config-field">
@@ -170,7 +170,7 @@
                 <label>内存保护阈值 (%)</label>
                 <span>超过阈值时会收紧任务启动，防止机器吃满。</span>
               </div>
-              <t-input-number v-model="config.system_memory_limit_percent" :min="0" :max="100" :step="1" class="field-control" />
+              <t-input-number v-model="config.system_memory_limit_percent" :min="0" :max="100" :step="1" class="field-control" :status="fieldErrors.system_memory_limit_percent ? 'error' : ''" :tips="fieldErrors.system_memory_limit_percent || ''" @change="onFieldChange('system_memory_limit_percent')" />
             </div>
 
             <div class="config-field">
@@ -207,7 +207,7 @@
                 <label>执行间隔 (分钟)</label>
                 <span>每隔多少分钟自动跑一轮，适合无人值守场景。</span>
               </div>
-              <t-input-number v-model="config.run_interval_minutes" :min="1" :step="1" class="field-control" />
+              <t-input-number v-model="config.run_interval_minutes" :min="1" :step="1" class="field-control" :status="fieldErrors.run_interval_minutes ? 'error' : ''" :tips="fieldErrors.run_interval_minutes || ''" @change="onFieldChange('run_interval_minutes')" />
             </div>
 
             <div class="config-field config-field--stack">
@@ -233,6 +233,9 @@
         <t-space>
           <t-button theme="primary" :loading="configSaving" @click="saveConfig">保存配置</t-button>
           <t-button variant="outline" @click="loadConfig">重新加载</t-button>
+          <t-button variant="outline" theme="success" :loading="exporting" @click="exportConfig">导出配置</t-button>
+          <t-button variant="outline" theme="warning" :loading="importing" @click="triggerImport">导入配置</t-button>
+          <input ref="importInput" type="file" accept=".json" style="display: none" @change="importConfig" />
         </t-space>
       </div>
     </t-card>
@@ -241,8 +244,8 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
-import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText } from '../api.js'
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText, apiExportConfig, apiImportConfig } from '../api.js'
 import { useTheme } from '../composables/useTheme.js'
 
 const currentFile = ref('subscribe')
@@ -250,9 +253,53 @@ const fileContent = ref('')
 const fileStatus = ref('')
 const saving = ref(false)
 const configSaving = ref(false)
+const exporting = ref(false)
+const importing = ref(false)
+const importInput = ref(null)
 const runTimesInput = ref('')
 const runTimesHint = ref('')
 const { theme } = useTheme()
+
+const fieldErrors = reactive({})
+
+function validateField(key, value) {
+  switch (key) {
+    case 'min_width':
+    case 'min_height':
+      if (value < 0) return '不能为负数'
+      break
+    case 'min_bandwidth_MBps':
+    case 'bandwidth_compensation_MBps':
+      if (value < 0) return '不能为负数'
+      break
+    case 'h265_bandwidth_ratio':
+      if (value < 0 || value > 1) return '需在 0-1 之间'
+      break
+    case 'test_duration':
+      if (value < 1) return '至少为 1 秒'
+      break
+    case 'max_workers':
+      if (value < 1) return '至少为 1'
+      if (value > 100) return '不建议超过 100'
+      break
+    case 'max_ffmpeg_workers':
+      if (value < 1) return '至少为 1'
+      break
+    case 'system_memory_limit_percent':
+      if (value < 0 || value > 100) return '需在 0-100 之间'
+      break
+    case 'run_interval_minutes':
+      if (value < 1) return '至少为 1 分钟'
+      break
+  }
+  return ''
+}
+
+function onFieldChange(key) {
+  const err = validateField(key, config[key])
+  if (err) fieldErrors[key] = err
+  else delete fieldErrors[key]
+}
 
 const CONFIG_FIELDS = [
   'min_width',
@@ -326,7 +373,37 @@ async function loadConfig() {
   }
 }
 
+function validateConfig() {
+  const errors = []
+  if (config.min_width < 0) errors.push('最低分辨率宽度不能为负数')
+  if (config.min_height < 0) errors.push('最低分辨率高度不能为负数')
+  if (config.min_bandwidth_MBps < 0) errors.push('最低带宽不能为负数')
+  if (config.test_duration < 1) errors.push('测试时长至少为 1 秒')
+  if (config.max_workers < 1) errors.push('最大并发数至少为 1')
+  if (config.max_workers > 100) errors.push('最大并发数不建议超过 100')
+  if (config.max_ffmpeg_workers < 1) errors.push('FFmpeg 并发数至少为 1')
+  if (config.system_memory_limit_percent < 0 || config.system_memory_limit_percent > 100) {
+    errors.push('内存保护阈值需在 0-100 之间')
+  }
+  if (config.h265_bandwidth_ratio < 0 || config.h265_bandwidth_ratio > 1) {
+    errors.push('H.265 带宽比例需在 0-1 之间')
+  }
+  if (config.run_mode === 'interval' && config.run_interval_minutes < 1) {
+    errors.push('执行间隔至少为 1 分钟')
+  }
+  return errors
+}
+
 async function saveConfig() {
+  const errors = validateConfig()
+  if (errors.length) {
+    MessagePlugin.warning(errors[0])
+    return
+  }
+  if (Object.keys(fieldErrors).length) {
+    MessagePlugin.warning('请先修正表单中的错误')
+    return
+  }
   configSaving.value = true
   try {
     const data = { ...config, run_times: runTimesInput.value }
@@ -350,6 +427,54 @@ async function saveConfig() {
     MessagePlugin.error(`保存失败: ${error.message}`)
   } finally {
     configSaving.value = false
+  }
+}
+
+async function exportConfig() {
+  exporting.value = true
+  try {
+    const data = await apiExportConfig()
+    const jsonStr = JSON.stringify(data, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `iptv-config-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    MessagePlugin.success('配置已导出')
+  } catch (error) {
+    MessagePlugin.error(`导出失败: ${error.message}`)
+  } finally {
+    exporting.value = false
+  }
+}
+
+function triggerImport() {
+  importInput.value.click()
+}
+
+async function importConfig(event) {
+  const file = event.target.files[0]
+  if (!file) return
+  importing.value = true
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    const res = await apiImportConfig(data)
+    if (res.ok) {
+      MessagePlugin.success('配置已导入')
+      loadConfig()
+    } else {
+      MessagePlugin.error(`导入失败: ${res.error || ''}`)
+    }
+  } catch (error) {
+    MessagePlugin.error(`导入失败: ${error.message}`)
+  } finally {
+    importing.value = false
+    event.target.value = ''
   }
 }
 
@@ -425,15 +550,24 @@ async function saveFile() {
 }
 
 async function resetDemo() {
-  try {
-    const res = await apiResetDemo()
-    if (res.ok) {
-      MessagePlugin.success('已恢复默认模板')
-      loadFile()
-    }
-  } catch (_) {
-    MessagePlugin.error('恢复失败')
-  }
+  const confirmDialog = DialogPlugin.confirm({
+    header: '恢复默认模板',
+    body: '恢复默认模板将覆盖当前的频道模板内容，确认继续？',
+    theme: 'warning',
+    confirmBtn: { content: '恢复', theme: 'warning' },
+    onConfirm: async () => {
+      try {
+        const res = await apiResetDemo()
+        if (res.ok) {
+          MessagePlugin.success('已恢复默认模板')
+          loadFile()
+        }
+      } catch (_) {
+        MessagePlugin.error('恢复失败')
+      }
+      confirmDialog.hide()
+    },
+  })
 }
 
 onMounted(() => {

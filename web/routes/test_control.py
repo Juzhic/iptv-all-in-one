@@ -1,0 +1,229 @@
+# -*- coding: utf-8 -*-
+"""web 包 — 测试控制 API 蓝图。"""
+import json as _json
+from flask import Blueprint, request, jsonify, Response
+
+import web.state as _state
+from web.test_runner import _start_test_background
+from web.scheduler import _scheduler_status
+
+test_control_bp = Blueprint('test_control', __name__)
+
+
+@test_control_bp.route('/api/trigger', methods=['POST'])
+def api_trigger():
+    """触发一次测试运行。"""
+    if _start_test_background(trigger_source='web') is not None:
+        return jsonify({'ok': True, 'message': '测试已启动'})
+    return jsonify({'ok': False, 'error': '测试正在运行中，请等待完成'}), 409
+
+
+@test_control_bp.route('/api/stop', methods=['POST'])
+def api_stop():
+    """请求终止当前测试运行。"""
+    data = request.get_json(silent=True) or {}
+    msg = data.get('message', '用户手动终止')
+    with _state._test_lock:
+        if not _state._test_running:
+            return jsonify({'ok': False, 'error': '当前没有正在运行的测试'}), 409
+        _state._test_stop_event.set()
+    with _state._progress_lock:
+        _state._test_progress['error'] = msg
+    return jsonify({'ok': True, 'message': msg})
+
+
+@test_control_bp.route('/api/status', methods=['GET'])
+def api_status():
+    """获取当前运行状态（精简版）。优先内存，其次 SQLite。"""
+    scheduler_running, next_run_str = _scheduler_status()
+    with _state._progress_lock:
+        running = _state._test_progress['running']
+        if running:
+            processed = _state._test_progress['processed']
+            total = _state._test_progress['total']
+            elapsed = _state._test_progress['elapsed']
+            source = _state._test_progress.get('source', 'web')
+    if running:
+        return jsonify({'ok': True, 'data': {
+            'running': True,
+            'processed': processed,
+            'total': total,
+            'elapsed': elapsed,
+            'source': source,
+            'next_scheduled_run': next_run_str,
+            'scheduler_running': scheduler_running,
+        }})
+    from database import get_run_progress
+    db_progress = get_run_progress()
+    if db_progress and db_progress.get('running'):
+        return jsonify({'ok': True, 'data': {
+            'running': True,
+            'processed': db_progress.get('processed', 0),
+            'total': db_progress.get('total', 0),
+            'elapsed': db_progress.get('elapsed', 0),
+            'source': db_progress.get('source', 'scheduler'),
+            'next_scheduled_run': next_run_str,
+            'scheduler_running': scheduler_running,
+        }})
+    return jsonify({'ok': True, 'data': {
+        'running': False,
+        'processed': 0,
+        'total': 0,
+        'elapsed': 0,
+        'source': '',
+        'next_scheduled_run': next_run_str,
+        'scheduler_running': scheduler_running,
+    }})
+
+
+@test_control_bp.route('/api/progress', methods=['GET'])
+def api_progress():
+    """获取实时进度和日志（支持增量拉取）。"""
+    after = request.args.get('after', 0, type=int)
+    scheduler_running, next_run_str = _scheduler_status()
+    sched_info = {
+        'next_scheduled_run': next_run_str,
+        'scheduler_running': scheduler_running,
+    }
+
+    with _state._progress_lock:
+        prog_running = _state._test_progress['running']
+        if prog_running:
+            prog_started_at = _state._test_progress['started_at']
+            prog_total = _state._test_progress['total']
+            prog_processed = _state._test_progress['processed']
+            prog_passed = _state._test_progress['passed']
+            prog_failed = _state._test_progress['failed']
+            prog_elapsed = _state._test_progress['elapsed']
+            prog_finished_at = _state._test_progress['finished_at']
+            prog_error = _state._test_progress['error']
+            prog_source = _state._test_progress.get('source', 'web')
+            new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
+            prog_last_seq = _state._test_log_seq
+    if prog_running:
+        return jsonify({'ok': True, 'data': {
+            'running': True,
+            'started_at': prog_started_at,
+            'total': prog_total,
+            'processed': prog_processed,
+            'passed': prog_passed,
+            'failed': prog_failed,
+            'elapsed': prog_elapsed,
+            'finished_at': prog_finished_at,
+            'error': prog_error,
+            'lines': new_lines,
+            'last_seq': prog_last_seq,
+            'source': prog_source,
+            **sched_info,
+        }})
+
+    from database import get_run_progress
+    db_progress = get_run_progress()
+    if db_progress and db_progress.get('running'):
+        return jsonify({'ok': True, 'data': {
+            'running': True,
+            'started_at': db_progress.get('started_at'),
+            'total': db_progress.get('total', 0),
+            'processed': db_progress.get('processed', 0),
+            'passed': db_progress.get('passed', 0),
+            'failed': db_progress.get('failed', 0),
+            'elapsed': db_progress.get('elapsed', 0),
+            'finished_at': None,
+            'error': None,
+            'lines': [],
+            'last_seq': 0,
+            'source': db_progress.get('source', 'scheduler'),
+            **sched_info,
+        }})
+
+    with _state._progress_lock:
+        finished_at = _state._test_progress.get('finished_at')
+    if finished_at:
+        with _state._progress_lock:
+            new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
+            started_at = _state._test_progress.get('started_at')
+            total = _state._test_progress.get('total', 0)
+            processed = _state._test_progress.get('processed', 0)
+            passed = _state._test_progress.get('passed', 0)
+            failed = _state._test_progress.get('failed', 0)
+            elapsed = _state._test_progress.get('elapsed', 0)
+            error = _state._test_progress.get('error')
+            source = _state._test_progress.get('source', '')
+            last_seq = _state._test_log_seq
+        return jsonify({'ok': True, 'data': {
+            'running': False,
+            'started_at': started_at,
+            'total': total,
+            'processed': processed,
+            'passed': passed,
+            'failed': failed,
+            'elapsed': elapsed,
+            'finished_at': finished_at,
+            'error': error,
+            'lines': new_lines,
+            'last_seq': last_seq,
+            'source': source,
+            **sched_info,
+        }})
+
+    with _state._progress_lock:
+        last_finished_at = _state._test_progress.get('finished_at')
+    return jsonify({'ok': True, 'data': {
+        'running': False,
+        'started_at': None,
+        'total': 0,
+        'processed': 0,
+        'passed': 0,
+        'failed': 0,
+        'elapsed': 0,
+        'finished_at': last_finished_at,
+        'error': None,
+        'lines': [],
+        'last_seq': 0,
+        'source': '',
+        **sched_info,
+    }})
+
+
+@test_control_bp.route('/api/test/stream')
+def api_test_stream():
+    """SSE 实时推送测试进度和日志。"""
+
+    def generate():
+        q = _state.subscribe_test_sse()
+        try:
+            scheduler_running, next_run_str = _scheduler_status()
+            with _state._progress_lock:
+                prog = dict(_state._test_progress)
+            snapshot = {
+                'running': prog.get('running', False),
+                'total': prog.get('total', 0),
+                'processed': prog.get('processed', 0),
+                'passed': prog.get('passed', 0),
+                'failed': prog.get('failed', 0),
+                'elapsed': prog.get('elapsed', 0),
+                'source': prog.get('source', ''),
+                'scheduler_running': scheduler_running,
+                'next_scheduled_run': next_run_str,
+            }
+            yield f"event: status\ndata: {_json.dumps(snapshot, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except Exception:
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            _state.unsubscribe_test_sse(q)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
