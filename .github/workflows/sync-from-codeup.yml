@@ -23,10 +23,10 @@ jobs:
           git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
           git fetch codeup
           LOCAL=$(git rev-parse HEAD)
-          REMOTE=$(git rev-parse codeup/main)
+          REMOTE=$(git rev-parse codeup/master)
           if [ "$LOCAL" != "$REMOTE" ]; then
             git merge codeup/master --allow-unrelated-histories -m "Auto sync"
-            git push origin main
+            git push origin master
             echo "✅ Synced"
           else
             echo "⏭️ Already up to date"
