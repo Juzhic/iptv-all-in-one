@@ -20,10 +20,12 @@ jobs:
         run: |
           git config user.email "sync@github.com"
           git config user.name "Codeup Sync"
+          cp .github/workflows/sync-from-codeup.yml /tmp/sync-from-codeup.yml.bak
           git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
           git fetch codeup
           git merge codeup/master --strategy-option theirs --allow-unrelated-histories -m "Auto sync from Codeup" || true
-          git restore --source=main -- .github/workflows/
+          cp /tmp/sync-from-codeup.yml.bak .github/workflows/sync-from-codeup.yml
+          git add .github/workflows/sync-from-codeup.yml
           git commit --amend --no-edit
           git push origin main
           echo "✅ Synced"
