@@ -25,7 +25,7 @@ jobs:
           LOCAL=$(git rev-parse HEAD)
           REMOTE=$(git rev-parse codeup/main)
           if [ "$LOCAL" != "$REMOTE" ]; then
-            git merge codeup/main --allow-unrelated-histories -m "Auto sync"
+            git merge codeup/master --allow-unrelated-histories -m "Auto sync"
             git push origin main
             echo "✅ Synced"
           else
