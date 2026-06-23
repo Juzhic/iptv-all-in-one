@@ -24,5 +24,6 @@ jobs:
           git fetch codeup
           git merge codeup/master --strategy-option theirs --allow-unrelated-histories -m "Auto sync from Codeup" || true
           git restore --source=main -- .github/workflows/
+          git commit --amend --no-edit
           git push origin main
           echo "✅ Synced"
