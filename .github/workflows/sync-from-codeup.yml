@@ -15,13 +15,16 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       
+      - name: Configure Git
+        run: |
+          git config --global user.email "sync@github.com"
+          git config --global user.name "Codeup Sync"
+
       - name: Sync from Codeup
         env:
           CODEUP_REPO: ${{ secrets.CODEUP_REPO_URL }}
           CODEUP_TOKEN: ${{ secrets.CODEUP_TOKEN }}
         run: |
-          git config --global user.email "sync@github.com"
-          git config --global user.name "Codeup Sync"
           git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
           git fetch codeup
           LOCAL=$(git rev-parse HEAD)
