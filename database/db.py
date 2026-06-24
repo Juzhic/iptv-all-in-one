@@ -156,6 +156,11 @@ class LogBatcher:
                         "INSERT INTO detection_logs (ts, level, message) VALUES (%s, %s, %s)",
                         rows
                     )
+                elif table == 'ip_scan_logs':
+                    conn.executemany(
+                        "INSERT INTO ip_scan_logs (seq, time, msg) VALUES (%s, %s, %s)",
+                        rows
+                    )
             conn.commit()
         self._last_flush = _time.monotonic()
 
@@ -766,6 +771,65 @@ def init_db():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         "CREATE INDEX IF NOT EXISTS idx_qh_url_time ON quality_history(url(200), recorded_at(100))",
         "CREATE INDEX IF NOT EXISTS idx_qh_recorded_at ON quality_history(recorded_at(100))",
+
+        # ─── IP扫描相关表 ───
+        """CREATE TABLE IF NOT EXISTS ip_scan_runs (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            scan_id VARCHAR(255) UNIQUE NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status VARCHAR(20) DEFAULT 'running',
+            input_count INT DEFAULT 0,
+            total_alive INT DEFAULT 0,
+            total_channels INT DEFAULT 0,
+            scan_types TEXT,
+            ports TEXT,
+            duration_seconds DOUBLE DEFAULT 0,
+            error TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE INDEX IF NOT EXISTS idx_ip_scan_runs_started ON ip_scan_runs(started_at(100))",
+
+        """CREATE TABLE IF NOT EXISTS ip_scan_results (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            scan_id VARCHAR(255) NOT NULL,
+            target TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            port INT NOT NULL,
+            alive TINYINT(1) DEFAULT 0,
+            http_status INT DEFAULT 0,
+            response_time_ms DOUBLE DEFAULT 0,
+            channels_json TEXT,
+            channel_count INT DEFAULT 0,
+            scan_type_matched VARCHAR(50),
+            error TEXT,
+            FOREIGN KEY (scan_id) REFERENCES ip_scan_runs(scan_id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE INDEX IF NOT EXISTS idx_ip_scan_results_scan ON ip_scan_results(scan_id(100))",
+        "CREATE INDEX IF NOT EXISTS idx_ip_scan_results_alive ON ip_scan_results(scan_id(100), alive)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_scan_results_target ON ip_scan_results(scan_id(100), ip(100), port)",
+
+        """CREATE TABLE IF NOT EXISTS ip_scan_progress (
+            id INT PRIMARY KEY CHECK (id = 1),
+            running TINYINT(1) DEFAULT 0,
+            started_at TEXT,
+            phase TEXT,
+            total INT DEFAULT 0,
+            processed INT DEFAULT 0,
+            alive INT DEFAULT 0,
+            channels INT DEFAULT 0,
+            percent DOUBLE DEFAULT 0,
+            message TEXT,
+            updated_at TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "INSERT IGNORE INTO ip_scan_progress (id) VALUES (1)",
+
+        """CREATE TABLE IF NOT EXISTS ip_scan_logs (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            seq INT NOT NULL,
+            time TEXT NOT NULL,
+            msg TEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE INDEX IF NOT EXISTS idx_ip_scan_logs_seq ON ip_scan_logs(seq)",
     ]
 
     for sql in statements:
@@ -785,6 +849,7 @@ def init_db():
     try:
         conn.execute("UPDATE scan_progress SET running=0, phase='idle', message='进程重启，已重置' WHERE running=1")
         conn.execute("UPDATE run_progress SET running=0 WHERE running=1")
+        conn.execute("UPDATE ip_scan_progress SET running=0, phase='idle', message='进程重启，已重置' WHERE running=1")
         conn.commit()
     except Exception:
         pass
@@ -799,6 +864,10 @@ def init_db():
         pass
     try:
         cleanup_stale_persistent(days=PERSISTENT_RETENTION_DAYS)
+    except Exception:
+        pass
+    try:
+        cleanup_old_ip_scan_logs(days=7)
     except Exception:
         pass
 
@@ -2778,6 +2847,314 @@ def cleanup_quality_history(keep_days=90):
         conn = _get_conn()
         cutoff = (datetime.now(LOCAL_TZ) - timedelta(days=keep_days)).strftime('%Y-%m-%d %H:%M:%S')
         deleted = conn.execute("DELETE FROM quality_history WHERE recorded_at < %s", (cutoff,)).rowcount
+        if deleted:
+            conn.commit()
+        return deleted
+
+
+# ==================== IP扫描相关函数 ====================
+
+
+def insert_ip_scan_run(scan_id, input_count, scan_types, ports):
+    """插入IP扫描运行记录。"""
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO ip_scan_runs (scan_id, started_at, status, input_count, scan_types, ports)
+               VALUES (%s, %s, 'running', %s, %s, %s)""",
+            (scan_id, now_str(), input_count, json.dumps(scan_types), json.dumps(ports))
+        )
+        conn.commit()
+
+
+def update_ip_scan_run(scan_id, **kwargs):
+    """更新IP扫描运行记录。"""
+    with _write_lock:
+        conn = _get_conn()
+        sets = []
+        params = []
+        for key, value in kwargs.items():
+            sets.append(f"{key} = %s")
+            params.append(value)
+        if not sets:
+            return
+        params.append(scan_id)
+        conn.execute(
+            f"UPDATE ip_scan_runs SET {', '.join(sets)} WHERE scan_id = %s",
+            params
+        )
+        conn.commit()
+
+
+def get_latest_ip_scan_run():
+    """获取最新一次IP扫描记录。"""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT * FROM ip_scan_runs ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_ip_scan_history(limit=20):
+    """获取IP扫描历史。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT * FROM ip_scan_runs ORDER BY id DESC LIMIT %s""",
+        (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_ip_scan_stats(scan_id=None):
+    """获取IP扫描统计。"""
+    conn = _get_conn()
+    
+    if not scan_id:
+        # 获取最新一次的scan_id
+        latest = get_latest_ip_scan_run()
+        if not latest:
+            return None
+        scan_id = latest['scan_id']
+    
+    # 统计结果
+    row = conn.execute(
+        """SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN alive = 1 THEN 1 ELSE 0 END) as alive_count,
+            SUM(channel_count) as total_channels
+           FROM ip_scan_results WHERE scan_id = %s""",
+        (scan_id,)
+    ).fetchone()
+    
+    if row:
+        return {
+            'scan_id': scan_id,
+            'total': row['total'] or 0,
+            'alive_count': row['alive_count'] or 0,
+            'total_channels': row['total_channels'] or 0
+        }
+    return None
+
+
+def insert_ip_scan_results(scan_id, results):
+    """批量插入IP扫描结果。"""
+    if not results:
+        return
+    
+    with _write_lock:
+        conn = _get_conn()
+        for r in results:
+            try:
+                conn.execute(
+                    """INSERT INTO ip_scan_results 
+                       (scan_id, target, ip, port, alive, http_status, response_time_ms, 
+                        channels_json, channel_count, scan_type_matched, error)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON DUPLICATE KEY UPDATE
+                        alive=VALUES(alive), http_status=VALUES(http_status),
+                        response_time_ms=VALUES(response_time_ms), channels_json=VALUES(channels_json),
+                        channel_count=VALUES(channel_count), scan_type_matched=VALUES(scan_type_matched),
+                        error=VALUES(error)""",
+                    (scan_id, r['target'], r['ip'], r['port'], r['alive'],
+                     r['http_status'], r['response_time_ms'], r['channels_json'],
+                     r['channel_count'], r['scan_type_matched'], r['error'])
+                )
+            except Exception as e:
+                logger.warning(f"[DB] 插入IP扫描结果失败: {e}")
+        conn.commit()
+
+
+def get_ip_scan_results(scan_id=None, page=1, size=20):
+    """分页获取IP扫描结果。"""
+    conn = _get_conn()
+    
+    if not scan_id:
+        latest = get_latest_ip_scan_run()
+        if not latest:
+            return {'items': [], 'total': 0, 'page': page, 'size': size}
+        scan_id = latest['scan_id']
+    
+    offset = (page - 1) * size
+    
+    # 获取总数
+    count_row = conn.execute(
+        "SELECT COUNT(*) as total FROM ip_scan_results WHERE scan_id = %s",
+        (scan_id,)
+    ).fetchone()
+    total = count_row['total'] if count_row else 0
+    
+    # 获取分页数据
+    rows = conn.execute(
+        """SELECT * FROM ip_scan_results 
+           WHERE scan_id = %s 
+           ORDER BY alive DESC, channel_count DESC, response_time_ms ASC
+           LIMIT %s OFFSET %s""",
+        (scan_id, size, offset)
+    ).fetchall()
+    
+    return {
+        'items': [dict(r) for r in rows],
+        'total': total,
+        'page': page,
+        'size': size,
+        'scan_id': scan_id
+    }
+
+
+def get_ip_scan_channels(scan_id, targets=None):
+    """获取IP扫描发现的频道（用于送入测速）。"""
+    conn = _get_conn()
+    
+    if not scan_id:
+        latest = get_latest_ip_scan_run()
+        if not latest:
+            return []
+        scan_id = latest['scan_id']
+    
+    where = "scan_id = %s AND alive = 1 AND channel_count > 0"
+    params = [scan_id]
+    
+    if targets:
+        placeholders = ','.join(['%s'] * len(targets))
+        where += f" AND target IN ({placeholders})"
+        params.extend(targets)
+    
+    rows = conn.execute(
+        f"SELECT target, ip, port, channels_json FROM ip_scan_results WHERE {where}",
+        params
+    ).fetchall()
+    
+    channels = []
+    for row in rows:
+        try:
+            ch_list = json.loads(row['channels_json'])
+            for ch in ch_list:
+                if 'name' in ch and 'url' in ch:
+                    channels.append({
+                        'name': ch['name'],
+                        'url': ch['url'],
+                        'source_ip': row['ip'],
+                        'source_port': row['port']
+                    })
+        except:
+            continue
+    
+    return channels
+
+
+def get_ip_scan_all_channels(scan_id):
+    """获取IP扫描的所有频道（用于导出）。"""
+    return get_ip_scan_channels(scan_id)
+
+
+# ─── IP扫描进度管理 ───
+
+def get_ip_scan_progress():
+    """获取IP扫描进度。"""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM ip_scan_progress WHERE id = 1").fetchone()
+    if row:
+        return dict(row)
+    return {
+        'running': False,
+        'phase': 'idle',
+        'total': 0,
+        'processed': 0,
+        'alive': 0,
+        'channels': 0,
+        'percent': 0,
+        'message': '空闲'
+    }
+
+
+def update_ip_scan_progress(running=None, phase=None, total=None, processed=None, 
+                            alive=None, channels=None, percent=None, message=None):
+    """更新IP扫描进度。"""
+    with _write_lock:
+        conn = _get_conn()
+        sets = ["updated_at = %s"]
+        params = [now_str()]
+        
+        if running is not None:
+            sets.append("running = %s")
+            params.append(1 if running else 0)
+        if phase is not None:
+            sets.append("phase = %s")
+            params.append(phase)
+        if total is not None:
+            sets.append("total = %s")
+            params.append(total)
+        if processed is not None:
+            sets.append("processed = %s")
+            params.append(processed)
+        if alive is not None:
+            sets.append("alive = %s")
+            params.append(alive)
+        if channels is not None:
+            sets.append("channels = %s")
+            params.append(channels)
+        if percent is not None:
+            sets.append("percent = %s")
+            params.append(percent)
+        if message is not None:
+            sets.append("message = %s")
+            params.append(message)
+        
+        conn.execute(
+            f"UPDATE ip_scan_progress SET {', '.join(sets)} WHERE id = 1",
+            params
+        )
+        conn.commit()
+
+
+def reset_ip_scan_progress():
+    """重置IP扫描进度（强制清除卡死状态）。"""
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE ip_scan_progress SET running=0, phase='idle', message='已手动重置' WHERE id=1"
+        )
+        conn.commit()
+
+
+# ─── IP扫描日志管理 ───
+
+_ip_scan_log_seq = 0
+
+
+def init_ip_scan_log_seq():
+    """初始化IP扫描日志序号。"""
+    global _ip_scan_log_seq
+    try:
+        conn = _get_conn()
+        row = conn.execute("SELECT MAX(seq) as max_seq FROM ip_scan_logs").fetchone()
+        if row and row['max_seq']:
+            _ip_scan_log_seq = row['max_seq']
+    except Exception:
+        pass
+
+
+def insert_ip_scan_log(seq, time_str, msg):
+    """插入IP扫描日志。"""
+    _log_batcher.add('ip_scan_logs', (seq, time_str, msg))
+
+
+def get_ip_scan_logs(after_seq=0, limit=500):
+    """获取IP扫描日志（增量拉取）。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT seq, time, msg FROM ip_scan_logs WHERE seq > %s ORDER BY seq LIMIT %s",
+        (after_seq, limit)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cleanup_old_ip_scan_logs(days=7):
+    """清理过期的IP扫描日志。"""
+    with _write_lock:
+        conn = _get_conn()
+        cutoff = (datetime.now(LOCAL_TZ) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        deleted = conn.execute("DELETE FROM ip_scan_logs WHERE time < %s", (cutoff,)).rowcount
         if deleted:
             conn.commit()
         return deleted

@@ -40,11 +40,6 @@ export default defineConfig(({ command }) => ({
           })
         },
       },
-      '/static/dist/tdesign-icons': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-        rewrite: (path) => path.replace('/static/dist/tdesign-icons', '/tdesign-icons'),
-      },
     },
   },
   css: {
