@@ -1,0 +1,27 @@
+name: Sync from Codeup
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync
+        env:
+          CODEUP_REPO: ${{ secrets.CODEUP_REPO_URL }}
+          CODEUP_TOKEN: ${{ secrets.CODEUP_TOKEN }}
+        run: |
+          git config user.email "sync@github.com"
+          git config user.name "Codeup Sync"
+          git remote add codeup "https://oauth2:${CODEUP_TOKEN}@$(echo $CODEUP_REPO | sed 's|https://||')"
+          git fetch codeup
+          git merge codeup/master --strategy-option theirs --allow-unrelated-histories -m "Auto sync from Codeup" || true
+          git push origin master
+          echo "✅ Synced"
