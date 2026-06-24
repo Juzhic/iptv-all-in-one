@@ -433,6 +433,7 @@ const PROVINCES = [
 ]
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000
 
 const provinceOptions = PROVINCES.map((province) => ({
   label: province,
@@ -486,7 +487,7 @@ const cScanHint = computed(() => (
 const scheduleSummary = computed(() => {
   const time = scanCfg.update_time || '03:00'
   if (scanCfg.daily_full_update) {
-    return `执行计划：每天 ${time}`
+    return `执行计划：每天 ${time}（北京时间）`
   }
 
   const labels = (scanCfg.update_days || [])
@@ -496,7 +497,7 @@ const scheduleSummary = computed(() => {
   if (!labels.length) {
     return '执行计划：未选择扫描日'
   }
-  return `执行计划：${labels.join('、')} ${time}`
+  return `执行计划：${labels.join('、')} ${time}（北京时间）`
 })
 
 const isDarkTheme = computed(() => theme.value === 'dark')
@@ -532,6 +533,19 @@ function onDailyFullChange() {
   }
 }
 
+function getBeijingTargetMs(dayOffset, hour, minute) {
+  const nowInBeijing = new Date(Date.now() + BEIJING_OFFSET_MS)
+  return Date.UTC(
+    nowInBeijing.getUTCFullYear(),
+    nowInBeijing.getUTCMonth(),
+    nowInBeijing.getUTCDate() + dayOffset,
+    hour,
+    minute,
+    0,
+    0,
+  ) - BEIJING_OFFSET_MS
+}
+
 const countdownText = ref('')
 let countdownTimer = null
 
@@ -542,8 +556,10 @@ function updateCountdown() {
   }
 
   const parts = (scanCfg.update_time || '03:00').split(':')
-  const hour = parseInt(parts[0], 10) || 3
-  const minute = parseInt(parts[1], 10) || 0
+  const parsedHour = Number.parseInt(parts[0], 10)
+  const parsedMinute = Number.parseInt(parts[1], 10)
+  const hour = Number.isInteger(parsedHour) && parsedHour >= 0 && parsedHour <= 23 ? parsedHour : 3
+  const minute = Number.isInteger(parsedMinute) && parsedMinute >= 0 && parsedMinute <= 59 ? parsedMinute : 0
   const days = scanCfg.daily_full_update ? [0, 1, 2, 3, 4, 5, 6] : scanCfg.update_days
 
   if (!days?.length) {
@@ -551,29 +567,28 @@ function updateCountdown() {
     return
   }
 
-  const now = new Date()
-  let target = null
+  const nowMs = Date.now()
+  let targetMs = null
 
   for (let dayOffset = 0; dayOffset < 8; dayOffset += 1) {
-    const candidate = new Date(now)
-    candidate.setDate(candidate.getDate() + dayOffset)
-    candidate.setHours(hour, minute, 0, 0)
+    const candidateMs = getBeijingTargetMs(dayOffset, hour, minute)
+    const candidateInBeijing = new Date(candidateMs + BEIJING_OFFSET_MS)
 
-    const jsDay = candidate.getDay()
+    const jsDay = candidateInBeijing.getUTCDay()
     const weekday = jsDay === 0 ? 6 : jsDay - 1
 
-    if (days.includes(weekday) && candidate > now) {
-      target = candidate
+    if (days.includes(weekday) && candidateMs > nowMs) {
+      targetMs = candidateMs
       break
     }
   }
 
-  if (!target) {
+  if (!targetMs) {
     countdownText.value = '未找到匹配时间'
     return
   }
 
-  const diff = target.getTime() - Date.now()
+  const diff = targetMs - Date.now()
   const totalSeconds = Math.floor(diff / 1000)
   const daysLeft = Math.floor(totalSeconds / 86400)
   const remain = totalSeconds % 86400
@@ -631,6 +646,23 @@ function validateScanConfig() {
   }
   if (scanCfg.fofa_size > 10000) {
     errors.push('Fofa 扫描数量不能超过 10000')
+  }
+  const timeParts = (scanCfg.update_time || '').split(':')
+  const hour = Number.parseInt(timeParts[0], 10)
+  const minute = Number.parseInt(timeParts[1], 10)
+  if (
+    timeParts.length !== 2
+    || !Number.isInteger(hour)
+    || !Number.isInteger(minute)
+    || hour < 0
+    || hour > 23
+    || minute < 0
+    || minute > 59
+  ) {
+    errors.push('定时扫描时间格式不正确')
+  }
+  if (!scanCfg.daily_full_update && !scanCfg.update_days?.length) {
+    errors.push('请至少选择一个定时扫描日期')
   }
   if (scanCfg.github_proxy && !/^https?:\/\/.+/.test(scanCfg.github_proxy)) {
     errors.push('GitHub 代理地址格式不正确，需以 http:// 或 https:// 开头')

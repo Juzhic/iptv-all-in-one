@@ -7,6 +7,7 @@
 import asyncio
 import logging
 import random
+import threading
 import uuid
 from collections import defaultdict
 from urllib.parse import urlparse
@@ -18,12 +19,22 @@ from .video_check import deep_check
 logger = logging.getLogger('scanner.detection')
 
 
+def _local_now():
+    from datetime import datetime
+    try:
+        from database import LOCAL_TZ
+        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
 class DetectionManager:
     """定期检测管理器，运行在 AsyncBridge 的事件循环上。"""
 
     def __init__(self):
         self._task = None
         self._running = False
+        self._reload_event = threading.Event()
         self._last_cycle_at = None
         self._last_cycle_result = None
         self._last_resurrection_at = None
@@ -51,9 +62,26 @@ class DetectionManager:
     def stop(self):
         """停止检测循环。"""
         self._running = False
+        self._reload_event.set()
         if self._task and not self._task.done():
             self._task.cancel()
             logger.info("[Detection] 检测循环已停止")
+
+    def reload_config(self):
+        """唤醒检测循环，尽快重新读取配置。"""
+        self._reload_event.set()
+
+    async def _sleep_or_reload(self, seconds):
+        deadline = asyncio.get_running_loop().time() + max(0, seconds)
+        while self._running:
+            if self._reload_event.is_set():
+                self._reload_event.clear()
+                return True
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(remaining, 5))
+        return False
 
     def _log(self, level, message):
         """写入 Python logger 同时持久化到数据库。"""
@@ -69,8 +97,7 @@ class DetectionManager:
         except Exception:
             pass
         try:
-            from datetime import datetime as _dt
-            ts = _dt.now().strftime('%H:%M:%S')
+            ts = _local_now().strftime('%H:%M:%S')
             from . import broadcast_detection_sse
             broadcast_detection_sse('log', {'ts': ts, 'level': level, 'message': message})
         except Exception:
@@ -82,11 +109,12 @@ class DetectionManager:
             cfg = config_bridge.get_scan_config()
             interval = cfg.get('detection_interval_minutes', 120)
             if interval <= 0:
-                await asyncio.sleep(60)
+                await self._sleep_or_reload(60)
                 continue
 
             self._log('INFO', f"[Detection] 下次检测将在 {interval} 分钟后")
-            await asyncio.sleep(interval * 60)
+            if await self._sleep_or_reload(interval * 60):
+                continue
 
             if not self._running:
                 break
@@ -99,8 +127,8 @@ class DetectionManager:
                 if self._last_resurrection_at is None:
                     should_run = True
                 else:
-                    from datetime import datetime, timedelta
-                    elapsed = datetime.now() - self._last_resurrection_at
+                    from datetime import timedelta
+                    elapsed = _local_now() - self._last_resurrection_at
                     if elapsed >= timedelta(hours=resurrection_interval_hours):
                         should_run = True
                 if should_run:
@@ -122,7 +150,6 @@ class DetectionManager:
     async def _run_detection_cycle_inner(self, cfg, trigger_source='auto'):
         """执行一次完整的检测周期（内部实现）。"""
         import database as _db
-        from datetime import datetime
         threshold = cfg.get('deletion_threshold', 3)
 
         # 使用分层检测：稳定频道降低检测频率
@@ -137,7 +164,7 @@ class DetectionManager:
             return
 
         # 创建本轮检测记录
-        now = datetime.now()
+        now = _local_now()
         started_at = _db.now_str()
         cycle_id = f"det_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         _db.insert_detection_run(cycle_id, started_at, trigger_source)
@@ -268,7 +295,7 @@ class DetectionManager:
         # 删除达到阈值的记录
         deleted = _db.delete_persistent_by_threshold(threshold)
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (_local_now() - start_time).total_seconds()
         finished_at = _db.now_str()
         self._last_cycle_at = finished_at
         self._last_cycle_result = {
@@ -318,7 +345,6 @@ class DetectionManager:
     async def _run_resurrection_check(self):
         """检查已软删除的条目，尝试复活仍可访问的源。"""
         import database as _db
-        from datetime import datetime
 
         cfg = config_bridge.get_scan_config()
         if not cfg.get('resurrection_enabled', True):
@@ -327,7 +353,7 @@ class DetectionManager:
         deleted_items = _db.get_deleted_persistent_for_resurrection(limit=100)
         if not deleted_items:
             self._log('INFO', "[Resurrection] 无软删除条目需要检查")
-            self._last_resurrection_at = datetime.now()
+            self._last_resurrection_at = _local_now()
             return
 
         self._log('INFO', f"[Resurrection] 开始检查 {len(deleted_items)} 条软删除记录...")
@@ -376,7 +402,7 @@ class DetectionManager:
 
             await asyncio.gather(*[check_one(item) for item in deleted_items])
 
-        self._last_resurrection_at = datetime.now()
+        self._last_resurrection_at = _local_now()
         self._log(
             'INFO',
             f"[Resurrection] 检查完成: 检查={checked}, 复活={resurrected}"

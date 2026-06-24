@@ -27,6 +27,13 @@ try:
 except Exception:
     pass
 
+if _scanner_module is not None:
+    try:
+        _scanner_module.init_bridge()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"扫描后台任务启动失败: {e}")
+
 # 检查前端是否需要构建
 _ensure_frontend()
 

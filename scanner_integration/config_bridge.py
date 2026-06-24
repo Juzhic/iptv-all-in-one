@@ -166,15 +166,35 @@ def _normalize_scan_config(raw_cfg):
             except (TypeError, ValueError):
                 cfg[key] = DEFAULT_SCAN_CONFIG.get(key)
 
-    # update_time 格式验证
+    # update_time 格式与范围验证
     update_time = cfg.get('update_time', '03:00')
-    if not isinstance(update_time, str) or not re.match(r'^\d{2}:\d{2}$', update_time):
+    if isinstance(update_time, str):
+        match = re.match(r'^(\d{1,2}):(\d{1,2})$', update_time.strip())
+    else:
+        match = None
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            cfg['update_time'] = f'{hour:02d}:{minute:02d}'
+        else:
+            cfg['update_time'] = '03:00'
+    else:
         cfg['update_time'] = '03:00'
 
     # update_days 范围验证
     update_days = cfg.get('update_days', [])
+    normalized_days = []
     if isinstance(update_days, list):
-        cfg['update_days'] = [d for d in update_days if isinstance(d, int) and 0 <= d <= 6]
+        for day in update_days:
+            if isinstance(day, bool):
+                continue
+            try:
+                day = int(day)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= day <= 6 and day not in normalized_days:
+                normalized_days.append(day)
+    cfg['update_days'] = sorted(normalized_days)
 
     return cfg
 
@@ -186,9 +206,10 @@ def get_scan_config():
     
     # 获取配置内容和更新时间
     raw, current_mtime = get_config_data_with_mtime('scan_config')
+    current_signature = (current_mtime, raw)
     
     # 如果配置未变化，直接返回缓存
-    if _CONFIG_CACHE is not None and _CONFIG_CACHE_MTIME == current_mtime:
+    if _CONFIG_CACHE is not None and _CONFIG_CACHE_MTIME == current_signature:
         return _CONFIG_CACHE
     
     # 配置有变化，重新解析
@@ -202,7 +223,7 @@ def get_scan_config():
     
     cfg = _normalize_scan_config(loaded)
     _CONFIG_CACHE = cfg
-    _CONFIG_CACHE_MTIME = current_mtime
+    _CONFIG_CACHE_MTIME = current_signature
     return cfg
 
 

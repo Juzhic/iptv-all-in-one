@@ -8,10 +8,12 @@ RUN cd frontend && npm install && npm run build
 FROM python:3.12-slim
 
 WORKDIR /app
+ENV TZ=Asia/Shanghai
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install FFmpeg only
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg curl && \
+    apt-get install -y --no-install-recommends ffmpeg curl tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

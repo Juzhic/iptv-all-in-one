@@ -51,6 +51,7 @@ _next_scheduled_run = None
 _scheduler_running = False
 _scheduler_thread = None
 _scheduler_thread_lock = threading.Lock()
+_scheduler_reload_event = threading.Event()
 _scheduler_lock_handle = None
 _scheduler_owner = f'pid:{os.getpid()}'
 
