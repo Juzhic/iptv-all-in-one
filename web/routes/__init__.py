@@ -11,6 +11,7 @@ def register_all_blueprints(app):
     from .scan import scan_bp
     from .subscribe import subscribe_bp
     from .health import health_bp
+    from .ip_scan import ip_scan_bp
 
     app.register_blueprint(spa_bp)
     app.register_blueprint(config_bp)
@@ -20,3 +21,4 @@ def register_all_blueprints(app):
     app.register_blueprint(scan_bp)
     app.register_blueprint(subscribe_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(ip_scan_bp)

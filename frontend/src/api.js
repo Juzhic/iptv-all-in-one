@@ -307,3 +307,45 @@ export function connectDetectionSse(handlers = {}) {
   if (handlers.onerror) es.onerror = handlers.onerror
   return es
 }
+
+// ─── IP扫描 ───
+export function apiIpScanTrigger(data) {
+  return postJSON('/api/ip-scan/trigger', data)
+}
+export function apiIpScanStop() {
+  return postJSON('/api/ip-scan/stop')
+}
+export function apiIpScanForceClear() {
+  return postJSON('/api/ip-scan/force-clear')
+}
+export function apiIpScanStatus() {
+  return fetchJSON('/api/ip-scan/status')
+}
+export function apiIpScanResults(params = {}) {
+  const qs = new URLSearchParams(params).toString()
+  return fetchJSON('/api/ip-scan/results' + (qs ? '?' + qs : ''))
+}
+export function apiIpScanLatest() {
+  return fetchJSON('/api/ip-scan/latest')
+}
+export function apiIpScanHistory(limit = 20) {
+  return fetchJSON('/api/ip-scan/history?limit=' + limit)
+}
+export function apiIpScanStats(scanId) {
+  const params = scanId ? '?scan_id=' + encodeURIComponent(scanId) : ''
+  return fetchJSON('/api/ip-scan/stats' + params)
+}
+export function apiIpScanToTest(data) {
+  return postJSON('/api/ip-scan/to-test', data)
+}
+export function apiIpScanExportUrl(scanId) {
+  return '/api/ip-scan/export?scan_id=' + encodeURIComponent(scanId)
+}
+
+export function connectIpScanSse(handlers = {}) {
+  const es = new EventSource('/api/ip-scan/stream')
+  if (handlers.log) es.addEventListener('log', handlers.log)
+  if (handlers.status) es.addEventListener('status', handlers.status)
+  if (handlers.onerror) es.onerror = handlers.onerror
+  return es
+}

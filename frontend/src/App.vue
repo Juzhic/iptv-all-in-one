@@ -89,6 +89,9 @@
           <t-tab-panel value="scan-results" label="扫描结果" :destroy-on-hide="false">
             <ScanResultsTab v-if="visitedTabs.has('scan-results')" />
           </t-tab-panel>
+          <t-tab-panel value="ip-scan" label="IP扫描" :destroy-on-hide="false">
+            <IpScanTab v-if="visitedTabs.has('ip-scan')" />
+          </t-tab-panel>
         </t-tabs>
       </main>
     </div>
@@ -109,6 +112,7 @@ import ScannerTab from './components/ScannerTab.vue'
 import ScanConfigTab from './components/ScanConfigTab.vue'
 import DetectionTab from './components/DetectionTab.vue'
 import ScanResultsTab from './components/ScanResultsTab.vue'
+import IpScanTab from './components/IpScanTab.vue'
 
 const globalConfig = {}
 const { theme, setTheme } = useTheme()
@@ -135,7 +139,7 @@ const historyRef = ref(null)
 // Keyboard shortcuts
 const { ctrl_s, ctrl_f, escape } = useMagicKeys()
 
-const TAB_LIST = ['overview', 'history', 'testing', 'settings', 'scanner', 'scan-config', 'detection', 'scan-results']
+const TAB_LIST = ['overview', 'history', 'testing', 'settings', 'scanner', 'scan-config', 'detection', 'scan-results', 'ip-scan']
 
 // Ctrl+S 保存配置
 whenever(ctrl_s, () => {
@@ -157,7 +161,7 @@ whenever(ctrl_f, (e) => {
 
 // 数字键切换Tab
 function handleKeyDown(e) {
-  if (e.altKey && e.key >= '1' && e.key <= '8') {
+  if (e.altKey && e.key >= '1' && e.key <= '9') {
     e.preventDefault()
     const tabIndex = parseInt(e.key) - 1
     if (tabIndex < TAB_LIST.length) {

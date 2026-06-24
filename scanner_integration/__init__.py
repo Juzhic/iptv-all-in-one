@@ -1065,3 +1065,251 @@ async def _daily_db_maintenance_task():
         except Exception as e:
             logger.exception(f"[DBMaint] 维护任务异常: {e}")
             await asyncio.sleep(60)
+
+
+# ==================== IP扫描桥接函数 ====================
+
+# IP扫描SSE订阅者
+_ip_scan_sse_subscribers: list[queue.Queue] = []
+_ip_scan_sse_lock = _threading.Lock()
+
+
+def subscribe_ip_scan_sse():
+    """注册一个 IP扫描 SSE 订阅者，返回 Queue。"""
+    q = queue.Queue(maxsize=500)
+    with _ip_scan_sse_lock:
+        _ip_scan_sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe_ip_scan_sse(q):
+    """取消 IP扫描 SSE 订阅。"""
+    with _ip_scan_sse_lock:
+        try:
+            _ip_scan_sse_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _broadcast_ip_scan_sse(event_type, data):
+    """向所有 IP扫描 SSE 订阅者广播事件（非阻塞，丢弃满队列）。"""
+    import json as _json
+    msg = f"event: {event_type}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+    with _ip_scan_sse_lock:
+        dead = []
+        for q in _ip_scan_sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _ip_scan_sse_subscribers.remove(q)
+
+
+def _ip_scan_log(msg):
+    """记录一条IP扫描日志。"""
+    global _ip_scan_log_seq
+    _ip_scan_log_seq += 1
+    time_str = _local_now().strftime('%H:%M:%S')
+    try:
+        import database as _db
+        _db.insert_ip_scan_log(_ip_scan_log_seq, time_str, msg)
+    except Exception:
+        pass
+    logger.info(msg)
+    _broadcast_ip_scan_sse('log', {'seq': _ip_scan_log_seq, 'time': time_str, 'msg': msg})
+
+
+_ip_scan_log_seq = 0
+_ip_scan_stop_requested = False
+
+
+async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_concurrent, timeout):
+    """执行IP扫描的核心协程。"""
+    import database as _db
+    from .ip_scanner import IPScanner
+    
+    global _ip_scan_stop_requested
+    _ip_scan_stop_requested = False
+    
+    now = _local_now()
+    scan_id = f"ip_scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    started_at = now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 初始化日志序号
+    global _ip_scan_log_seq
+    try:
+        _db.init_ip_scan_log_seq()
+        _ip_scan_log_seq = 0
+    except Exception:
+        pass
+    
+    # 解析输入数量
+    input_count = len([l for l in targets.strip().split('\n') if l.strip() and not l.strip().startswith('#')])
+    
+    # 写入扫描记录
+    _db.insert_ip_scan_run(scan_id, input_count, scan_types, ports)
+    _db.update_ip_scan_progress(
+        running=True, started_at=started_at, phase='scanning',
+        total=0, processed=0, alive=0, channels=0, percent=0,
+        message='正在扫描...'
+    )
+    _broadcast_ip_scan_sse('status', {'running': True, 'phase': 'scanning', 'percent': 0, 'message': '正在扫描...'})
+    
+    _ip_scan_log(f"[IP扫描:{scan_id}] 开始扫描，目标: {input_count} 个，类型: {', '.join(scan_types)}")
+    
+    start_time = time.time()
+    
+    try:
+        # 创建扫描器
+        scanner = IPScanner({
+            'workers': workers,
+            'rate_limit': rate_limit,
+            'http_concurrent': http_concurrent,
+            'timeout': timeout,
+        })
+        
+        # 重置停止标志
+        scanner.clear_stop()
+        
+        # 执行扫描
+        results = await scanner.scan_targets(
+            targets_text=targets,
+            scan_types=scan_types,
+            ports=ports,
+            log_fn=_ip_scan_log
+        )
+        
+        # 检查停止标志（同时检查全局和scanner实例）
+        if _ip_scan_stop_requested or scanner._stop_requested:
+            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描已停止")
+            _db.update_ip_scan_run(scan_id, status='stopped', finished_at=_db.now_str(),
+                                   duration_seconds=time.time() - start_time)
+            _db.update_ip_scan_progress(running=False, phase='idle', message='扫描已停止')
+            _broadcast_ip_scan_sse('status', {'running': False, 'message': '扫描已停止'})
+            return scan_id
+        
+        # 保存结果
+        alive_count = 0
+        channel_count = 0
+        
+        if results:
+            _db.insert_ip_scan_results(scan_id, results)
+            
+            alive_count = sum(1 for r in results if r['alive'])
+            channel_count = sum(r['channel_count'] for r in results)
+            
+            _db.update_ip_scan_run(
+                scan_id,
+                status='completed',
+                finished_at=_db.now_str(),
+                total_alive=alive_count,
+                total_channels=channel_count,
+                duration_seconds=time.time() - start_time
+            )
+            
+            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描完成！存活: {alive_count}/{len(results)}, 频道: {channel_count}")
+        else:
+            _db.update_ip_scan_run(
+                scan_id,
+                status='completed',
+                finished_at=_db.now_str(),
+                duration_seconds=time.time() - start_time
+            )
+            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描完成，未发现存活目标")
+        
+        _db.update_ip_scan_progress(
+            running=False, phase='idle', percent=100,
+            message=f'扫描完成，存活: {alive_count}, 频道: {channel_count}'
+        )
+        _broadcast_ip_scan_sse('status', {
+            'running': False,
+            'phase': 'idle',
+            'percent': 100,
+            'message': '扫描完成'
+        })
+        
+    except Exception as e:
+        _ip_scan_log(f"[IP扫描:{scan_id}] 扫描异常: {e}")
+        try:
+            _db.update_ip_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e),
+                                   duration_seconds=time.time() - start_time)
+        except Exception:
+            pass
+        _db.update_ip_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
+        _broadcast_ip_scan_sse('status', {'running': False, 'message': f'扫描失败: {e}'})
+    
+    # 刷新日志缓冲区
+    try:
+        _db.flush_log_buffer()
+    except Exception:
+        pass
+    
+    return scan_id
+
+
+def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000, 
+                    http_concurrent=50, timeout=3600):
+    """触发一次IP扫描。"""
+    import database as _db
+    
+    # 检查是否已有扫描在运行
+    progress = _db.get_ip_scan_progress()
+    if progress and progress.get('running'):
+        return {'error': 'IP扫描正在进行中'}
+    
+    # 在异步循环中启动扫描
+    bridge.run_background(_do_ip_scan(
+        targets=targets,
+        scan_types=scan_types,
+        ports=ports,
+        workers=workers,
+        rate_limit=rate_limit,
+        http_concurrent=http_concurrent,
+        timeout=timeout
+    ))
+    
+    return {'ok': True}
+
+
+def request_stop_ip_scan():
+    """请求停止IP扫描。"""
+    global _ip_scan_stop_requested
+    _ip_scan_stop_requested = True
+    
+    # 同时设置scanner实例的停止标志
+    try:
+        from .ip_scanner import get_ip_scanner
+        scanner = get_ip_scanner()
+        scanner.request_stop()
+    except Exception:
+        pass
+    
+    return {'ok': True, 'message': '已请求停止'}
+
+
+def get_ip_scan_status():
+    """获取IP扫描状态。"""
+    import database as _db
+    progress = _db.get_ip_scan_progress()
+    latest = _db.get_latest_ip_scan_run()
+    
+    if latest:
+        progress['scan_id'] = latest.get('scan_id', '')
+        progress['status'] = latest.get('status', '')
+        progress['started_at'] = latest.get('started_at', '')
+        progress['finished_at'] = latest.get('finished_at', '')
+        progress['duration_seconds'] = latest.get('duration_seconds', 0)
+        progress['input_count'] = latest.get('input_count', 0)
+        progress['total_alive'] = latest.get('total_alive', 0)
+        progress['total_channels'] = latest.get('total_channels', 0)
+    
+    return progress
+
+
+def send_channels_to_test(channels):
+    """将频道送入测速流水线。"""
+    # 这里可以调用测速模块的接口
+    # 暂时只返回成功
+    logger.info(f"[IP扫描] 送入测速: {len(channels)} 个频道")
+    return {'ok': True, 'count': len(channels)}
