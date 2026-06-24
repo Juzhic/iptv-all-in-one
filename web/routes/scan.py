@@ -203,6 +203,12 @@ def api_scan_history():
 def api_scan_config_get():
     """读取扫描配置。"""
     try:
+        scanner = _get_scanner()
+        if scanner is not None:
+            try:
+                scanner.init_bridge()
+            except Exception as e:
+                logger.warning(f"[ScanConfig] 初始化扫描后台任务失败: {e}")
         from scanner_integration.config_bridge import get_scan_config
         cfg = get_scan_config()
         return jsonify({'ok': True, 'data': cfg})
@@ -220,6 +226,13 @@ def api_scan_config_set():
         data = request.get_json(silent=True) or {}
         save_scan_config(data)
         init_key_manager()
+        scanner = _get_scanner()
+        if scanner is not None:
+            try:
+                scanner.init_bridge()
+                scanner.notify_scan_config_changed()
+            except Exception as e:
+                logger.warning(f"[ScanConfig] 重载定时扫描配置失败: {e}")
         cfg = get_scan_config()
         return jsonify({'ok': True, 'data': cfg})
     except Exception as e:

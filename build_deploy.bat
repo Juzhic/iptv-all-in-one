@@ -37,6 +37,8 @@ xcopy /e /i /q "engine"                "%DEPLOY%\engine"
 xcopy /e /i /q "web"                   "%DEPLOY%\web"
 xcopy /e /i /q "scanner_integration"   "%DEPLOY%\scanner_integration"
 xcopy /e /i /q "database"              "%DEPLOY%\database"
+del /q "%DEPLOY%\database\db_config.json" 2>nul
+
 xcopy /e /i /q "dist"                  "%DEPLOY%\dist"
 
 copy /y "requirements.txt"    "%DEPLOY%\"

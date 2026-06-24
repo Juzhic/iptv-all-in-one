@@ -2,6 +2,7 @@
 """
 scanner_integration 包入口，提供异步扫描到同步 Flask 路由的桥接层。"""
 import asyncio
+import os
 import threading
 import time
 import uuid
@@ -9,6 +10,8 @@ from datetime import datetime
 
 from .logger_bridge import logger
 from . import config_bridge
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # ==================== 扫描日志 ====================
@@ -33,7 +36,7 @@ def _scan_log(msg):
     """记录一条扫描日志，写入数据库，前端可增量拉取"""
     global _scan_log_seq
     _scan_log_seq += 1
-    time_str = datetime.now().strftime('%H:%M:%S')
+    time_str = _local_now().strftime('%H:%M:%S')
     try:
         import database as _db
         _db.insert_scan_log(_scan_log_seq, time_str, msg)
@@ -193,12 +196,54 @@ class AsyncBridge:
         """在异步循环中启动后台协程，不等待结果。"""
         if self._loop is None or not self._loop.is_running():
             raise RuntimeError("异步事件循环未启动。")
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
 
 # 全局实例
 bridge = AsyncBridge()
 scan_state = ScanState()
+_background_task_lock = threading.RLock()
+_background_lock_handle = None
+_daily_task_future = None
+_daily_reload_event = threading.Event()
+_db_maintenance_future = None
+
+
+def _local_now():
+    try:
+        from database import LOCAL_TZ
+        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
+def _acquire_background_task_lock():
+    """跨进程抢占扫描后台任务锁，避免多 worker 重复跑定时扫描。"""
+    global _background_lock_handle
+    if _background_lock_handle is not None:
+        return True
+
+    output_dir = os.path.join(_BASE_DIR, 'output')
+    os.makedirs(output_dir, exist_ok=True)
+    lock_handle = open(os.path.join(output_dir, 'scanner_background.lock'), 'a+', encoding='utf-8')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            lock_handle.seek(0)
+            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_handle.close()
+        return False
+
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f'pid:{os.getpid()} {_local_now().strftime("%Y-%m-%d %H:%M:%S")}\n')
+    lock_handle.flush()
+    _background_lock_handle = lock_handle
+    return True
 
 
 def _restore_from_persistent():
@@ -221,7 +266,7 @@ def _restore_from_persistent():
             })
         scan_state.channels = channels
         scan_state.initialized = True
-        scan_state.last_update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        scan_state.last_update_time = _local_now().strftime('%Y-%m-%d %H:%M:%S')
         logger.info(f"[Bridge] 从持久化结果集恢复 {len(channels)} 个频道，切换到增量模式。")
     except Exception as e:
         logger.warning(f"[Bridge] 从持久化结果集恢复失败: {e}")
@@ -245,6 +290,11 @@ def init_bridge():
         logger.warning(f"[Bridge] KeyManager 初始化失败: {e}")
     # 从持久化结果集恢复频道缓存
     _restore_from_persistent()
+
+    if not _acquire_background_task_lock():
+        logger.info("[Bridge] 当前进程未持有后台任务锁，跳过定时扫描/维护/检测。")
+        return
+
     # 启动定时扫描任务
     start_daily_task()
     # 启动每日数据库维护任务
@@ -281,8 +331,9 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     import database as _db
 
     cfg = config_bridge.get_scan_config()
-    scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = _local_now()
+    scan_id = f"scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    started_at = now.strftime('%Y-%m-%d %H:%M:%S')
     scan_state.clear_stop()
     # 清空上次日志
     global _scan_log_seq
@@ -402,7 +453,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         # 更新扫描状态
         scan_state.channels = quick
         scan_state.failure_counts = {c['url']: 0 for c in quick}
-        scan_state.last_update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        scan_state.last_update_time = _local_now().strftime('%Y-%m-%d %H:%M:%S')
         scan_state.initialized = True
 
         # 阶段3：后台深度检测
@@ -432,7 +483,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 c for c in sorted_channels if c.get('stability', 0) >= 30
             ]))
 
-        duration = (datetime.now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
+        duration = (_local_now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
         _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
                             duration_seconds=round(duration, 1))
         _db.update_scan_progress(running=False, phase='idle', percent=100,
@@ -475,8 +526,9 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
     import database as _db
 
     cfg = config_bridge.get_scan_config()
-    scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = _local_now()
+    scan_id = f"scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    started_at = now.strftime('%Y-%m-%d %H:%M:%S')
     scan_state.clear_stop()
     global _scan_log_seq
     _scan_log_seq = 0
@@ -579,7 +631,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
                         resolution=ch.get('resolution'), codec=ch.get('codec')
                     )
 
-        duration = (datetime.now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
+        duration = (_local_now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
         _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
                             duration_seconds=round(duration, 1))
         _db.update_scan_progress(running=False, phase='idle', percent=100,
@@ -595,7 +647,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
             _scan_log(f"[Incremental:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
 
         # 更新内存状态
-        scan_state.last_update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        scan_state.last_update_time = _local_now().strftime('%Y-%m-%d %H:%M:%S')
 
     except Exception as e:
         _scan_log(f"[Incremental:{scan_id}] 增量扫描异常: {e}")
@@ -808,22 +860,87 @@ def db_get_scan_progress():
 
 # ==================== 定时扫描任务 ====================
 
+def _scan_schedule_signature(cfg):
+    update_days = cfg.get('update_days', [])
+    if not isinstance(update_days, (list, tuple)):
+        update_days = []
+    normalized_days = []
+    for day in update_days:
+        if isinstance(day, bool):
+            continue
+        try:
+            normalized_days.append(int(day))
+        except (TypeError, ValueError):
+            continue
+    return (
+        cfg.get('update_time', '03:00'),
+        tuple(sorted(set(normalized_days))),
+        bool(cfg.get('daily_full_update', True)),
+    )
+
+
+async def _sleep_until_or_reload(wait_seconds, schedule_signature=None):
+    """睡到目标时间；配置变化或显式唤醒时提前返回 True。"""
+    deadline = time.monotonic() + max(0, wait_seconds)
+    while True:
+        if _daily_reload_event.is_set():
+            _daily_reload_event.clear()
+            return True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+
+        await asyncio.sleep(min(remaining, 5))
+
+        if schedule_signature is not None:
+            try:
+                current_signature = _scan_schedule_signature(config_bridge.get_scan_config())
+            except Exception:
+                current_signature = schedule_signature
+            if current_signature != schedule_signature:
+                return True
+
+
+def notify_scan_schedule_changed():
+    """通知定时扫描协程重新读取扫描配置。"""
+    _daily_reload_event.set()
+
+
+def notify_scan_config_changed():
+    """通知依赖扫描配置的后台任务尽快重读配置。"""
+    notify_scan_schedule_changed()
+    try:
+        from .detection import detection_manager
+        detection_manager.reload_config()
+    except Exception:
+        pass
+
+
 def start_daily_task():
     """在异步事件循环中启动定时扫描任务。"""
-    if bridge._loop is None:
+    global _daily_task_future
+    if bridge._loop is None or not bridge._loop.is_running():
         logger.warning("[Scheduler] 异步循环未启动，无法启动定时任务")
         return
-    asyncio.run_coroutine_threadsafe(_daily_update_task(), bridge._loop)
-    logger.info("[Scheduler] 定时扫描任务已启动。")
+    with _background_task_lock:
+        if _daily_task_future is not None and not _daily_task_future.done():
+            notify_scan_schedule_changed()
+            logger.info("[Scheduler] 定时扫描任务已在运行，已通知重载配置。")
+            return
+        _daily_reload_event.clear()
+        _daily_task_future = bridge.run_background(_daily_update_task())
+        logger.info("[Scheduler] 定时扫描任务已启动。")
 
 
 async def _daily_update_task():
     """定时扫描后台协程：按配置的星期几和时间自动触发扫描。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import timedelta as _td
 
     while True:
         try:
             cfg = config_bridge.get_scan_config()
+            schedule_signature = _scan_schedule_signature(cfg)
             update_time = cfg.get('update_time', '03:00')
             update_days = cfg.get('update_days', [0, 1, 2, 3, 4, 5, 6])
             daily_full = cfg.get('daily_full_update', True)
@@ -838,7 +955,7 @@ async def _daily_update_task():
                 hour, minute = 3, 0
 
             # 查找下一个匹配时间（最多遍历未来 8 天）
-            now = _dt.now()
+            now = _local_now()
             target = None
             for day_offset in range(8):
                 candidate = (now + _td(days=day_offset)).replace(
@@ -851,20 +968,21 @@ async def _daily_update_task():
 
             if target is None:
                 logger.warning("[Scheduler] 未找到匹配的扫描时间，60 秒后重试")
-                await asyncio.sleep(60)
+                await _sleep_until_or_reload(60, schedule_signature)
                 continue
 
             wait_seconds = (target - now).total_seconds()
-            logger.info(f"[Scheduler] 下次扫描: {target.strftime('%Y-%m-%d %H:%M')} "
+            logger.info(f"[Scheduler] 下次扫描（北京时间）: {target.strftime('%Y-%m-%d %H:%M')} "
                         f"(等待 {wait_seconds:.0f} 秒)")
-            await asyncio.sleep(wait_seconds)
+            if await _sleep_until_or_reload(wait_seconds, schedule_signature):
+                continue
 
             # 到达目标时间，检查是否有正在进行的扫描
             import database as _db
             progress = _db.get_scan_progress()
             if progress and progress.get('running'):
                 logger.info("[Scheduler] 已有扫描在运行，跳过本次")
-                await asyncio.sleep(60)
+                await _sleep_until_or_reload(60)
                 continue
 
             # 触发扫描
@@ -872,7 +990,7 @@ async def _daily_update_task():
             await _do_scan()
 
             # 防止重复触发
-            await asyncio.sleep(60)
+            await _sleep_until_or_reload(60)
 
         except asyncio.CancelledError:
             logger.info("[Scheduler] 定时任务被取消。")
@@ -886,27 +1004,32 @@ async def _daily_update_task():
 
 def start_daily_db_maintenance():
     """在异步事件循环中启动每日数据库维护任务（每天凌晨 4 点）。"""
-    if bridge._loop is None:
+    global _db_maintenance_future
+    if bridge._loop is None or not bridge._loop.is_running():
         logger.warning("[DBMaint] 异步循环未启动，无法启动维护任务")
         return
-    asyncio.run_coroutine_threadsafe(_daily_db_maintenance_task(), bridge._loop)
-    logger.info("[DBMaint] 每日数据库维护任务已启动")
+    with _background_task_lock:
+        if _db_maintenance_future is not None and not _db_maintenance_future.done():
+            logger.info("[DBMaint] 每日数据库维护任务已在运行")
+            return
+        _db_maintenance_future = bridge.run_background(_daily_db_maintenance_task())
+        logger.info("[DBMaint] 每日数据库维护任务已启动")
 
 
 async def _daily_db_maintenance_task():
     """每天凌晨执行：清理过期日志 + VACUUM 压缩数据库。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import timedelta as _td
 
     MAINT_HOUR, MAINT_MINUTE = 4, 0  # 凌晨 4:00 执行
 
     while True:
         try:
-            now = _dt.now()
+            now = _local_now()
             target = now.replace(hour=MAINT_HOUR, minute=MAINT_MINUTE, second=0, microsecond=0)
             if target <= now:
                 target += _td(days=1)
             wait_seconds = (target - now).total_seconds()
-            logger.info(f"[DBMaint] 下次维护: {target.strftime('%Y-%m-%d %H:%M')} "
+            logger.info(f"[DBMaint] 下次维护（北京时间）: {target.strftime('%Y-%m-%d %H:%M')} "
                         f"(等待 {wait_seconds:.0f} 秒)")
             await asyncio.sleep(wait_seconds)
 

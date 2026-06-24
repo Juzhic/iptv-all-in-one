@@ -22,7 +22,7 @@ from database import (
     clear_scheduler_state,
 )
 from web.state import is_allowed_data_key
-from web.scheduler import _ensure_scheduler_started
+from web.scheduler import _ensure_scheduler_started, _reload_scheduler_config
 
 config_bp = Blueprint('config', __name__)
 
@@ -63,15 +63,21 @@ def api_save_config():
     # 读取当前配置，只更新合法 key
     cfg = get_config(DEFAULT_CONFIG)
     updated_keys = []
-    numeric_keys = {'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel',
-                    'min_width', 'min_height', 'run_interval_minutes', 'system_bandwidth_limit_MBps',
-                    'system_memory_limit_percent', 'webhook_min_pass_rate', 'ffmpeg_timeout',
-                    'min_bandwidth_MBps', 'bandwidth_compensation_MBps', 'h265_bandwidth_ratio'}
+    int_keys = {'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel',
+                'min_width', 'min_height', 'run_interval_minutes', 'ffmpeg_timeout'}
+    float_keys = {'system_bandwidth_limit_MBps', 'system_memory_limit_percent',
+                  'webhook_min_pass_rate', 'min_bandwidth_MBps',
+                  'bandwidth_compensation_MBps', 'h265_bandwidth_ratio'}
     for key, value in data.items():
         if key in valid_keys:
-            if key in numeric_keys:
+            if key in int_keys:
                 try:
-                    cfg[key] = int(value) if key not in ('system_bandwidth_limit_MBps', 'system_memory_limit_percent') else float(value)
+                    cfg[key] = int(value)
+                except (TypeError, ValueError):
+                    pass
+            elif key in float_keys:
+                try:
+                    cfg[key] = float(value)
                 except (TypeError, ValueError):
                     pass
             else:
@@ -84,6 +90,7 @@ def api_save_config():
 
     db_save_config(cfg)
     if cfg.get('run_mode', 'once') == 'once':
+        _reload_scheduler_config()
         try:
             clear_scheduler_state()
         except Exception:
@@ -211,10 +218,25 @@ def api_config_import():
             except Exception:
                 pass
 
-    try:
-        clear_scheduler_state()
-    except Exception:
-        pass
+    cfg = load_config()
+    if cfg.get('run_mode', 'once') == 'once':
+        _reload_scheduler_config()
+        try:
+            clear_scheduler_state()
+        except Exception:
+            pass
+    else:
+        _ensure_scheduler_started(cfg)
+
+    if 'scan_config' in imported:
+        try:
+            import web.state as _state
+            scanner = _state._scanner_module
+            if scanner is not None:
+                scanner.init_bridge()
+                scanner.notify_scan_config_changed()
+        except Exception:
+            pass
 
     return jsonify({'ok': True, 'data': {'imported': imported}})
 

@@ -56,8 +56,18 @@ def load_config(filepath=None):
     """从数据库加载配置，缺失项使用默认值。首次启动自动从 config.json 迁移。"""
     from database import get_config, migrate_config_from_file
     # 首次启动：尝试从 config.json 迁移
-    migrate_config_from_file('config.json', DEFAULT_CONFIG)
+    if filepath is None:
+        filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+    migrate_config_from_file(filepath, DEFAULT_CONFIG)
     return get_config(DEFAULT_CONFIG)
+
+
+def _local_now():
+    try:
+        from database import LOCAL_TZ
+        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
 
 
 LOW_RESOLUTION_URL_PATTERNS = (
@@ -1323,7 +1333,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
 
 def _next_run_datetime(run_mode, run_times, run_interval_minutes):
     """计算下一次运行的绝对时间，返回 datetime 对象。"""
-    now = datetime.now()
+    now = _local_now()
     if run_mode == 'times' and run_times:
         today = now.date()
         candidates = []
@@ -1373,13 +1383,13 @@ if __name__ == "__main__":
                 if next_run is None:
                     print("无法计算下次执行时间，退出")
                     break
-                wait_sec = (next_run - datetime.now()).total_seconds()
+                wait_sec = (next_run - _local_now()).total_seconds()
                 if wait_sec > 0:
                     print(f"\n下次执行：{next_run.strftime('%Y-%m-%d %H:%M:%S')}（{wait_sec/60:.1f} 分钟后）")
                     time.sleep(wait_sec)
 
                 print(f"\n{'#' * 60}")
-                print(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"定时任务触发：{_local_now().strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"{'#' * 60}")
 
                 try:

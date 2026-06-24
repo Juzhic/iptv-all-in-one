@@ -13,11 +13,22 @@ from database import now_str, get_scheduler_state, update_scheduler_state, clear
 
 import web.state as _state
 
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCHEDULER_POLL_SECONDS = 5
+
 
 def _format_schedule_time(value):
     if isinstance(value, datetime):
         return value.strftime('%Y-%m-%d %H:%M:%S')
     return value or None
+
+
+def _scheduler_now():
+    try:
+        from database import LOCAL_TZ
+        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
 
 
 def _write_scheduler_state(running, next_run=None):
@@ -31,13 +42,30 @@ def _write_scheduler_state(running, next_run=None):
         pass
 
 
+def _scheduler_config_signature(cfg):
+    run_times = cfg.get('run_times', [])
+    if not isinstance(run_times, (list, tuple)):
+        run_times = []
+    return (
+        cfg.get('run_mode', 'once'),
+        tuple(str(t) for t in run_times),
+        cfg.get('run_interval_minutes', 0),
+    )
+
+
+def _reload_scheduler_config():
+    """唤醒调度线程，让它立即重新读取配置。"""
+    _state._scheduler_reload_event.set()
+
+
 def _acquire_scheduler_lock():
     """跨进程抢占调度器锁，避免 gunicorn/uWSGI 多 worker 重复定时执行。"""
     if _state._scheduler_lock_handle is not None:
         return True
 
-    os.makedirs('output', exist_ok=True)
-    lock_handle = open(os.path.join('output', 'scheduler.lock'), 'a+', encoding='utf-8')
+    output_dir = os.path.join(_BASE_DIR, 'output')
+    os.makedirs(output_dir, exist_ok=True)
+    lock_handle = open(os.path.join(output_dir, 'scheduler.lock'), 'a+', encoding='utf-8')
     try:
         if os.name == 'nt':
             import msvcrt
@@ -86,10 +114,12 @@ def _ensure_scheduler_started(cfg=None):
         return False
 
     if cfg.get('run_mode', 'once') == 'once':
+        _reload_scheduler_config()
         return False
 
     with _state._scheduler_thread_lock:
         if _state._scheduler_thread is not None and _state._scheduler_thread.is_alive():
+            _reload_scheduler_config()
             return True
         if not _acquire_scheduler_lock():
             return False
@@ -137,6 +167,7 @@ def _scheduler_loop():
             try:
                 cfg = load_config()
                 run_mode = cfg.get('run_mode', 'once')
+                config_signature = _scheduler_config_signature(cfg)
                 if run_mode == 'once':
                     _state.set_next_scheduled_run(None)
                     _write_scheduler_state(False, None)
@@ -146,29 +177,34 @@ def _scheduler_loop():
                 if next_run is None:
                     _state.set_next_scheduled_run(None)
                     _write_scheduler_state(True, None)
-                    time.sleep(60)
+                    _state._scheduler_reload_event.wait(_SCHEDULER_POLL_SECONDS)
+                    _state._scheduler_reload_event.clear()
                     continue
 
                 _state.set_next_scheduled_run(next_run)
                 _write_scheduler_state(True, next_run)
-                wait_sec = (next_run - datetime.now()).total_seconds()
+                wait_sec = (next_run - _scheduler_now()).total_seconds()
                 if wait_sec > 0:
+                    should_reload = False
                     while wait_sec > 0:
-                        time.sleep(min(wait_sec, 30))
-                        wait_sec = (next_run - datetime.now()).total_seconds()
-                        current_cfg = load_config()
-                        current_mode = current_cfg.get('run_mode', 'once')
-                        if current_mode != run_mode:
+                        if _state._scheduler_reload_event.wait(min(wait_sec, _SCHEDULER_POLL_SECONDS)):
+                            _state._scheduler_reload_event.clear()
+                            should_reload = True
                             break
-                    else:
-                        pass
+                        wait_sec = (next_run - _scheduler_now()).total_seconds()
+                        current_cfg = load_config()
+                        if _scheduler_config_signature(current_cfg) != config_signature:
+                            should_reload = True
+                            break
+                    if should_reload:
+                        continue
 
                     current_cfg = load_config()
-                    if current_cfg.get('run_mode', 'once') != run_mode:
+                    if _scheduler_config_signature(current_cfg) != config_signature:
                         continue
 
                 logger.info(f"{'#' * 60}")
-                logger.info(f"定时任务触发：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"定时任务触发（北京时间）：{_scheduler_now().strftime('%Y-%m-%d %H:%M:%S')}")
                 logger.info(f"{'#' * 60}")
                 run_token = _start_test_background(trigger_source='scheduler')
                 if run_token is None:

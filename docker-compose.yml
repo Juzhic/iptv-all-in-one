@@ -12,4 +12,5 @@ services:
     environment:
       - FFMPEG_BIN=/usr/bin/ffmpeg
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
     restart: unless-stopped
