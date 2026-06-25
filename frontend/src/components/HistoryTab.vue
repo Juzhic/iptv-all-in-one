@@ -34,6 +34,7 @@
       @expand-change="onExpandChange"
       :row-selection="{ selectedRowKeys, onChange: onSelectionChange }"
       size="small"
+      :loading="loading"
     >
       <template #summary_pass_rate="{ row }">
         <div class="rate-cell">
@@ -158,7 +159,7 @@
       </template>
     </t-table>
 
-    <div v-if="!historyRuns.length" class="no-data">该日期范围内暂无测速记录</div>
+    <div v-if="!loading && !historyRuns.length" class="no-data">该日期范围内暂无测速记录</div>
 
     <!-- 日志弹窗 -->
     <t-dialog
@@ -282,7 +283,8 @@ async function copyText(text) {
 const props = defineProps({ initialRuns: Array })
 const emit = defineEmits(['update-overview'])
 
-const historyRuns = ref(props.initialRuns || [])
+const historyRuns = ref([])
+const loading = ref(false)
 const startDate = ref('')
 const endDate = ref('')
 const expandedKeys = ref([])
@@ -341,10 +343,12 @@ const urlColumns = [
 ]
 
 async function queryHistory() {
+  loading.value = true
   try {
     historyRuns.value = await apiGetRuns(startDate.value, endDate.value)
     emit('update-overview', historyRuns.value)
   } catch (e) { MessagePlugin.error('查询失败: ' + e.message) }
+  finally { loading.value = false }
 }
 
 function reset3Days() {
