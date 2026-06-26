@@ -12,6 +12,7 @@ from flask import Blueprint, request, jsonify, Response
 
 import database as db
 import web.state as _state
+from web.routes.params import bounded_int, int_arg
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,44 @@ def _local_now():
         return datetime.now()
 
 
+def _normalize_ports(raw_ports):
+    """Normalize API-provided ports to a bounded, deduplicated list."""
+    if raw_ports is None or raw_ports == '':
+        raw_ports = [8080, 80, 443]
+    if isinstance(raw_ports, str):
+        raw_ports = raw_ports.replace('，', ',').replace(';', ',').split(',')
+    if not isinstance(raw_ports, list):
+        raw_ports = [8080, 80, 443]
+
+    ports = []
+    seen = set()
+    for item in raw_ports:
+        port = bounded_int(item, 0, 0, 65535)
+        if 1 <= port <= 65535 and port not in seen:
+            ports.append(port)
+            seen.add(port)
+        if len(ports) >= 100:
+            break
+    return ports or [8080, 80, 443]
+
+
+def _normalize_scan_types(raw_types):
+    """Return supported scan types only."""
+    from scanner_integration.ip_scan_types import SCAN_TYPES
+
+    if isinstance(raw_types, str):
+        raw_types = [p.strip() for p in raw_types.replace('，', ',').split(',')]
+    if not isinstance(raw_types, list):
+        return []
+    allowed = set(SCAN_TYPES)
+    normalized = []
+    for item in raw_types:
+        value = str(item).strip().upper()
+        if value in allowed and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
 # ─────────────── IP扫描控制 API ───────────────
 
 @ip_scan_bp.route('/api/ip-scan/trigger', methods=['POST'])
@@ -52,22 +91,19 @@ def api_ip_scan_trigger():
     data = request.get_json(silent=True) or {}
     
     # 参数验证
-    targets = data.get('targets', '')
+    targets = str(data.get('targets', '')).strip()
     if not targets or not targets.strip():
         return jsonify({'ok': False, 'error': '请输入扫描目标'}), 400
     
-    scan_types = data.get('scan_types', ['ALL'])
+    scan_types = _normalize_scan_types(data.get('scan_types', ['ALL']))
     if not scan_types:
         return jsonify({'ok': False, 'error': '请选择至少一种扫描类型'}), 400
     
-    ports = data.get('ports', [8080, 80, 443])
-    if not ports:
-        ports = [8080, 80, 443]
-    
-    workers = data.get('workers', 16)
-    rate_limit = data.get('rate_limit', 5000)
-    http_concurrent = data.get('http_concurrent', 50)
-    timeout = data.get('timeout', 3600)
+    ports = _normalize_ports(data.get('ports', [8080, 80, 443]))
+    workers = bounded_int(data.get('workers', 16), 16, 1, 100)
+    rate_limit = bounded_int(data.get('rate_limit', 5000), 5000, 100, 50000)
+    http_concurrent = bounded_int(data.get('http_concurrent', 50), 50, 1, 500)
+    timeout = bounded_int(data.get('timeout', 3600), 3600, 60, 86400)
     
     # 调用扫描模块
     result = scanner.trigger_ip_scan(
@@ -127,6 +163,8 @@ def api_ip_scan_stream():
     def generate():
         q = scanner.subscribe_ip_scan_sse()
         try:
+            progress = scanner.get_ip_scan_status()
+            yield f"event: status\ndata: {json.dumps(progress, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     msg = q.get(timeout=30)
@@ -156,12 +194,8 @@ def api_ip_scan_stream():
 def api_ip_scan_results():
     """查询IP扫描结果。"""
     scan_id = request.args.get('scan_id')
-    page = int(request.args.get('page', 1))
-    size = int(request.args.get('size', 20))
-    
-    # 限制每页数量
-    if size > 200:
-        size = 200
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 20, 1, 200)
     
     try:
         results = db.get_ip_scan_results(scan_id, page, size)
@@ -184,9 +218,7 @@ def api_ip_scan_latest():
 def api_ip_scan_history():
     """获取IP扫描历史。"""
     try:
-        limit = int(request.args.get('limit', 20))
-        if limit > 100:
-            limit = 100
+        limit = int_arg(request.args, 'limit', 20, 1, 100)
         history = db.get_ip_scan_history(limit)
         return jsonify({'ok': True, 'data': history})
     except Exception as e:

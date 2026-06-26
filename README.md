@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.3）
+## 当前版本说明（v1.6.5）
 
 本项目当前以 MySQL 作为主要数据存储，数据库配置位于 `database/db_config.json`。
 
@@ -49,6 +49,8 @@
 
 - 通过搜索引擎 API（Quake 360、Hunter 鹰图、DayDayMap、Fofa）自动发现酒店 IPTV 服务器。
 - 四平台默认搜索使用 OR 组合查询，一次扫描覆盖多个 IPTV 系统特征（`/iptv/live/zh_cn.js`、`1000.json?key=txiptv`、`ZHGXTV`、`jsmpeg-streamer`、`IPTV互动电视系统`、`EasyLive`、`Hybroad`、`udpxy`、`tvheadend`、`Xtream` 等）。
+- 质量优先查询：在基础查询之外，按标准直播接口、ZHGXTV、JSMpeg、频道 API、M3U、组播代理、Tvheadend、运营商播放列表等画像追加搜索，提升低噪声源的命中率。
+- 质量热点补源：基于历史频道的稳定性、延迟、带宽和质量状态识别高价值 /24 网段，围绕稳定源继续探测。
 - 支持 ZHGXTV、JSMpeg、Tvheadend、IPTV互动、EasyLive、Hybroad、udpxy、Xtream 等多种 IPTV 系统的独立扫描和频道提取。
 - C 段扫描：对已发现的 IP 所在 /24 子网进行扩展扫描，支持智能采样和限制。
 - 快速过滤（HEAD 请求验证）+ 深度检测（带宽/延迟/稳定性/分辨率）。
@@ -64,6 +66,7 @@
 - 域名扫描：支持 DNS/Censys/RapidDNS/crt.sh 域名扫描发现 IPTV 服务。
 - API Key 多 Key 轮转：支持 Quake/Hunter/DayDayMap/Fofa 多 Key 轮转，避免单 Key 限流。
 - 稳定性评分：基于带宽、卡顿、抖动、空包率、延迟等多维度计算频道稳定性。
+- 平台级采集日志：展示 API 命中、实际探测、频道提取和 C 段补充数量，便于判断是 API 返回少还是提取过滤少。
 - SSE 实时推送：扫描日志和检测日志通过 SSE 实时推送到前端。
 
 ### IP 扫描模块
@@ -224,11 +227,11 @@ BasicAuth 保护 Web 后台和 API。凭据从程序目录的 `basic_auth.json` 
 }
 ```
 
-如果文件缺失或无效，使用默认账号 `admin` / `admin`。首次启动时检测到默认密码会在日志中输出安全警告，建议立即修改。
+如果文件缺失且未设置 `IPTV_AUTH_PASSWORD`，启动时会生成一个随机密码并打印在日志里。建议创建 `basic_auth.json` 或设置 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`，让登录凭据可持久化。
 
 结果订阅下载保持公开：`/api/download/txt` 和 `/api/download/m3u`。
 
-开发模式下，Vite 代理也会自动读取同一份 `basic_auth.json` 并转发 BasicAuth 头，因此 `http://localhost:3000` 下的总览、历史、扫描等 API 页面可直接调试。
+开发模式下，Vite 代理会优先读取 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`，否则读取同一份 `basic_auth.json` 并转发 BasicAuth 头，因此 `http://localhost:3000` 下的总览、历史、扫描等 API 页面可直接调试。
 
 Web 服务默认使用 `58080` 端口。如果端口已被旧进程占用，启动会失败并提示先结束占用进程。可通过环境变量 `IPTV_PORT` 更改端口。
 
@@ -292,11 +295,11 @@ pip install gunicorn
 2. 启动服务：
 
 ```bash
-gunicorn -w 4 -b 0.0.0.0:58080 --timeout 120 web:app
+gunicorn -w 1 -b 0.0.0.0:58080 --timeout 120 web:app
 ```
 
 参数说明：
-- `-w 4`：4 个工作进程（建议 CPU 核心数 × 2 + 1）
+- `-w 1`：单工作进程。后台测速、SSE 和停止信号依赖进程内状态，生产环境建议保持单 worker。
 - `-b 0.0.0.0:58080`：监听所有网卡的 58080 端口（可通过 `IPTV_PORT` 环境变量更改）
 - `--timeout 120`：请求超时 120 秒（测速任务耗时较长）
 
@@ -304,7 +307,7 @@ gunicorn -w 4 -b 0.0.0.0:58080 --timeout 120 web:app
 
 ```bash
 # 自定义端口
-IPTV_PORT=8080 gunicorn -w 4 -b 0.0.0.0:8080 --timeout 120 web:app
+IPTV_PORT=8080 gunicorn -w 1 -b 0.0.0.0:8080 --timeout 120 web:app
 ```
 
 3. 使用 Systemd 打包为服务（可选）：
@@ -320,7 +323,7 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/path/to/IPTV-Test
-ExecStart=/path/to/venv/bin/gunicorn -w 4 -b 127.0.0.1:58080 --timeout 120 web:app
+ExecStart=/path/to/venv/bin/gunicorn -w 1 -b 127.0.0.1:58080 --timeout 120 web:app
 Restart=always
 RestartSec=5
 Environment="FFMPEG_BIN=/usr/bin/ffmpeg"
@@ -425,8 +428,9 @@ IPTV_PORT=8080 docker-compose up -d
 | `IPTV_HOST` | Web 服务监听地址 | `0.0.0.0` |
 | `IPTV_PORT` | Web 服务端口 | `58080` |
 | `IPTV_AUTH_USERNAME` | BasicAuth 用户名（覆盖配置文件） | `admin` |
-| `IPTV_AUTH_PASSWORD` | BasicAuth 密码（覆盖配置文件） | `admin` |
+| `IPTV_AUTH_PASSWORD` | BasicAuth 密码（覆盖配置文件） | 缺省时随机生成 |
 | `IPTV_AUTH_REALM` | BasicAuth 领域名称（覆盖配置文件） | `IPTV Test` |
+| `IPTV_HEALTH_DETAILED` | `/api/health` 是否返回磁盘、内存、调度等详细信息；设为 `1` 开启 | 未设置 |
 | `PYTHONUNBUFFERED` | 禁用 Python 输出缓冲 | 未设置 |
 | `MAX_FFMPEG_WORKERS` | FFmpeg 最大并发数（覆盖配置文件） | 未设置 |
 | `CENSYS_API_ID` | Censys API ID（域名扫描用） | 未设置 |
@@ -434,7 +438,7 @@ IPTV_PORT=8080 docker-compose up -d
 
 ### 安全建议
 
-1. **修改默认密码**：编辑 `basic_auth.json`，修改 `username` 和 `password`。首次启动时检测到默认密码会在日志中输出安全警告。
+1. **固定登录凭据**：首次启动且未配置密码时会生成随机密码并打印到日志。生产环境建议创建 `basic_auth.json`，或设置 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`。
 2. **限制访问**：通过防火墙或 Nginx 限制来源 IP
 3. **HTTPS**：生产环境务必使用 HTTPS（可通过 Nginx + Let's Encrypt 配置）
 4. **数据库备份**：定期备份 MySQL 数据库
@@ -631,6 +635,7 @@ IPTV-Test/
 │   │   ├── health.py           # 健康检查 API
 │   │   ├── history.py          # 历史记录 API
 │   │   ├── ip_scan.py          # IP 扫描 API
+│   │   ├── params.py           # 路由参数边界校验工具
 │   │   ├── scan.py             # 扫描控制 API
 │   │   ├── spa.py              # SPA 静态文件服务
 │   │   ├── subscribe.py        # 订阅源 API
@@ -827,6 +832,17 @@ IPTV-Test/
 | `c_segment_max_segments` | `8` | C 段最大子网数（1-50） |
 | `c_segment_max_total_ips` | `200` | C 段最大总 IP 数（1-5000） |
 
+### 质量优先发现
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `quality_discovery_enabled` | `true` | 是否启用质量优先查询，额外执行直播接口、频道 API、M3U、组播代理、Tvheadend 等画像查询 |
+| `quality_query_profile_size` | `240` | 每个平台质量画像查询的总搜索目标量，会按已选省份和画像拆分（10-2000） |
+| `quality_hotspot_enabled` | `true` | 是否启用质量热点补源，基于历史高质量源所在网段继续探测 |
+| `quality_hotspot_scan_limit` | `120` | 每轮质量热点最多探测的 IP:端口候选数量（1-5000） |
+| `quality_hotspot_min_score` | `8` | 质量热点网段最低入选分数（1-1000） |
+| `quality_source_min_stability` | `45` | 参与质量热点学习的历史源最低稳定性（0-100） |
+
 ### 定时扫描
 
 | 参数 | 默认值 | 说明 |
@@ -931,21 +947,40 @@ IPTV-Test/
 | 特征字符串 | 说明 |
 | --- | --- |
 | `/iptv/live/zh_cn.js` | 常见 IPTV 系统 JS 文件路径 |
-| `1000.json?key=txiptv` | IPTV JSON 接口特征 |
-| `ZHGXTV` | ZHGX IPTV 系统特征 |
-| `jsmpeg-streamer` | JSMpeg 流媒体系统特征 |
+| `/iptv/live/1000.json?key=txiptv`、`/iptv/live/1000.json` | IPTV JSON 接口特征 |
+| `/ZHGXTV/Public/json/live_interface.txt`、`ZHGXTV` | ZHGX IPTV 系统特征 |
+| `jsmpeg-streamer`、`/streamer/list` | JSMpeg 流媒体系统特征 |
 | `IPTV互动电视系统` | IPTV 互动电视系统标题特征 |
 | `/iptv/live/` | IPTV 直播路径通用特征 |
 | `IPTV管理系统` | IPTV 管理系统标题特征 |
 | `酒店IPTV` | 酒店 IPTV 系统标题特征 |
-| `getChannelList` | 频道列表 API 接口特征 |
+| `getChannelList`、`/getChannelList` | 频道列表 API 接口特征 |
+| `/api/channels`、`/channels`、`/channel_list.json`、`/api/live/channels`、`/live/channels.json` | 通用频道列表接口特征 |
 | `EasyLive` | EasyLive IPTV 系统特征 |
 | `Hybroad` | Hybroad IPTV 系统特征 |
-| `udpxy` | udpxy 代理服务特征 |
-| `tvheadend` | Tvheadend 流媒体系统特征 |
+| `udpxy`、`/udpxy/chanlist`、`/udp/chanlist`、`/rtp/chanlist` | udpxy/组播代理服务特征 |
+| `tvheadend`、`Tvheadend` 标题、`/playlist?profile=pass` | Tvheadend 流媒体系统特征 |
+| `/migu/playlist.m3u8`、`/icntv/playlist.m3u8` | 运营商播放列表特征 |
 | `Xtream` + `IPTV` | Xtream IPTV 系统组合特征 |
 
 省份和运营商过滤条件会自动追加到默认查询之后（使用 `AND` / `&&` 连接）。
+
+质量优先查询会在基础查询后追加执行以下画像，并继承已选省份和运营商过滤，适合 API 平台基础返回量偏少时补充更精准的候选源：
+
+| 画像 | 覆盖特征 |
+| --- | --- |
+| 标准直播接口 | `/iptv/live/zh_cn.js`、`/iptv/live/1000.json?key=txiptv`、`/iptv/live/1000.json` |
+| ZHGXTV | `ZHGXTV`、`/ZHGXTV/Public/json/live_interface.txt` |
+| JSMpeg | `jsmpeg-streamer`、`/streamer/list` |
+| 频道 API | `getChannelList`、`/getChannelList`、`/api/channels`、`/channels`、`/channel_list.json`、`/api/live/channels`、`/live/channels.json` |
+| M3U 播放列表 | `/playlist?profile=pass`、`#EXTM3U` + `tvg-name` |
+| 组播代理 | `udpxy`、`/udpxy/chanlist`、`/udp/chanlist`、`/rtp/chanlist` |
+| Tvheadend | `tvheadend`、`Tvheadend` 标题、`/playlist?profile=pass` |
+| 中间件品牌 | `EasyLive`、`Hybroad` |
+| 运营商播放列表 | `/migu/playlist.m3u8`、`/icntv/playlist.m3u8`、`/migu/live/`、`/icntv/live/` |
+| Xtream | `Xtream` + `IPTV` |
+
+每个平台的质量画像目标量由 `quality_query_profile_size` 控制，并会按已选省份和画像拆分预算；最终命中仍会经过频道提取、去重、快速过滤和深度检测。
 
 ## 别名系统
 
@@ -987,6 +1022,9 @@ IPTV-Test/
 **Q: 扫描需要 API Key 吗？**
 是的。至少需要配置一个搜索引擎的 API Key（Quake 360、Hunter 鹰图、DayDayMap 或 Fofa 之一）。在"频道扫描"标签页的配置区域填写，点击旁边的"获取 ↗"链接可跳转到对应平台申请。
 
+**Q: 扫描到的内容很少怎么办？**
+先看扫描日志里的平台级统计：`API命中` 少通常是平台配额、关键词、已选省份/运营商范围较窄或平台索引覆盖问题；`API命中` 不少但 `提取频道` 少，通常是目标不是 IPTV 播放源、接口不可访问或被快速过滤。可尝试增大 `quake_size`、`hunter_size`、`daydaymap_size`、`fofa_size`；如果只是排查覆盖面，可临时扩大省份或运营商范围；同时确认 `quality_discovery_enabled` 和 `quality_hotspot_enabled` 已开启，并让系统积累一段时间的高质量历史结果后再跑质量热点补源。
+
 **Q: 如何设置定时扫描？**
 在"频道扫描"标签页的配置区域底部，勾选要扫描的星期几（或勾选"每天"），设置扫描时间，保存配置即可。页面会显示下次扫描的倒计时。定时扫描在后台自动执行，无需手动触发。
 
@@ -1001,6 +1039,9 @@ IPTV-Test/
 
 **Q: 如何启用 ISP 情报？**
 在扫描配置中设置 `isp_intelligence_enabled` 为 `true`。系统会分析历史扫描数据，发现 IPTV 密集的 IP 段进行主动扫描。
+
+**Q: 如何启用质量热点补源？**
+默认已启用。扫描配置里的 `quality_hotspot_enabled` 控制开关，`quality_source_min_stability` 控制参与学习的历史源稳定性门槛，`quality_hotspot_scan_limit` 控制每轮补源探测预算。该功能依赖历史持久化结果，刚部署或历史数据很少时命中会偏少。
 
 **Q: 如何启用频道复活？**
 在扫描配置中设置 `resurrection_enabled` 为 `true`，并配置 `resurrection_interval_hours`（默认 24 小时）。系统会定期尝试复活已删除的频道。

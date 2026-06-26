@@ -5,7 +5,7 @@ import os
 import subprocess
 
 from web import app
-from web.app import BASE_DIR, _prepare_frontend_on_startup
+from web.app import BASE_DIR, _npm_cmd, _prepare_frontend_on_startup
 from engine import load_config, DEFAULT_CONFIG
 
 if __name__ == '__main__':
@@ -36,11 +36,10 @@ if __name__ == '__main__':
             frontend_dir = os.path.join(BASE_DIR, 'frontend')
             if os.path.exists(os.path.join(frontend_dir, 'package.json')):
                 print("开发模式：正在启动 Vite 开发服务器...")
-                subprocess.Popen(
-                    ['cmd', '/c', 'npm run dev'],
-                    cwd=frontend_dir,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0,
-                )
+                popen_kwargs = {'cwd': frontend_dir}
+                if sys.platform == 'win32':
+                    popen_kwargs['creationflags'] = subprocess.CREATE_NEW_CONSOLE
+                subprocess.Popen(_npm_cmd('run dev'), **popen_kwargs)
                 print(f"Vite 开发服务器: http://localhost:3000（API 代理到 Flask :{port}）")
             else:
                 print("警告：frontend/ 目录不存在，请先创建 Vue 项目")

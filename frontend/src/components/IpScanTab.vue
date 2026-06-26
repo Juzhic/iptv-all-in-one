@@ -509,7 +509,6 @@ async function startScan() {
       scanRunning.value = true
       progressVisible.value = true
       connectSse()
-      startPolling()
     }
   } catch (e) {
     MessagePlugin.error(e.message || '启动失败')
@@ -544,6 +543,11 @@ async function forceClear() {
       await apiIpScanForceClear()
       scanRunning.value = false
       progressVisible.value = false
+      stopPolling()
+      if (sseSource) {
+        sseSource.close()
+        sseSource = null
+      }
       MessagePlugin.success('状态已清除')
     } catch (e) {
       MessagePlugin.error(e.message || '清除失败')
@@ -557,9 +561,11 @@ async function forceClear() {
 function connectSse() {
   if (sseSource) {
     sseSource.close()
+    sseSource = null
   }
   
-  sseSource = connectIpScanSse({
+  try {
+    sseSource = connectIpScanSse({
     log: (event) => {
       try {
         const data = JSON.parse(event.data)
@@ -585,9 +591,19 @@ function connectSse() {
       }
     },
     onerror: () => {
+      if (sseSource) {
+        sseSource.close()
+        sseSource = null
+      }
+      if (scanRunning.value || progressVisible.value) {
+        startPolling()
+      }
       console.error('SSE连接错误')
     }
-  })
+    })
+  } catch (_) {
+    startPolling()
+  }
 }
 
 // 轮询状态
@@ -687,7 +703,6 @@ async function loadLatest() {
         scanRunning.value = true
         progressVisible.value = true
         connectSse()
-        startPolling()
       }
       await loadResults()
     }

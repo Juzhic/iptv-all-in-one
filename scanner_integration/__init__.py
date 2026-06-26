@@ -48,6 +48,7 @@ def _scan_log(msg):
         _broadcast_sse('log', {'seq': _scan_log_seq, 'time': time_str, 'msg': msg})
     except Exception:
         pass
+    _broadcast_scan_status(throttle_seconds=1.0)
 
 
 _init_log_seq()
@@ -93,6 +94,24 @@ def _broadcast_sse(event_type, data):
                 dead.append(q)
         for q in dead:
             _sse_subscribers.remove(q)
+
+
+_last_scan_status_broadcast = 0.0
+
+
+def _broadcast_scan_status(throttle_seconds=0.0):
+    global _last_scan_status_broadcast
+    try:
+        if throttle_seconds:
+            now = time.monotonic()
+            if now - _last_scan_status_broadcast < throttle_seconds:
+                return
+            _last_scan_status_broadcast = now
+        else:
+            _last_scan_status_broadcast = time.monotonic()
+        _broadcast_sse('status', get_scan_status())
+    except Exception:
+        pass
 
 
 # ==================== 检测日志 SSE ====================
@@ -330,7 +349,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     from .network import get_session
     import database as _db
 
-    cfg = config_bridge.get_scan_config()
+    cfg = dict(config_bridge.get_scan_config())
     now = _local_now()
     scan_id = f"scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     started_at = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -343,7 +362,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     except Exception:
         pass
 
-    # 覆盖配置（仅在内存中修改，不回写数据库，避免覆盖用户 API Key）
+    # 覆盖配置仅用于本次扫描，不回写数据库，也不污染配置缓存。
     if platforms_override is not None:
         cfg['enabled_platforms'] = platforms_override
     if provinces_override is not None:
@@ -361,33 +380,53 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         total=0, processed=0, percent=0, message='正在采集频道...'
     )
     _broadcast_sse('progress', {'phase': 'collecting', 'percent': 0, 'message': '正在采集频道...'})
+    _broadcast_scan_status()
 
     try:
         # 阶段1：采集
         _scan_log(f"[Scan:{scan_id}] 开始采集...")
-        raw, actual_platforms = await collect_all(log_fn=_scan_log)
+        raw, actual_platforms = await collect_all(
+            log_fn=_scan_log,
+            platforms_override=platforms_override,
+            provinces_override=provinces_override,
+        )
         # 用实际启用的平台覆盖 platforms_used
         if actual_platforms:
             _db.update_scan_run(scan_id, platforms_used=str(actual_platforms))
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '扫描已停止'})
             return scan_id
 
         if not raw:
-            _scan_log(f"[Scan:{scan_id}] 采集完成，未获取到任何频道。请检查 API Key 是否已配置。")
-            _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
-                                total_raw=0)
-            _db.update_scan_progress(running=False, phase='idle', message='采集完成，未获取到频道。',
-                                     percent=100)
-            scan_state.initialized = True
-            return scan_id
+            _scan_log(f"[Scan:{scan_id}] API 采集未获取到频道，继续尝试质量热点和补充来源...")
 
         # 去重
         uniq = _deduplicate_and_normalize(raw)
 
         _scan_log(f"[Scan:{scan_id}] 采集到 {len(raw)} 条，去重后 {len(uniq)} 条。")
         _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
+
+        # ISP Intelligence：分析历史数据中的热点段并主动扫描
+        if cfg.get('quality_hotspot_enabled', True):
+            try:
+                from .isp_intelligence import scan_quality_hotspots
+                _scan_log(f"[Scan:{scan_id}] 质量热点：正在根据历史高质量源补充扫描...")
+                async with get_session(limit=30, force_close=True) as quality_session:
+                    quality_channels = await scan_quality_hotspots(quality_session)
+                if quality_channels:
+                    _scan_log(f"[Scan:{scan_id}] 质量热点：发现 {len(quality_channels)} 个频道，正在合并...")
+                    raw.extend(quality_channels)
+                    uniq = _deduplicate_and_normalize(raw)
+                    _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
+                    _scan_log(f"[Scan:{scan_id}] 质量热点合并完成，去重后 {len(uniq)} 条。")
+                else:
+                    _scan_log(f"[Scan:{scan_id}] 质量热点：未发现新频道")
+            except Exception as e:
+                _scan_log(f"[Scan:{scan_id}] 质量热点异常: {e}")
+                logger.warning(f"[Scan:{scan_id}] 质量热点异常: {e}")
 
         # ISP Intelligence：分析历史数据中的热点段并主动扫描
         if cfg.get('isp_intelligence_enabled'):
@@ -427,8 +466,24 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 _scan_log(f"[Scan:{scan_id}] 社区源扫描异常: {e}")
                 logger.warning(f"[Scan:{scan_id}] 社区源扫描异常: {e}")
 
+        if not uniq:
+            _scan_log(f"[Scan:{scan_id}] 采集完成，未获取到任何频道。请检查 API Key、历史高质量源或社区源配置。")
+            _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
+                                total_raw=0)
+            _db.update_scan_progress(running=False, phase='idle', message='采集完成，未获取到频道。',
+                                     percent=100)
+            scan_state.initialized = True
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'total': 0, 'message': '采集完成，未获取到频道。'})
+            return scan_id
+
         _db.update_scan_progress(phase='fast_filter', total=len(uniq),
                                  message=f'快速过滤 {len(uniq)} 个频道...')
+        _broadcast_sse('progress', {
+            'phase': 'fast_filter',
+            'total': len(uniq),
+            'message': f'快速过滤 {len(uniq)} 个频道...'
+        })
 
         # 阶段2：快速过滤
         _scan_log(f"[Scan:{scan_id}] 开始快速过滤 {len(uniq)} 个频道...")
@@ -436,6 +491,8 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '扫描已停止'})
             return scan_id
 
         # 补充分类
@@ -459,6 +516,13 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         # 阶段3：后台深度检测
         _db.update_scan_progress(phase='deep_check', total=len(quick), processed=0,
                                  percent=0, message=f'深度检测 {len(quick)} 个频道...')
+        _broadcast_sse('progress', {
+            'phase': 'deep_check',
+            'total': len(quick),
+            'processed': 0,
+            'percent': 0,
+            'message': f'深度检测 {len(quick)} 个频道...'
+        })
 
         _scan_log(f"[Scan:{scan_id}] 启动后台深度检测...")
         await background_deep_update(quick, log_fn=_scan_log)
@@ -489,6 +553,8 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         _db.update_scan_progress(running=False, phase='idle', percent=100,
                                  message=f'扫描完成，{len(quick)} 个频道。')
         _scan_log(f"[Scan:{scan_id}] 扫描完成，耗时 {duration:.1f}s，共 {len(quick)} 个频道。")
+        _broadcast_scan_status()
+        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'扫描完成，{len(quick)} 个频道。'})
 
         # 合并到持久化结果集
         try:
@@ -506,6 +572,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         except Exception:
             pass
         _db.update_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
+        _broadcast_scan_status()
         _broadcast_sse('scan_complete', {'ok': False, 'error': str(e)})
 
     # 刷新日志缓冲区
@@ -525,7 +592,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
     from .network import get_session
     import database as _db
 
-    cfg = config_bridge.get_scan_config()
+    cfg = dict(config_bridge.get_scan_config())
     now = _local_now()
     scan_id = f"scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     started_at = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -552,6 +619,8 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         running=True, started_at=started_at, phase='health_check',
         total=0, processed=0, percent=0, message='正在检查现有频道...'
     )
+    _broadcast_sse('progress', {'phase': 'health_check', 'percent': 0, 'message': '正在检查现有频道...'})
+    _broadcast_scan_status()
 
     try:
         # 阶段1：健康检查现有持久化频道
@@ -568,19 +637,22 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
 
         # 阶段2：采集新源
         _scan_log(f"[Incremental:{scan_id}] 开始采集新源...")
-        raw, actual_platforms = await collect_all(log_fn=_scan_log)
+        raw, actual_platforms = await collect_all(
+            log_fn=_scan_log,
+            platforms_override=platforms_override,
+            provinces_override=provinces_override,
+        )
         if actual_platforms:
             _db.update_scan_run(scan_id, platforms_used=str(actual_platforms))
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量扫描已停止'})
             return scan_id
 
         if not raw:
-            _scan_log(f"[Incremental:{scan_id}] 采集完成，未发现新频道。")
-            _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(), total_raw=0)
-            _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
-            return scan_id
+            _scan_log(f"[Incremental:{scan_id}] API 采集未发现频道，继续尝试质量热点补源...")
 
         uniq = _deduplicate_and_normalize(raw)
 
@@ -589,20 +661,50 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         _scan_log(f"[Incremental:{scan_id}] 采集到 {len(raw)} 条，去重后 {len(uniq)} 条，新频道 {len(new_channels)} 条。")
         _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
 
+        if cfg.get('quality_hotspot_enabled', True):
+            try:
+                from .isp_intelligence import scan_quality_hotspots
+                _scan_log(f"[Incremental:{scan_id}] 质量热点：正在补充扫描历史高质量网段...")
+                async with get_session(limit=30, force_close=True) as quality_session:
+                    quality_channels = await scan_quality_hotspots(quality_session)
+                if quality_channels:
+                    raw.extend(quality_channels)
+                    uniq = _deduplicate_and_normalize(raw)
+                    new_channels = [ch for ch in uniq if ch['url'] not in existing_urls]
+                    _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
+                    _scan_log(
+                        f"[Incremental:{scan_id}] 质量热点合并完成，"
+                        f"去重后 {len(uniq)} 条，新频道 {len(new_channels)} 条。"
+                    )
+                else:
+                    _scan_log(f"[Incremental:{scan_id}] 质量热点：未发现新频道")
+            except Exception as e:
+                _scan_log(f"[Incremental:{scan_id}] 质量热点异常: {e}")
+                logger.warning(f"[Incremental:{scan_id}] 质量热点异常: {e}")
+
         if not new_channels:
             _scan_log(f"[Incremental:{scan_id}] 无新频道，跳过过滤。")
             _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str())
             _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'total': 0, 'message': '增量扫描完成，无新频道。'})
             return scan_id
 
         # 阶段3：仅对新频道做快速过滤
         _db.update_scan_progress(phase='fast_filter', total=len(new_channels),
                                  message=f'快速过滤 {len(new_channels)} 个新频道...')
+        _broadcast_sse('progress', {
+            'phase': 'fast_filter',
+            'total': len(new_channels),
+            'message': f'快速过滤 {len(new_channels)} 个新频道...'
+        })
         _scan_log(f"[Incremental:{scan_id}] 快速过滤 {len(new_channels)} 个新频道...")
         quick = await fast_filter(new_channels, log_fn=_scan_log)
         if scan_state.stop_requested:
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
+            _broadcast_scan_status()
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量扫描已停止'})
             return scan_id
 
         for ch in quick:
@@ -618,6 +720,13 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         if quick:
             _db.update_scan_progress(phase='deep_check', total=len(quick), processed=0,
                                      percent=0, message=f'深度检测 {len(quick)} 个新频道...')
+            _broadcast_sse('progress', {
+                'phase': 'deep_check',
+                'total': len(quick),
+                'processed': 0,
+                'percent': 0,
+                'message': f'深度检测 {len(quick)} 个新频道...'
+            })
             _scan_log(f"[Incremental:{scan_id}] 深度检测 {len(quick)} 个新频道...")
             await background_deep_update(quick, log_fn=_scan_log)
 
@@ -637,6 +746,8 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         _db.update_scan_progress(running=False, phase='idle', percent=100,
                                  message=f'增量扫描完成，新频道 {len(quick)} 个。')
         _scan_log(f"[Incremental:{scan_id}] 增量扫描完成，耗时 {duration:.1f}s，新频道 {len(quick)} 个。")
+        _broadcast_scan_status()
+        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'增量扫描完成，新频道 {len(quick)} 个。'})
 
         # 合并到持久化结果集
         try:
@@ -656,6 +767,8 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         except Exception:
             pass
         _db.update_scan_progress(running=False, phase='idle', message=f'增量扫描失败: {e}')
+        _broadcast_scan_status()
+        _broadcast_sse('scan_complete', {'ok': False, 'error': str(e)})
 
     try:
         _db.flush_log_buffer()
@@ -1171,13 +1284,33 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_conc
         
         # 重置停止标志
         scanner.clear_stop()
+
+        def _emit_ip_scan_progress(progress):
+            total_count = int(progress.get('total') or 0)
+            processed_count = int(progress.get('processed') or 0)
+            alive_count = int(progress.get('alive') or 0)
+            channel_count = int(progress.get('channels') or 0)
+            percent = max(0, min(100, float(progress.get('percent') or 0)))
+            _db.update_ip_scan_progress(
+                total=total_count,
+                processed=processed_count,
+                alive=alive_count,
+                channels=channel_count,
+                percent=percent,
+                message=f'{processed_count}/{total_count} alive {alive_count}, channels {channel_count}',
+            )
+            _broadcast_ip_scan_sse('status', get_ip_scan_status())
         
         # 执行扫描
-        results = await scanner.scan_targets(
-            targets_text=targets,
-            scan_types=scan_types,
-            ports=ports,
-            log_fn=_ip_scan_log
+        results = await asyncio.wait_for(
+            scanner.scan_targets(
+                targets_text=targets,
+                scan_types=scan_types,
+                ports=ports,
+                log_fn=_ip_scan_log,
+                progress_fn=_emit_ip_scan_progress
+            ),
+            timeout=timeout,
         )
         
         # 检查停止标志（同时检查全局和scanner实例）

@@ -69,7 +69,7 @@
             />
           </t-tab-panel>
           <t-tab-panel value="history" label="历史明细" :destroy-on-hide="false">
-            <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" :initial-runs="runs" @update-overview="refreshOverview" />
+            <HistoryTab v-if="visitedTabs.has('history')" ref="historyRef" @update-overview="refreshOverview" />
           </t-tab-panel>
           <t-tab-panel value="testing" label="系统测试" :destroy-on-hide="false">
             <TestingTab v-if="visitedTabs.has('testing')" @test-finished="onTestFinished" />

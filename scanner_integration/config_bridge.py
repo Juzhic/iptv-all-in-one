@@ -21,11 +21,64 @@ AUTO_REFILL_QUAKE_SIZE = 10
 STABILITY_THRESHOLD_NATIONAL = 60
 STABILITY_THRESHOLD_LOCAL = 30
 MIN_BANDWIDTH = 20
-_IPTV_SEARCH_QUERY = 'body="/iptv/live/zh_cn.js" || body="1000.json?key=txiptv" || body="ZHGXTV" || body="jsmpeg-streamer" || title:"IPTV互动电视系统" || body="/iptv/live/" || title:"IPTV管理系统" || title:"酒店IPTV" || body="getChannelList" || body="EasyLive" || body="Hybroad" || body="udpxy" || body="tvheadend" || body="Xtream" && body="IPTV"'
+
+_IPTV_SEARCH_TERMS = [
+    ('body', '/iptv/live/zh_cn.js'),
+    ('body', '/iptv/live/1000.json?key=txiptv'),
+    ('body', '/iptv/live/1000.json'),
+    ('body', '/ZHGXTV/Public/json/live_interface.txt'),
+    ('body', '/streamer/list'),
+    ('body', '/api/channels'),
+    ('body', '/channels'),
+    ('body', '/channel_list.json'),
+    ('body', '/api/live/channels'),
+    ('body', '/live/channels.json'),
+    ('body', '/playlist?profile=pass'),
+    ('body', '/getChannelList'),
+    ('body', 'getChannelList'),
+    ('body', 'ZHGXTV'),
+    ('body', 'jsmpeg-streamer'),
+    ('title', 'IPTV互动电视系统'),
+    ('title', 'IPTV管理系统'),
+    ('title', '酒店IPTV'),
+    ('body', '/iptv/live/'),
+    ('body', 'EasyLive'),
+    ('body', 'Hybroad'),
+    ('body', 'udpxy'),
+    ('body', '/udpxy/chanlist'),
+    ('body', '/udp/chanlist'),
+    ('body', '/rtp/chanlist'),
+    ('body', 'tvheadend'),
+    ('title', 'Tvheadend'),
+    ('body', '/migu/playlist.m3u8'),
+    ('body', '/icntv/playlist.m3u8'),
+    ('and_body', ('Xtream', 'IPTV')),
+]
+
+
+def _format_search_term(term, body_field='body', title_field='title', title_operator=':'):
+    kind, value = term
+    if kind == 'body':
+        return f'{body_field}="{value}"'
+    if kind == 'title':
+        return f'{title_field}{title_operator}"{value}"'
+    if kind == 'and_body':
+        return '(' + ' && '.join(f'{body_field}="{item}"' for item in value) + ')'
+    raise ValueError(f'Unknown search term kind: {kind}')
+
+
+def _join_search_terms(body_field='body', title_field='title', title_operator=':'):
+    return ' || '.join(
+        _format_search_term(term, body_field=body_field, title_field=title_field, title_operator=title_operator)
+        for term in _IPTV_SEARCH_TERMS
+    )
+
+
+_IPTV_SEARCH_QUERY = _join_search_terms()
 QUAKE_QUERY = _IPTV_SEARCH_QUERY
-HUNTER_QUERY = _IPTV_SEARCH_QUERY.replace('body=', 'web.body=').replace('title:', 'web.title:')
+HUNTER_QUERY = _join_search_terms(body_field='web.body', title_field='web.title')
 DAYDAYMAP_QUERY = _IPTV_SEARCH_QUERY
-FOFA_QUERY = 'body="/iptv/live/zh_cn.js" || body="1000.json?key=txiptv" || body="ZHGXTV" || body="jsmpeg-streamer" || title="IPTV互动电视系统" || body="/iptv/live/" || title="IPTV管理系统" || title="酒店IPTV" || body="getChannelList" || body="EasyLive" || body="Hybroad" || body="udpxy" || body="tvheadend" || (body="Xtream" && body="IPTV")'
+FOFA_QUERY = _join_search_terms(title_operator='=')
 MIN_WIDTH, MIN_HEIGHT = 1280, 720
 MAX_DELAY_MS = 2000
 
@@ -65,6 +118,12 @@ DEFAULT_SCAN_CONFIG = {
     "stable_channel_multiplier": 3,
     "resurrection_enabled": True,
     "resurrection_interval_hours": 24,
+    "quality_discovery_enabled": True,
+    "quality_query_profile_size": 240,
+    "quality_hotspot_enabled": True,
+    "quality_hotspot_scan_limit": 120,
+    "quality_hotspot_min_score": 8,
+    "quality_source_min_stability": 45,
     "isp_intelligence_enabled": False,
     "hot_segment_min_channels": 3,
     "hot_segment_scan_limit": 200,
@@ -155,6 +214,10 @@ def _normalize_scan_config(raw_cfg):
         'hunter_size': (1, 10000),
         'daydaymap_size': (1, 10000),
         'fofa_size': (1, 10000),
+        'quality_query_profile_size': (10, 2000),
+        'quality_hotspot_scan_limit': (1, 5000),
+        'quality_hotspot_min_score': (1, 1000),
+        'quality_source_min_stability': (0, 100),
         'hot_segment_min_channels': (1, 1000),
         'hot_segment_scan_limit': (1, 5000),
     }

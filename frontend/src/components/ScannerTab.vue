@@ -63,9 +63,9 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
-import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger } from '../api.js'
+import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger, connectScanSse } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
 import LogPanel from './LogPanel.vue'
 
@@ -84,6 +84,7 @@ const scanSummary = ref(createEmptySummary())
 let lastLogSeq = 0
 let wasRunning = false
 let triggerPending = false
+let scanEventSource = null
 
 function createEmptySummary() {
   return {
@@ -145,6 +146,74 @@ function appendLogs(lines) {
   }
 }
 
+function applyProgressPatch(data = {}) {
+  scanRunning.value = true
+  progressVisible.value = true
+  triggerPending = false
+  wasRunning = true
+  currentPhase.value = data.phase || currentPhase.value
+  phaseText.value = buildPhaseText(currentPhase.value, data.message)
+
+  const backendPercent = Number(data.percent)
+  if (Number.isFinite(backendPercent)) {
+    progressPct.value = Math.max(0, Math.min(100, Math.round(backendPercent)))
+  }
+  if (data.message) {
+    progressLabel.value = data.message
+  }
+}
+
+function handleScanStreamError() {
+  disconnectScanStream()
+  if (scanRunning.value || wasRunning || triggerPending) {
+    startPoll()
+  }
+}
+
+function connectScanStream() {
+  disconnectScanStream()
+  try {
+    scanEventSource = connectScanSse({
+      status(event) {
+        try {
+          applyStatus(JSON.parse(event.data))
+        } catch (_) {}
+      },
+      progress(event) {
+        try {
+          applyProgressPatch(JSON.parse(event.data))
+        } catch (_) {}
+      },
+      log(event) {
+        try {
+          appendLogs([JSON.parse(event.data)])
+        } catch (_) {}
+      },
+      scan_complete(event) {
+        try {
+          const data = JSON.parse(event.data)
+          if (data?.ok === false) {
+            applyStatus({ running: false, phase: 'idle', message: data.error, error: data.error })
+          } else {
+            refreshStatus()
+          }
+        } catch (_) {}
+        disconnectScanStream()
+      },
+      onerror: handleScanStreamError,
+    })
+  } catch (_) {
+    startPoll()
+  }
+}
+
+function disconnectScanStream() {
+  if (scanEventSource) {
+    scanEventSource.close()
+    scanEventSource = null
+  }
+}
+
 function applyStatus(data = {}) {
   const running = Boolean(data.running)
   // 刚点“开始扫描”后，后端可能还没把 running 翻成 true。
@@ -178,12 +247,14 @@ function applyStatus(data = {}) {
   if (wasRunning) {
     wasRunning = false
     if (data.error) MessagePlugin.error(`扫描异常: ${data.error}`)
-    else MessagePlugin.success(currentPhase.value === 'health_check' ? '健康检查已完成' : '扫描已完成')
+    else MessagePlugin.success(data.message || (currentPhase.value === 'health_check' ? '健康检查已完成' : '扫描已完成'))
     stopPoll()
+    disconnectScanStream()
     return
   }
 
   stopPoll()
+  disconnectScanStream()
 }
 
 async function refreshStatus() {
@@ -278,7 +349,7 @@ async function triggerScan() {
       progressVisible.value = true
       phaseText.value = '扫描启动中...'
       progressLabel.value = '正在连接扫描任务...'
-      startPoll()
+      connectScanStream()
       setTimeout(() => { triggerPending = false }, 10000)
     } else {
       MessagePlugin.error(res.error || '启动失败')
@@ -359,8 +430,12 @@ onMounted(async () => {
   await refreshStatus()
   if (scanRunning.value) {
     progressVisible.value = true
-    startPoll()
+    connectScanStream()
   }
+})
+
+onBeforeUnmount(() => {
+  disconnectScanStream()
 })
 </script>
 

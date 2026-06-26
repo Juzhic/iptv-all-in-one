@@ -23,6 +23,7 @@ from database import (
 )
 from web.state import is_allowed_data_key
 from web.scheduler import _ensure_scheduler_started, _reload_scheduler_config
+from web.routes.params import bounded_int
 
 config_bp = Blueprint('config', __name__)
 
@@ -68,18 +69,46 @@ def api_save_config():
     float_keys = {'system_bandwidth_limit_MBps', 'system_memory_limit_percent',
                   'webhook_min_pass_rate', 'min_bandwidth_MBps',
                   'bandwidth_compensation_MBps', 'h265_bandwidth_ratio'}
+    int_ranges = {
+        'test_duration': (1, 3600),
+        'max_workers': (1, 100),
+        'max_ffmpeg_workers': (1, 64),
+        'max_urls_per_channel': (0, 1000),
+        'min_width': (0, 7680),
+        'min_height': (0, 4320),
+        'run_interval_minutes': (1, 10080),
+        'ffmpeg_timeout': (1, 3600),
+    }
+    float_ranges = {
+        'system_bandwidth_limit_MBps': (0, 100000),
+        'system_memory_limit_percent': (0, 100),
+        'webhook_min_pass_rate': (0, 100),
+        'min_bandwidth_MBps': (0, 100000),
+        'bandwidth_compensation_MBps': (0, 100000),
+        'h265_bandwidth_ratio': (0, 1),
+    }
     for key, value in data.items():
         if key in valid_keys:
             if key in int_keys:
                 try:
                     cfg[key] = int(value)
                 except (TypeError, ValueError):
-                    pass
+                    continue
+                if key in int_ranges:
+                    lo, hi = int_ranges[key]
+                    cfg[key] = bounded_int(cfg[key], DEFAULT_CONFIG.get(key, lo), lo, hi)
             elif key in float_keys:
                 try:
                     cfg[key] = float(value)
                 except (TypeError, ValueError):
-                    pass
+                    continue
+                if key in float_ranges:
+                    lo, hi = float_ranges[key]
+                    cfg[key] = max(lo, min(hi, cfg[key]))
+            elif key == 'run_mode':
+                if value not in ('once', 'times', 'interval'):
+                    continue
+                cfg[key] = value
             else:
                 cfg[key] = value
             updated_keys.append(key)

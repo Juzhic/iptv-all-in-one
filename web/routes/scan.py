@@ -8,8 +8,10 @@ from flask import Blueprint, request, jsonify, Response
 import database as db
 import web.state as _state
 from web.app import _finite_number_or_none
+from web.routes.params import int_arg
 
 logger = logging.getLogger(__name__)
+SUPPORTED_KEY_PLATFORMS = ('quake', 'hunter', 'daydaymap', 'fofa')
 
 
 def _validate_recheck_url(url):
@@ -166,9 +168,8 @@ def api_scan_results():
     if scanner is None:
         return jsonify({'ok': True, 'items': [], 'total': 0})
     scan_id = request.args.get('scan_id')
-    page = request.args.get('page', 1, type=int)
-    size = request.args.get('size', 50, type=int)
-    size = min(size, 200)
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 50, 1, 200)
     category = request.args.get('category')
     province = request.args.get('province')
     search = request.args.get('search')
@@ -194,7 +195,7 @@ def api_scan_history():
     scanner = _get_scanner()
     if scanner is None:
         return jsonify({'ok': True, 'items': [], 'total': 0})
-    limit = request.args.get('limit', 50, type=int)
+    limit = int_arg(request.args, 'limit', 50, 1, 200)
     items = scanner.get_scan_history(limit=limit)
     return jsonify({'ok': True, 'items': items, 'total': len(items)})
 
@@ -335,7 +336,7 @@ def api_scan_keys_add():
         key = data.get('key', '').strip()
         if not platform or not key:
             return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
-        if platform not in ('quake', 'hunter', 'daydaymap', 'fofa'):
+        if platform not in SUPPORTED_KEY_PLATFORMS:
             return jsonify({'ok': False, 'error': '不支持的平台'}), 400
 
         cfg = get_scan_config()
@@ -371,6 +372,8 @@ def api_scan_keys_delete():
         key = data.get('key', '').strip()
         if not platform or not key:
             return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
+        if platform not in SUPPORTED_KEY_PLATFORMS:
+            return jsonify({'ok': False, 'error': '不支持的平台'}), 400
 
         cfg = get_scan_config()
         keys_list = cfg.get(f'{platform}_api_keys', [])
@@ -408,6 +411,8 @@ def api_scan_keys_update():
         new_key = data.get('new_key', '').strip()
         if not platform or not old_key or not new_key:
             return jsonify({'ok': False, 'error': '参数不完整'}), 400
+        if platform not in SUPPORTED_KEY_PLATFORMS:
+            return jsonify({'ok': False, 'error': '不支持的平台'}), 400
         if old_key == new_key:
             return jsonify({'ok': True, 'message': 'Key 未变更'})
 
@@ -472,9 +477,8 @@ def api_persistent_details():
     source_ip = request.args.get('source_ip', '')
     if not source_ip:
         return jsonify({'ok': False, 'error': 'source_ip is required'}), 400
-    page = request.args.get('page', type=int)
-    size = request.args.get('size', 50, type=int)
-    size = min(size, 200)
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 50, 1, 200)
     return jsonify({'ok': True, 'data': scanner.get_persistent_details(source_ip, page=page, size=size)})
 
 
@@ -511,7 +515,7 @@ def api_persistent_delete(row_id):
 def api_detection_logs():
     """获取定期检测日志。"""
     from database import get_detection_logs
-    limit = request.args.get('limit', 200, type=int)
+    limit = int_arg(request.args, 'limit', 200, 1, 1000)
     return jsonify({'ok': True, 'data': get_detection_logs(limit=limit)})
 
 
@@ -520,7 +524,7 @@ def api_detection_runs():
     """获取检测轮次记录，支持 start/end 时间范围过滤。"""
     start = request.args.get('start')
     end = request.args.get('end')
-    limit = request.args.get('limit', 100, type=int)
+    limit = int_arg(request.args, 'limit', 100, 1, 500)
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
@@ -533,9 +537,8 @@ def api_detection_run_results(cycle_id):
     scanner, err, code = _ensure_scan_bridge()
     if err:
         return err, code
-    page = request.args.get('page', type=int)
-    size = request.args.get('size', 100, type=int)
-    size = min(size, 200)
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 100, 1, 200)
     return jsonify({'ok': True, 'data': scanner.get_detection_results(cycle_id, page=page, size=size)})
 
 
@@ -589,9 +592,12 @@ def api_persistent_priority():
 
     data = request.get_json(silent=True) or {}
     url = data.get('url')
-    priority = data.get('priority', 0)
     if not url:
         return jsonify({'ok': False, 'error': 'url is required'}), 400
+    try:
+        priority = int(data.get('priority', 0))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'priority must be 0, 1, or 2'}), 400
     if priority not in (0, 1, 2):
         return jsonify({'ok': False, 'error': 'priority must be 0, 1, or 2'}), 400
 

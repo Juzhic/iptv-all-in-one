@@ -25,6 +25,7 @@ from database import (
     get_config_data,
     compare_runs,
 )
+from web.routes.params import int_arg
 
 history_bp = Blueprint('history', __name__)
 
@@ -52,9 +53,8 @@ def api_get_run(run_id):
 @history_bp.route('/api/run/<run_id>/channels', methods=['GET'])
 def api_get_run_channels(run_id):
     """获取单轮测试按频道分组的详情，含数据来源平台。"""
-    page = request.args.get('page', type=int)
-    size = request.args.get('size', 20, type=int)
-    size = min(size, 200)
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 20, 1, 200)
     summary = get_channel_summary_with_source(run_id, page=page, size=size)
     return jsonify({'ok': True, 'data': summary})
 
@@ -69,7 +69,7 @@ def api_delete_run(run_id):
 @history_bp.route('/api/run/<run_id>/logs', methods=['GET'])
 def api_get_run_logs(run_id):
     """获取指定轮次的运行日志。"""
-    limit = request.args.get('limit', 0, type=int)
+    limit = int_arg(request.args, 'limit', 0, 0, 5000)
     payload = get_run_logs(run_id, limit=limit if limit and limit > 0 else None)
     return jsonify({'ok': True, 'data': payload})
 
@@ -184,8 +184,7 @@ def api_get_sources():
 def api_channel_trend(name):
     """Get quality trend for a specific channel across runs."""
     from database import _get_conn
-    limit = request.args.get('limit', 20, type=int)
-    limit = min(100, max(5, limit))
+    limit = int_arg(request.args, 'limit', 20, 5, 100)
 
     conn = _get_conn()
     rows = conn.execute("""

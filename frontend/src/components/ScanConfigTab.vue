@@ -219,11 +219,67 @@
         <section class="config-panel">
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">ISP 智能分析</div>
-            <h3>ISP Intelligence</h3>
-            <p>基于运营商数据智能识别热门段，提升扫描效率和精准度。</p>
+            <h3>质量优先发现</h3>
+            <p>优先使用高价值查询和历史高质量网段，把扫描预算更多花在稳定源附近。</p>
           </div>
 
           <div class="config-field-list">
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>质量优先查询</label>
+                <span>额外执行直播接口、频道 API、M3U、组播代理、Tvheadend 等高价值画像查询。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.quality_discovery_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.quality_discovery_enabled ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.quality_discovery_enabled ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>画像查询预算</label>
+                <span>质量画像每个平台的总搜索目标量，会按已选省份和画像拆分。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_query_profile_size" :min="10" :max="2000" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
+                <label>质量热点补源</label>
+                <span>围绕历史高稳定、低延迟、高带宽源所在网段继续探测。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.quality_hotspot_enabled" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.quality_hotspot_enabled ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.quality_hotspot_enabled ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>热点探测预算</label>
+                <span>每轮质量热点最多探测的 IP:端口候选数量。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_hotspot_scan_limit" :min="1" :max="5000" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>最低稳定性</label>
+                <span>低于该稳定性的数据不参与质量热点学习。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_source_min_stability" :min="0" :max="100" :step="5" class="field-control" />
+            </div>
+
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>ISP Intelligence</label>
@@ -414,6 +470,12 @@ const scanCfg = reactive({
   update_days: [0, 1, 2, 3, 4, 5, 6],
   daily_full_update: true,
   ddgs_enabled: false,
+  quality_discovery_enabled: true,
+  quality_query_profile_size: 240,
+  quality_hotspot_enabled: true,
+  quality_hotspot_scan_limit: 120,
+  quality_hotspot_min_score: 8,
+  quality_source_min_stability: 45,
   isp_intelligence_enabled: false,
   hot_segment_min_channels: 5,
   hot_segment_scan_limit: 50,
@@ -615,6 +677,12 @@ async function loadConfig() {
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
     scanCfg.ddgs_enabled = !!cfg.ddgs_enabled
+    scanCfg.quality_discovery_enabled = cfg.quality_discovery_enabled !== false
+    scanCfg.quality_query_profile_size = typeof cfg.quality_query_profile_size === 'number' ? cfg.quality_query_profile_size : 240
+    scanCfg.quality_hotspot_enabled = cfg.quality_hotspot_enabled !== false
+    scanCfg.quality_hotspot_scan_limit = typeof cfg.quality_hotspot_scan_limit === 'number' ? cfg.quality_hotspot_scan_limit : 120
+    scanCfg.quality_hotspot_min_score = typeof cfg.quality_hotspot_min_score === 'number' ? cfg.quality_hotspot_min_score : 8
+    scanCfg.quality_source_min_stability = typeof cfg.quality_source_min_stability === 'number' ? cfg.quality_source_min_stability : 45
     scanCfg.isp_intelligence_enabled = !!cfg.isp_intelligence_enabled
     scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 5
     scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 50
@@ -646,6 +714,15 @@ function validateScanConfig() {
   }
   if (scanCfg.fofa_size > 10000) {
     errors.push('Fofa 扫描数量不能超过 10000')
+  }
+  if (scanCfg.quality_query_profile_size < 10 || scanCfg.quality_query_profile_size > 2000) {
+    errors.push('画像查询预算需要在 10 到 2000 之间')
+  }
+  if (scanCfg.quality_hotspot_scan_limit < 1 || scanCfg.quality_hotspot_scan_limit > 5000) {
+    errors.push('质量热点探测预算需要在 1 到 5000 之间')
+  }
+  if (scanCfg.quality_source_min_stability < 0 || scanCfg.quality_source_min_stability > 100) {
+    errors.push('最低稳定性需要在 0 到 100 之间')
   }
   const timeParts = (scanCfg.update_time || '').split(':')
   const hour = Number.parseInt(timeParts[0], 10)
