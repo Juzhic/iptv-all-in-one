@@ -28,11 +28,18 @@ class IPScanner:
     
     def __init__(self, config=None):
         self.config = config or {}
-        self.workers = self.config.get('workers', 16)
-        self.rate_limit = self.config.get('rate_limit', 5000)
-        self.http_concurrent = self.config.get('http_concurrent', 50)
-        self.timeout = self.config.get('timeout', 3600)
+        self.workers = self._config_int('workers', 16, 1, 100)
+        self.rate_limit = self._config_int('rate_limit', 5000, 100, 50000)
+        self.http_concurrent = self._config_int('http_concurrent', 50, 1, 500)
+        self.timeout = self._config_int('timeout', 3600, 60, 86400)
         self._stop_requested = False
+
+    def _config_int(self, key, default, min_value, max_value):
+        try:
+            value = int(self.config.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(min_value, min(max_value, value))
         
     def request_stop(self):
         """请求停止扫描"""
@@ -43,7 +50,7 @@ class IPScanner:
         """清除停止标志"""
         self._stop_requested = False
         
-    async def scan_targets(self, targets_text, scan_types, ports, log_fn=None):
+    async def scan_targets(self, targets_text, scan_types, ports, log_fn=None, progress_fn=None):
         """主扫描入口
         
         Args:
@@ -73,7 +80,7 @@ class IPScanner:
             log_fn(f"[IP扫描] 端口展开后 {len(expanded)} 个目标")
         
         # 3. 并发扫描
-        results = await self._concurrent_scan(expanded, scan_types, log_fn)
+        results = await self._concurrent_scan(expanded, scan_types, log_fn, progress_fn)
         
         # 4. 汇总结果
         alive_count = sum(1 for r in results if r['alive'])
@@ -176,7 +183,7 @@ class IPScanner:
         
         return expanded
     
-    async def _concurrent_scan(self, targets, scan_types, log_fn):
+    async def _concurrent_scan(self, targets, scan_types, log_fn, progress_fn=None):
         """并发扫描"""
         results = []
         sem = asyncio.Semaphore(self.http_concurrent)
@@ -184,8 +191,8 @@ class IPScanner:
         alive_count = 0
         total = len(targets)
         
-        # 批次大小
-        batch_size = 50
+        # Batch size controls how many scan tasks are submitted at once.
+        batch_size = self.workers
         
         timeout = aiohttp.ClientTimeout(total=10, connect=3)
         connector = aiohttp.TCPConnector(limit=self.http_concurrent, limit_per_host=2)
@@ -215,6 +222,16 @@ class IPScanner:
                         processed += 1
                         if result['alive']:
                             alive_count += 1
+
+                if progress_fn:
+                    channel_count = sum(r.get('channel_count', 0) for r in results)
+                    progress_fn({
+                        'total': total,
+                        'processed': processed,
+                        'alive': alive_count,
+                        'channels': channel_count,
+                        'percent': (processed / total * 100) if total else 0,
+                    })
                 
                 # 进度日志
                 if log_fn and (i + batch_size) % 200 == 0:

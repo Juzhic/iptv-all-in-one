@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time as _time
 from collections import deque
@@ -849,6 +850,8 @@ def init_db():
 
     for sql in statements:
         try:
+            if _execute_create_index_compat(conn, sql):
+                continue
             conn.execute(sql)
         except Exception as e:
             # 忽略已存在的索引等错误
@@ -894,6 +897,34 @@ def _table_exists(conn, table_name):
         (table_name,)
     ).fetchone()
     return row is not None
+
+
+_CREATE_INDEX_IF_NOT_EXISTS_RE = re.compile(
+    r'^CREATE\s+(UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+`?([A-Za-z0-9_]+)`?\s+'
+    r'ON\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)\s*$',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _execute_create_index_compat(conn, sql):
+    """Execute CREATE INDEX IF NOT EXISTS in a MySQL-compatible way."""
+    match = _CREATE_INDEX_IF_NOT_EXISTS_RE.match(sql.strip())
+    if not match:
+        return False
+
+    unique, index_name, table_name, columns_sql = match.groups()
+    exists = conn.execute(
+        """SELECT 1 FROM information_schema.statistics
+           WHERE table_schema = DATABASE() AND table_name = %s AND index_name = %s
+           LIMIT 1""",
+        (table_name, index_name)
+    ).fetchone()
+    if exists:
+        return True
+
+    index_kind = 'UNIQUE ' if unique else ''
+    conn.execute(f"CREATE {index_kind}INDEX `{index_name}` ON `{table_name}` ({columns_sql})")
+    return True
 
 
 def _ensure_run_results_columns(conn):

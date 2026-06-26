@@ -308,6 +308,16 @@ export function connectDetectionSse(handlers = {}) {
   return es
 }
 
+export function connectScanSse(handlers = {}) {
+  const es = new EventSource('/api/scan/stream')
+  if (handlers.status) es.addEventListener('status', handlers.status)
+  if (handlers.progress) es.addEventListener('progress', handlers.progress)
+  if (handlers.log) es.addEventListener('log', handlers.log)
+  if (handlers.scan_complete) es.addEventListener('scan_complete', handlers.scan_complete)
+  if (handlers.onerror) es.onerror = handlers.onerror
+  return es
+}
+
 // ─── IP扫描 ───
 export function apiIpScanTrigger(data) {
   return postJSON('/api/ip-scan/trigger', data)

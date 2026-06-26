@@ -11,6 +11,19 @@ from .logger_bridge import logger
 from engine.utils import safe_number as _safe_number
 
 
+def _credit_rank(value):
+    if value is None:
+        return float('inf')
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float('inf')
+
+
+def _credit_is_usable(value):
+    return _credit_rank(value) > 0
+
+
 def _first_number(data, names):
     if not isinstance(data, dict):
         return None
@@ -54,10 +67,10 @@ class KeyManager:
             return ''
         credits = self._credits.get(platform, {})
         # 按 credit 降序排列，选第一个 > 0 的
-        sorted_keys = sorted(keys, key=lambda k: credits.get(k, 0), reverse=True)
+        sorted_keys = sorted(keys, key=lambda k: _credit_rank(credits.get(k)), reverse=True)
         best = sorted_keys[0] if sorted_keys else ''
-        best_credit = credits.get(best, 0)
-        if best_credit <= 0:
+        best_credit = credits.get(best)
+        if not _credit_is_usable(best_credit):
             # 所有 key 都 depleted，返回第一个让用户看到错误
             logger.warning(f"[KeyMgr] {platform} 所有 key 积分耗尽，使用第一个 key")
             return keys[0]
@@ -73,7 +86,7 @@ class KeyManager:
             self._credits[platform] = {}
         self._credits[platform][key] = 0
         remaining = sum(1 for k in self._keys.get(platform, [])
-                        if self._credits.get(platform, {}).get(k, 0) > 0)
+                        if _credit_is_usable(self._credits.get(platform, {}).get(k)))
         logger.warning(f"[KeyMgr] {platform} key ...{key[-4:]} 已耗尽，"
                        f"剩余可用: {remaining}")
 
@@ -323,7 +336,10 @@ async def check_all_quake_credits():
         info = await check_quake_credit(key)
         credit = _safe_number(info.get('month_remaining')) if info.get('ok') else 0
         role_limit = _safe_number(info.get('role_limit'))
-        km.update_credit('quake', key, credit if credit is not None else 0)
+        if info.get('ok') and credit is not None:
+            km.update_credit('quake', key, credit)
+        else:
+            credit = None
         results.append({
             'key_suffix': f"...{key[-6:]}",
             'credit': credit,

@@ -280,7 +280,6 @@ async function copyText(text) {
   MessagePlugin.success('已复制')
 }
 
-const props = defineProps({ initialRuns: Array })
 const emit = defineEmits(['update-overview'])
 
 const historyRuns = ref([])
@@ -293,6 +292,7 @@ const detailSearch = reactive({})
 const detailFilter = reactive({})
 const detailPage = reactive({})
 const DETAIL_PAGE_SIZE = 20
+let querySeq = 0
 
 // 日志弹窗
 const logVisible = ref(false)
@@ -343,12 +343,23 @@ const urlColumns = [
 ]
 
 async function queryHistory() {
+  const seq = ++querySeq
   loading.value = true
+  historyRuns.value = []
+  expandedKeys.value = []
+  selectedRowKeys.value = []
+  Object.keys(channelCache).forEach(key => delete channelCache[key])
   try {
-    historyRuns.value = await apiGetRuns(startDate.value, endDate.value)
-    emit('update-overview', historyRuns.value)
-  } catch (e) { MessagePlugin.error('查询失败: ' + e.message) }
-  finally { loading.value = false }
+    const data = await apiGetRuns(startDate.value, endDate.value)
+    if (seq !== querySeq) return
+    const runs = Array.isArray(data) ? data : []
+    historyRuns.value = runs
+    emit('update-overview', runs)
+  } catch (e) {
+    if (seq === querySeq) MessagePlugin.error('查询失败: ' + e.message)
+  } finally {
+    if (seq === querySeq) loading.value = false
+  }
 }
 
 function reset3Days() {

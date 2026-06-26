@@ -39,21 +39,25 @@ def _get_version():
 @health_bp.route('/api/health', methods=['GET'])
 def health_check():
     """增强的健康检查端点"""
+    detailed = os.environ.get('IPTV_HEALTH_DETAILED') == '1'
     result = {
         'status': 'ok',
-        'version': _get_version(),
-        'uptime': _get_uptime(),
         'checks': {},
-        'system': {}
     }
+    if detailed:
+        result.update({
+            'version': _get_version(),
+            'uptime': _get_uptime(),
+            'system': {},
+        })
 
     # 数据库检查
     try:
         conn = _get_conn()
         conn.execute('SELECT 1')
         result['checks']['database'] = 'ok'
-    except Exception as e:
-        result['checks']['database'] = f'error: {e}'
+    except Exception:
+        result['checks']['database'] = 'error'
         result['status'] = 'degraded'
 
     # FFmpeg 检查
@@ -66,59 +70,60 @@ def health_check():
     except Exception:
         result['checks']['ffmpeg'] = 'error'
 
-    # 磁盘空间检查
-    try:
-        import psutil
-        disk = psutil.disk_usage('.')
-        result['system']['disk_percent'] = disk.percent
-        result['system']['disk_free_gb'] = round(disk.free / (1024**3), 2)
-        if disk.percent > 90:
-            result['checks']['disk'] = 'warning'
-            result['status'] = 'degraded'
-        else:
-            result['checks']['disk'] = 'ok'
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    if detailed:
+        # 磁盘空间检查
+        try:
+            import psutil
+            disk = psutil.disk_usage('.')
+            result['system']['disk_percent'] = disk.percent
+            result['system']['disk_free_gb'] = round(disk.free / (1024**3), 2)
+            if disk.percent > 90:
+                result['checks']['disk'] = 'warning'
+                result['status'] = 'degraded'
+            else:
+                result['checks']['disk'] = 'ok'
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
-    # 内存检查
-    try:
-        import psutil
-        mem = psutil.virtual_memory()
-        result['system']['memory_percent'] = mem.percent
-        result['system']['memory_available_gb'] = round(mem.available / (1024**3), 2)
-    except ImportError:
-        pass
-    except Exception:
-        pass
+        # 内存检查
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            result['system']['memory_percent'] = mem.percent
+            result['system']['memory_available_gb'] = round(mem.available / (1024**3), 2)
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
-    # 最近测试结果
-    try:
-        latest = get_latest_run()
-        if latest:
-            result['last_test'] = {
-                'time': latest.get('finished_at'),
-                'pass_rate': latest.get('pass_rate'),
-                'total_passed': latest.get('total_passed'),
-                'total_tested': latest.get('total_tested'),
-            }
-    except Exception:
-        pass
+        # 最近测试结果
+        try:
+            latest = get_latest_run()
+            if latest:
+                result['last_test'] = {
+                    'time': latest.get('finished_at'),
+                    'pass_rate': latest.get('pass_rate'),
+                    'total_passed': latest.get('total_passed'),
+                    'total_tested': latest.get('total_tested'),
+                }
+        except Exception:
+            pass
 
-    # 调度器状态
-    try:
-        sched = get_scheduler_state()
-        if sched:
-            result['scheduler'] = {
-                'running': bool(sched.get('running')),
-                'next_run': sched.get('next_run'),
-            }
-    except Exception:
-        pass
+        # 调度器状态
+        try:
+            sched = get_scheduler_state()
+            if sched:
+                result['scheduler'] = {
+                    'running': bool(sched.get('running')),
+                    'next_run': sched.get('next_run'),
+                }
+        except Exception:
+            pass
 
-    # 测试运行状态
-    result['test_running'] = bool(_state._test_running)
+        # 测试运行状态
+        result['test_running'] = bool(_state._test_running)
 
     # 扫描模块状态
     try:
