@@ -837,6 +837,7 @@ def get_scan_status():
         'total_deduped': latest_run.get('total_deduped', 0) or 0,
         'total_fast_pass': latest_run.get('total_fast_pass', 0) or 0,
         'total_deep_pass': latest_run.get('total_deep_pass', 0) or 0,
+        'error': latest_run.get('error', '') or '',
     }
 
     if progress.get('phase') == 'deep_check':

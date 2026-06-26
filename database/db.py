@@ -87,6 +87,34 @@ def timestamp_str(ts):
     return datetime.fromtimestamp(ts, LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _numeric_or_none(value):
+    """Normalize optional numeric DB fields for MySQL DOUBLE columns."""
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_zero(value):
+    if value in (None, ''):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _int_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # ─── 配置加载 ───
 
 _db_config = None
@@ -1932,9 +1960,9 @@ def insert_scan_results(scan_id, channels):
                     ch.get('platform', ''),
                     ch.get('resolution', ''),
                     ch.get('codec', ''),
-                    ch.get('delay'),
-                    ch.get('bandwidth'),
-                    ch.get('stability', 0),
+                    _numeric_or_none(ch.get('delay')),
+                    _numeric_or_none(ch.get('bandwidth')),
+                    _int_or_zero(ch.get('stability')),
                 )
                 for ch in channels
             ]
@@ -1948,13 +1976,15 @@ def update_scan_result_stability(scan_id, url, stability, delay=None,
     with _write_lock:
         conn = _get_conn()
         sets = ["stability = %s"]
-        vals = [stability]
-        if delay is not None:
+        vals = [_int_or_zero(stability)]
+        delay_value = _numeric_or_none(delay)
+        bandwidth_value = _numeric_or_none(bandwidth)
+        if delay_value is not None:
             sets.append("delay = %s")
-            vals.append(delay)
-        if bandwidth is not None:
+            vals.append(delay_value)
+        if bandwidth_value is not None:
             sets.append("bandwidth = %s")
-            vals.append(bandwidth)
+            vals.append(bandwidth_value)
         if resolution is not None:
             sets.append("resolution = %s")
             vals.append(resolution)
@@ -2369,8 +2399,10 @@ def upsert_persistent_results(rows):
                     r.get('city', ''), r.get('source_ip', ''),
                     r.get('platform', ''),
                     r.get('resolution', ''), r.get('codec', ''),
-                    r.get('delay'), r.get('bandwidth'),
-                    r.get('stability', 0), r.get('priority', 0),
+                    _numeric_or_none(r.get('delay')),
+                    _numeric_or_none(r.get('bandwidth')),
+                    _int_or_zero(r.get('stability')),
+                    _int_or_zero(r.get('priority')),
                     now, now,
                 )
                 for r in rows
@@ -2532,6 +2564,10 @@ def update_persistent_check(url, ok, stability=None, delay=None,
                 (url,)
             ).fetchone()
             old_stability = row['stability'] if row else None
+            stability = _int_or_none(stability)
+            delay = _numeric_or_none(delay)
+            bandwidth = _numeric_or_none(bandwidth)
+            jitter = _numeric_or_none(jitter)
             if stability is None:
                 if row:
                     stability = row['stability']
@@ -2623,10 +2659,10 @@ def batch_update_persistent_checks(updates):
             for u in ok_items:
                 url = u['url']
                 old = old_map.get(url, {})
-                stability = u.get('stability')
-                delay = u.get('delay')
-                bandwidth = u.get('bandwidth')
-                jitter = u.get('jitter')
+                stability = _int_or_none(u.get('stability'))
+                delay = _numeric_or_none(u.get('delay'))
+                bandwidth = _numeric_or_none(u.get('bandwidth'))
+                jitter = _numeric_or_none(u.get('jitter'))
                 resolution = u.get('resolution')
                 codec = u.get('codec')
                 name = u.get('name')

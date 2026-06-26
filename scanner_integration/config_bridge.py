@@ -23,37 +23,41 @@ STABILITY_THRESHOLD_LOCAL = 30
 MIN_BANDWIDTH = 20
 
 _IPTV_SEARCH_TERMS = [
-    ('body', '/iptv/live/zh_cn.js'),
+    ('and_body', ('/tsfile/live/', 'key=txiptv')),
     ('body', '/iptv/live/1000.json?key=txiptv'),
+    ('body', '/iptv/live/zh_cn.js'),
     ('body', '/iptv/live/1000.json'),
     ('body', '/ZHGXTV/Public/json/live_interface.txt'),
-    ('body', '/streamer/list'),
-    ('body', '/api/channels'),
-    ('body', '/channels'),
-    ('body', '/channel_list.json'),
-    ('body', '/api/live/channels'),
-    ('body', '/live/channels.json'),
-    ('body', '/playlist?profile=pass'),
-    ('body', '/getChannelList'),
-    ('body', 'getChannelList'),
-    ('body', 'ZHGXTV'),
-    ('body', 'jsmpeg-streamer'),
-    ('title', 'IPTV互动电视系统'),
-    ('title', 'IPTV管理系统'),
-    ('title', '酒店IPTV'),
-    ('body', '/iptv/live/'),
-    ('body', 'EasyLive'),
-    ('body', 'Hybroad'),
-    ('body', 'udpxy'),
-    ('body', '/udpxy/chanlist'),
-    ('body', '/udp/chanlist'),
-    ('body', '/rtp/chanlist'),
-    ('body', 'tvheadend'),
-    ('title', 'Tvheadend'),
-    ('body', '/migu/playlist.m3u8'),
-    ('body', '/icntv/playlist.m3u8'),
-    ('and_body', ('Xtream', 'IPTV')),
 ]
+
+QUALITY_PROFILE_NAMES = [
+    'txiptv_live',
+    'live_interface',
+    'zhgx',
+    'tvheadend',
+]
+LEGACY_DEFAULT_QUALITY_PROFILE_NAMES = [
+    'live_interface',
+    'zhgx',
+    'jsmpeg',
+    'channel_api',
+    'multicast_proxy',
+    'tvheadend',
+]
+SUPPORTED_QUALITY_PROFILE_NAMES = [
+    'txiptv_live',
+    'live_interface',
+    'zhgx',
+    'jsmpeg',
+    'channel_api',
+    'm3u_playlist',
+    'multicast_proxy',
+    'tvheadend',
+    'middleware_brand',
+    'operator_playlist',
+    'xtream',
+]
+SUPPORTED_SEARCH_PLATFORMS = ['quake', 'hunter', 'daydaymap', 'fofa']
 
 
 def _format_search_term(term, body_field='body', title_field='title', title_operator=':'):
@@ -107,6 +111,7 @@ DEFAULT_SCAN_CONFIG = {
     "deep_batch_size": 50,
     "enabled_platforms": [],
     "selected_provinces": [],
+    "cost_saver_mode": True,
     "enable_c_scan": True,
     "c_scan_limit": 50,
     "c_segment_max_segments": 8,
@@ -119,7 +124,9 @@ DEFAULT_SCAN_CONFIG = {
     "resurrection_enabled": True,
     "resurrection_interval_hours": 24,
     "quality_discovery_enabled": True,
-    "quality_query_profile_size": 240,
+    "quality_discovery_platforms": [],
+    "quality_query_profiles": QUALITY_PROFILE_NAMES,
+    "quality_query_profile_size": 120,
     "quality_hotspot_enabled": True,
     "quality_hotspot_scan_limit": 120,
     "quality_hotspot_min_score": 8,
@@ -180,6 +187,32 @@ def _normalize_key_list(cfg, platform, *legacy_single_names):
     cfg[single_key] = normalized[0] if normalized else ''
 
 
+def _normalize_string_list(value, allowed=None, default=None):
+    if default is None:
+        default = []
+    if isinstance(value, str):
+        raw_items = re.split(r'[,，\s]+', value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = default
+
+    allowed_set = set(allowed or [])
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if not item or item in seen:
+            continue
+        if allowed_set and item not in allowed_set:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
 def _normalize_scan_config(raw_cfg):
     """Merge defaults and legacy aliases into a single canonical config."""
     cfg = dict(DEFAULT_SCAN_CONFIG)
@@ -196,6 +229,21 @@ def _normalize_scan_config(raw_cfg):
     cfg['hunter_key'] = cfg.get('hunter_api_key', '')
     cfg['daydaymap_key'] = cfg.get('daydaymap_api_key', '')
     cfg['fofa_key'] = cfg.get('fofa_api_key', '')
+
+    cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
+    cfg['quality_discovery_platforms'] = _normalize_string_list(
+        cfg.get('quality_discovery_platforms', []),
+        allowed=SUPPORTED_SEARCH_PLATFORMS,
+        default=[],
+    )
+    normalized_profiles = _normalize_string_list(
+        cfg.get('quality_query_profiles', QUALITY_PROFILE_NAMES),
+        allowed=SUPPORTED_QUALITY_PROFILE_NAMES,
+        default=QUALITY_PROFILE_NAMES,
+    )
+    if normalized_profiles == LEGACY_DEFAULT_QUALITY_PROFILE_NAMES:
+        normalized_profiles = list(QUALITY_PROFILE_NAMES)
+    cfg['quality_query_profiles'] = normalized_profiles or list(QUALITY_PROFILE_NAMES)
 
     # 数值范围验证
     int_ranges = {

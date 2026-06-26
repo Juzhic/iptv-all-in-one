@@ -8,7 +8,7 @@
 """
 import os
 
-from flask import Blueprint, jsonify, send_file, send_from_directory
+from flask import Blueprint, jsonify, request, send_file, send_from_directory
 
 from database import (
     get_latest_run,
@@ -47,13 +47,20 @@ def serve_spa_assets(filename):
 @spa_bp.route('/api/initial')
 def api_initial():
     """为 Vue SPA 提供初始数据（替代 Jinja2 服务端渲染）。"""
-    latest = get_latest_run()
     runs = get_run_history()
+    include_details = request.args.get('include_details', '').lower() in (
+        '1', 'true', 'yes', 'on'
+    )
+    latest = runs[0] if runs else None
     channel_summary = {}
     codec_stats = {}
-    if latest and latest.get('results'):
-        channel_summary = get_channel_summary(latest['run_id'])
-        codec_stats = get_codec_stats(latest['run_id'])
+
+    if include_details:
+        latest = get_latest_run()
+        if latest and latest.get('results'):
+            channel_summary = get_channel_summary(latest['run_id'])
+            codec_stats = get_codec_stats(latest['run_id'])
+
     return jsonify({
         'latest': latest,
         'latest_scan': get_latest_scan_run(),
