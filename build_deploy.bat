@@ -5,7 +5,7 @@ set "ROOT=%~dp0"
 set "DEPLOY=%ROOT%deploy"
 
 echo ============================================
-echo   IPTV-Test Build Deploy Package
+echo   iptv-all-in-one Build Deploy Package
 echo ============================================
 echo.
 

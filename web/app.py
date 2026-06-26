@@ -178,7 +178,7 @@ BASIC_AUTH_CONFIG_FILE = os.path.join(BASE_DIR, 'basic_auth.json')
 BASIC_AUTH_DEFAULT_CONFIG = {
     'username': 'admin',
     'password': 'admin',
-    'realm': 'IPTV Test',
+    'realm': 'iptv-all-in-one',
 }
 
 

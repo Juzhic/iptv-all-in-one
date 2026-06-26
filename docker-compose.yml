@@ -6,7 +6,7 @@ services:
       - mysql_data:/var/lib/mysql
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-iptv123456}
-      MYSQL_DATABASE: ${DB_NAME:-iptv-test}
+      MYSQL_DATABASE: ${DB_NAME:-iptv-all-in-one}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -14,9 +14,9 @@ services:
       timeout: 5s
       retries: 3
 
-  iptv-test:
+  iptv-all-in-one:
     image: juzhic/iptv-all-in-one:latest
-    container_name: iptv-test
+    container_name: iptv-all-in-one
     ports:
       - "${PORT:-58080}:58080"
     depends_on:
@@ -27,7 +27,7 @@ services:
       - DB_PORT=${DB_PORT:-3306}
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-iptv123456}
-      - DB_NAME=${DB_NAME:-iptv-test}
+      - DB_NAME=${DB_NAME:-iptv-all-in-one}
       - DB_CHARSET=${DB_CHARSET:-utf8mb4}
       - TZ=Asia/Shanghai
     restart: unless-stopped
