@@ -107,39 +107,87 @@
 
 ### Docker 部署（推荐）
 
-最简单的方式，自动包含 MySQL 和 FFmpeg：
+Docker 部署默认使用 Docker Compose 编排两个独立容器：
+
+- `iptv-test`：运行 Web 后台、测速程序和 FFmpeg。
+- `iptv-mysql`：运行 MySQL 8，数据保存在 Docker volume `mysql_data` 中。
+
+也就是说，MySQL 不是打包进 `iptv-test` 应用容器里，而是由 Compose 自动拉起一个独立的 MySQL 容器。两个容器在同一个 Docker 内部网络里通信，应用默认通过 `DB_HOST=mysql` 连接数据库。
+
+> 下面命令使用新版 Docker 写法 `docker compose`。如果你的环境只支持旧版 Compose，可以把命令替换成 `docker-compose`。
+
+**方式 A：使用默认 MySQL 容器**
 
 ```bash
-# 创建配置文件（可选，默认使用内置MySQL）
+# 创建环境变量文件
 cp .env.example .env
 
 # 启动服务
-docker-compose up -d
+docker compose up -d
 
 # 访问
 http://localhost:58080
 ```
 
-**使用外部 MySQL**：
+首次启动前建议修改 `.env` 里的 `DB_PASSWORD`，它会作为默认 MySQL 容器的 root 密码。MySQL 数据会自动保存在 Docker volume 中，重启或更新应用容器不会丢失。
+
+**方式 B：使用已有的外部 MySQL**
 
 编辑 `.env` 文件：
+
 ```bash
-DB_HOST=你的数据库IP
-DB_USER=你的用户名
-DB_PASSWORD=你的密码
+DB_HOST=你的MySQL地址
+DB_PORT=3306
+DB_USER=你的MySQL用户
+DB_PASSWORD=你的MySQL密码
 DB_NAME=iptv-test
+DB_CHARSET=utf8mb4
 ```
 
-然后运行 `docker-compose up -d`。
+然后使用外部 MySQL 专用 compose 文件启动，这样不会额外创建 `iptv-mysql` 容器：
+
+```bash
+docker compose -f docker-compose.external-mysql.yml up -d
+```
+
+使用这个模式后，后续查看日志、更新和停止服务也请继续带上同一个 `-f docker-compose.external-mysql.yml` 参数。
+
+如果 MySQL 就装在运行 Docker 的这台宿主机上：
+
+- Docker Desktop（Windows/macOS）通常把 `DB_HOST` 写成 `host.docker.internal`。
+- Linux 服务器通常写宿主机局域网 IP，或确保 MySQL 监听地址允许 Docker 容器访问。
+
+外部 MySQL 需要提前创建数据库并授权，表结构会由程序启动时自动初始化：
+
+```sql
+CREATE DATABASE `iptv-test` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'iptv'@'%' IDENTIFIED BY '请换成强密码';
+GRANT ALL PRIVILEGES ON `iptv-test`.* TO 'iptv'@'%';
+FLUSH PRIVILEGES;
+```
 
 **更新镜像**：
 
 ```bash
-docker-compose pull
-docker-compose up -d
+# 默认 MySQL 容器模式
+docker compose pull
+docker compose up -d
+
+# 外部 MySQL 模式
+docker compose -f docker-compose.external-mysql.yml pull
+docker compose -f docker-compose.external-mysql.yml up -d
 ```
 
-MySQL 数据会自动保存在 Docker volume 中，不会丢失。
+查看运行状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f iptv-test
+
+# 外部 MySQL 模式
+docker compose -f docker-compose.external-mysql.yml ps
+docker compose -f docker-compose.external-mysql.yml logs -f iptv-test
+```
 
 ---
 
@@ -356,7 +404,7 @@ server {
     # auth_basic_user_file /etc/nginx/.htpasswd;
 
     location / {
-        proxy_pass http://127.0.0.1:58080;  # 如果修改了 IPTV_PORT，这里也要对应修改
+        proxy_pass http://127.0.0.1:58080;  # 如果修改了服务端口或 Docker 映射端口，这里也要对应修改
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -377,56 +425,84 @@ server {
 
 ### 方式四：Docker 部署（推荐）
 
-项目已包含 `Dockerfile` 和 `docker-compose.yml`，可直接使用：
+项目已包含 `Dockerfile`、`docker-compose.yml` 和 `docker-compose.external-mysql.yml`。生产环境推荐优先使用 Compose，数据库、应用、端口和重启策略都更清晰。
+
+**默认模式：应用容器 + MySQL 容器**
 
 ```bash
-# 构建并运行
-docker-compose up -d
+cp .env.example .env
 
-# 或手动构建
-docker build -t iptv-test .
-docker run -d \
-  --name iptv-test \
-  -p 58080:58080 \
-  -v $(pwd)/database/db_config.json:/app/database/db_config.json \
-  -v $(pwd)/output:/app/output \
-  -v $(pwd)/basic_auth.json:/app/basic_auth.json \
-  -e FFMPEG_BIN=/usr/bin/ffmpeg \
-  -e PYTHONUNBUFFERED=1 \
-  iptv-test
+# 建议先编辑 .env，至少修改 DB_PASSWORD
+docker compose up -d
 ```
 
-如需自定义端口和认证，可通过环境变量设置：
+这会启动：
+
+- `iptv-test`：应用容器，容器内固定监听 `58080`。
+- `iptv-mysql`：MySQL 8 容器，数据写入 `mysql_data` volume。
+
+**外部 MySQL 模式：只启动应用容器**
 
 ```bash
-docker run -d \
-  --name iptv-test \
-  -p 8080:8080 \
-  -e IPTV_PORT=8080 \
-  -e IPTV_AUTH_USERNAME=myuser \
-  -e IPTV_AUTH_PASSWORD=mypassword \
-  -v $(pwd)/database/db_config.json:/app/database/db_config.json \
-  -v $(pwd)/output:/app/output \
-  iptv-test
+cp .env.example .env
+
+# 编辑 .env，把 DB_HOST/DB_USER/DB_PASSWORD/DB_NAME 改成外部 MySQL
+docker compose -f docker-compose.external-mysql.yml up -d
 ```
 
-使用 docker-compose.yml 自定义端口：
+使用这个模式后，后续 `pull`、`up`、`logs`、`ps`、`down` 等命令也请继续带上 `-f docker-compose.external-mysql.yml`。
+
+如果只是把 `.env` 的 `DB_HOST` 改成外部地址后继续运行默认 `docker-compose.yml`，应用会连接外部 MySQL，但 Compose 仍会启动 `iptv-mysql` 这个本地数据库容器。若不想启动本地 MySQL，请使用 `docker-compose.external-mysql.yml`。
+
+**自定义访问端口**
+
+Compose 中的 `PORT` 是宿主机访问端口，容器内端口固定为 `58080`：
 
 ```bash
 # .env 文件
-IPTV_PORT=8080
+PORT=8080
 
 # 或直接指定
-IPTV_PORT=8080 docker-compose up -d
+PORT=8080 docker compose up -d
 ```
+
+之后通过 `http://localhost:8080` 访问。
+
+**手动 docker run**
+
+单独运行应用镜像时不会自动启动 MySQL，你必须提供一个可访问的外部 MySQL：
+
+```bash
+docker run -d \
+  --name iptv-test \
+  -p 58080:58080 \
+  -e DB_HOST=你的MySQL地址 \
+  -e DB_PORT=3306 \
+  -e DB_USER=你的MySQL用户 \
+  -e DB_PASSWORD=你的MySQL密码 \
+  -e DB_NAME=iptv-test \
+  -e DB_CHARSET=utf8mb4 \
+  -e IPTV_AUTH_USERNAME=myuser \
+  -e IPTV_AUTH_PASSWORD=mypassword \
+  juzhic/iptv-all-in-one:latest
+```
+
+如需把宿主机 `8080` 映射到容器内服务，写成 `-p 8080:58080`。
 
 ### 环境变量
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
+| `DB_HOST` | MySQL 地址；默认 Compose 内置 MySQL 时为 `mysql` | 未设置 |
+| `DB_PORT` | MySQL 端口 | `3306` |
+| `DB_USER` | MySQL 用户 | `root` |
+| `DB_PASSWORD` | MySQL 密码 | 未设置 |
+| `DB_NAME` | MySQL 数据库名 | `iptv-test` |
+| `DB_CHARSET` | MySQL 字符集 | `utf8mb4` |
 | `FFMPEG_BIN` | FFmpeg 可执行文件路径 | `ffmpeg`（从 PATH 查找） |
 | `IPTV_HOST` | Web 服务监听地址 | `0.0.0.0` |
-| `IPTV_PORT` | Web 服务端口 | `58080` |
+| `IPTV_PORT` | `python -m web` 直接运行时的 Web 服务端口；官方 Docker 镜像内固定监听 `58080` | `58080` |
+| `PORT` | Docker Compose 暴露到宿主机的访问端口 | `58080` |
 | `IPTV_AUTH_USERNAME` | BasicAuth 用户名（覆盖配置文件） | `admin` |
 | `IPTV_AUTH_PASSWORD` | BasicAuth 密码（覆盖配置文件） | 缺省时随机生成 |
 | `IPTV_AUTH_REALM` | BasicAuth 领域名称（覆盖配置文件） | `IPTV Test` |
@@ -449,13 +525,15 @@ IPTV_PORT=8080 docker-compose up -d
 
 ### 目录结构要求
 
-部署时需确保以下目录可写：
+直接运行源码时需确保以下目录可写：
 
 ```text
-database/           # db_config.json 必须存在且可读
+database/           # 直接运行源码且未使用 DB_* 环境变量时，db_config.json 必须存在且可读
 output/             # 测速结果输出（运行时自动创建）
 dist/               # 前端构建产物（需提前 npm run build）
 ```
+
+Docker 官方镜像已包含前端构建产物；数据库推荐通过 `.env` 中的 `DB_*` 环境变量配置。
 
 ### 常见部署问题
 
@@ -463,13 +541,13 @@ dist/               # 前端构建产物（需提前 npm run build）
 确保已构建前端：`cd frontend && npm run build`，`dist/` 目录存在且包含 `index.html`。
 
 **Q: 端口被占用？**
-使用 `lsof -i :58080`（Linux）或 `netstat -ano | findstr :58080`（Windows）查看占用进程并结束。如果需要使用其他端口，可通过环境变量 `IPTV_PORT` 指定。
+使用 `lsof -i :58080`（Linux）或 `netstat -ano | findstr :58080`（Windows）查看占用进程并结束。直接运行源码时可通过 `IPTV_PORT` 修改服务端口；Docker Compose 部署时修改 `.env` 里的 `PORT`，例如 `PORT=8080`。
 
 **Q: Gunicorn 启动失败？**
 检查 Python 路径是否正确，确保虚拟环境已激活。可先用 `python -m web` 测试基础功能。
 
 **Q: 数据库连接失败？**
-检查 `database/db_config.json` 配置是否正确，确保 MySQL 服务已启动且可访问。
+Docker 部署优先检查 `.env` 中的 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME` 是否正确，并用 `docker compose logs -f iptv-test` 查看连接错误。直接运行源码且未设置 `DB_HOST` 时，检查 `database/db_config.json` 配置是否正确。
 
 ## 系统参数
 
@@ -715,7 +793,8 @@ IPTV-Test/
 ├── requirements.txt            # Python 依赖
 ├── basic_auth.json             # Web 后台 BasicAuth 配置
 ├── Dockerfile                  # Docker 镜像构建文件（多阶段构建）
-├── docker-compose.yml          # Docker Compose 编排文件
+├── docker-compose.yml          # Docker Compose 编排文件（默认应用 + MySQL 容器）
+├── docker-compose.external-mysql.yml # 外部 MySQL 部署，仅启动应用容器
 ├── frontend-style-guide.md     # 前端开发规范文档
 ├── CHANGELOG.md                # 更新日志
 └── LICENSE                     # MIT 许可证
@@ -1050,7 +1129,7 @@ IPTV-Test/
 在系统配置中设置 `webhook_enabled` 为 `true`，并配置 `webhook_url`。支持 Telegram、企业微信等 Webhook 服务。可分别配置测速、扫描、检测事件的通知开关。
 
 **Q: 数据库连接失败？**
-检查 `database/db_config.json` 配置是否正确，确保 MySQL 服务已启动且可访问。配置示例见 `database/db_config.json.example`。
+Docker 部署时检查 `.env` 里的 `DB_*` 配置，并确认 MySQL 服务可被容器访问；直接运行源码且未设置 `DB_HOST` 时，检查 `database/db_config.json`。配置示例见 `database/db_config.json.example`。
 
 **Q: 如何备份数据库？**
 使用 MySQL 自带的备份工具（如 `mysqldump`）定期备份。建议在低峰期进行备份。

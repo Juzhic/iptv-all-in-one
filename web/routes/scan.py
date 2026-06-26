@@ -519,6 +519,15 @@ def api_detection_logs():
     return jsonify({'ok': True, 'data': get_detection_logs(limit=limit)})
 
 
+@scan_bp.route('/api/scan/detection/status', methods=['GET'])
+def api_detection_status():
+    """Return the live detection scheduler status."""
+    scanner, err, code = _ensure_scan_bridge()
+    if err:
+        return err, code
+    return jsonify({'ok': True, 'data': scanner.get_detection_status()})
+
+
 @scan_bp.route('/api/scan/detection/runs', methods=['GET'])
 def api_detection_runs():
     """获取检测轮次记录，支持 start/end 时间范围过滤。"""
@@ -624,6 +633,11 @@ def api_detection_stream():
         import json
         q = scanner.subscribe_detection_sse()
         try:
+            try:
+                status = scanner.get_detection_status()
+                yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
             from database import get_detection_logs
             recent = get_detection_logs(limit=50)
             if recent:

@@ -102,7 +102,7 @@
                 <span class="url-text">{{ row.url }}</span>
               </t-popup>
               <t-button v-if="row.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(row.url)">
-                <template #icon><t-icon name="copy" /></template>
+                <template #icon><CopyIcon /></template>
               </t-button>
             </div>
           </template>
@@ -234,7 +234,7 @@
               <span class="url-text">{{ row.url }}</span>
             </t-popup>
             <t-button v-if="row.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(row.url)">
-              <template #icon><t-icon name="copy" /></template>
+              <template #icon><CopyIcon /></template>
             </t-button>
           </div>
         </template>
@@ -256,6 +256,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
+import CopyIcon from 'tdesign-icons-vue-next/esm/components/copy.js'
 import {
   apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,

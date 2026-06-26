@@ -28,6 +28,7 @@ services:
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-iptv123456}
       - DB_NAME=${DB_NAME:-iptv-test}
+      - DB_CHARSET=${DB_CHARSET:-utf8mb4}
       - TZ=Asia/Shanghai
     restart: unless-stopped
 

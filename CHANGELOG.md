@@ -26,6 +26,8 @@
 - `/api/health` 默认返回轻量健康信息，可通过 `IPTV_HEALTH_DETAILED=1` 开启磁盘、内存和调度等详细检查。
 - Docker/Gunicorn 默认使用单 worker，避免后台扫描、SSE 和停止信号在多进程下状态不一致。
 - README 补充质量优先发现、质量热点补源、扫描偏少排查和新增扫描参数说明。
+- README 完善 Docker 部署教程，明确默认 MySQL 容器、外部 MySQL 和端口映射的使用方式。
+- 新增 `docker-compose.external-mysql.yml`，支持只启动应用容器并连接用户已有的 MySQL。
 
 ### 修复
 - 修复 MySQL 索引创建在部分版本或重复迁移时可能失败的问题。
