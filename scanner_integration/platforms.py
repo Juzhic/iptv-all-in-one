@@ -20,12 +20,20 @@ from .logger_bridge import logger
 
 QUALITY_QUERY_PROFILES = [
     {
+        'name': 'txiptv_live',
+        'label': 'TXIPTV',
+        'quake': '(body="/tsfile/live/" && body="key=txiptv") || body="/iptv/live/1000.json?key=txiptv"',
+        'hunter': '(web.body="/tsfile/live/" && web.body="key=txiptv") || web.body="/iptv/live/1000.json?key=txiptv"',
+        'daydaymap': '(body="/tsfile/live/" && body="key=txiptv") || body="/iptv/live/1000.json?key=txiptv"',
+        'fofa': '(body="/tsfile/live/" && body="key=txiptv") || body="/iptv/live/1000.json?key=txiptv"',
+    },
+    {
         'name': 'live_interface',
         'label': '标准直播接口',
-        'quake': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json?key=txiptv" || body="/iptv/live/1000.json"',
-        'hunter': 'web.body="/iptv/live/zh_cn.js" || web.body="/iptv/live/1000.json?key=txiptv" || web.body="/iptv/live/1000.json"',
-        'daydaymap': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json?key=txiptv" || body="/iptv/live/1000.json"',
-        'fofa': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json?key=txiptv" || body="/iptv/live/1000.json"',
+        'quake': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json"',
+        'hunter': 'web.body="/iptv/live/zh_cn.js" || web.body="/iptv/live/1000.json"',
+        'daydaymap': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json"',
+        'fofa': 'body="/iptv/live/zh_cn.js" || body="/iptv/live/1000.json"',
     },
     {
         'name': 'zhgx',
@@ -1776,12 +1784,21 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     if isinstance(enabled_platforms, str):
         enabled_platforms = [enabled_platforms]
     enabled_platforms = [p for p in (enabled_platforms or []) if isinstance(p, str) and p]
+    explicit_platforms = bool(enabled_platforms)
     if not enabled_platforms:
-        enabled_platforms = []
-        if km.get_all_keys('quake'): enabled_platforms.append("quake")
-        if km.get_all_keys('hunter'): enabled_platforms.append("hunter")
-        if km.get_all_keys('daydaymap'): enabled_platforms.append("daydaymap")
-        if km.get_all_keys('fofa'): enabled_platforms.append("fofa")
+        available_platforms = []
+        if km.get_all_keys('quake'): available_platforms.append("quake")
+        if km.get_all_keys('hunter'): available_platforms.append("hunter")
+        if km.get_all_keys('daydaymap'): available_platforms.append("daydaymap")
+        if km.get_all_keys('fofa') and scan_cfg.get("fofa_email"): available_platforms.append("fofa")
+        if scan_cfg.get("cost_saver_mode", True):
+            preferred_order = ("quake", "fofa", "hunter", "daydaymap")
+            enabled_platforms = [
+                p for p in preferred_order
+                if p in available_platforms
+            ][:1]
+        else:
+            enabled_platforms = available_platforms
 
     selected_provs = provinces_override if provinces_override is not None else scan_cfg.get("selected_provinces", [])
     if isinstance(selected_provs, str):
@@ -1798,13 +1815,13 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         except (TypeError, ValueError):
             return 200
 
-    def _quality_target_for(platform):
-        budget = scan_cfg.get("quality_query_profile_size", 240)
+    def _quality_target_for(platform, profile_count=None):
+        budget = scan_cfg.get("quality_query_profile_size", 120)
         try:
             budget = max(10, int(budget))
         except (TypeError, ValueError):
-            budget = 240
-        split_count = max(1, len(QUALITY_QUERY_PROFILES) * len(selected_provs))
+            budget = 120
+        split_count = max(1, (profile_count or len(QUALITY_QUERY_PROFILES)) * len(selected_provs))
         per_profile = max(1, budget // split_count)
         return min(_target_for(platform), per_profile)
 
@@ -1841,6 +1858,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         suffix = f"，C段补充 {c_count} 条" if c_count else ""
         return f"[采集] {name} 完成：API命中 {api_items} 个，探测 {probed} 个，提取频道 {result_count} 条{suffix}"
 
+    if scan_cfg.get("cost_saver_mode", True) and not explicit_platforms:
+        _log(f"[采集] 省积分模式：未手动选择平台，本轮仅使用 {enabled_platforms or '无可用平台'}")
     _log(f"[采集] 启用平台: {enabled_platforms}，省份数: {len(selected_provs)}")
 
     if not enabled_platforms and not ddgs_enabled and not km.get_all_keys('hunter'):
@@ -1904,11 +1923,30 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
 
         if scan_cfg.get("quality_discovery_enabled", True):
             profile_tasks = []
+            enabled_profile_names = set(scan_cfg.get("quality_query_profiles") or [])
+            quality_platforms = [
+                p for p in (scan_cfg.get("quality_discovery_platforms") or [])
+                if p in enabled_platforms
+            ]
+            if not quality_platforms:
+                if scan_cfg.get("cost_saver_mode", True) and not explicit_platforms and "quake" in enabled_platforms:
+                    quality_platforms = ["quake"]
+                else:
+                    quality_platforms = list(enabled_platforms)
+            enabled_profiles = [
+                profile for profile in QUALITY_QUERY_PROFILES
+                if not enabled_profile_names or profile["name"] in enabled_profile_names
+            ]
+            if quality_platforms and enabled_profiles:
+                _log(
+                    "[采集] 质量优先查询平台: "
+                    f"{quality_platforms}，画像: {', '.join(p['label'] for p in enabled_profiles)}"
+                )
             for prov in selected_provs:
-                for profile in QUALITY_QUERY_PROFILES:
-                    if "quake" in enabled_platforms and quake_key:
+                for profile in enabled_profiles:
+                    if "quake" in quality_platforms and quake_key:
                         stats = {}
-                        target = _quality_target_for("quake")
+                        target = _quality_target_for("quake", len(enabled_profiles))
                         query = _with_filters(profile["quake"], "quake", prov)
                         profile_tasks.append((
                             _profile_label("Quake 360", profile['label'], prov),
@@ -1917,9 +1955,9 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                             stats,
                             target,
                         ))
-                    if "hunter" in enabled_platforms and hunter_key:
+                    if "hunter" in quality_platforms and hunter_key:
                         stats = {}
-                        target = _quality_target_for("hunter")
+                        target = _quality_target_for("hunter", len(enabled_profiles))
                         query = _with_filters(profile["hunter"], "hunter", prov)
                         profile_tasks.append((
                             _profile_label("Hunter", profile['label'], prov),
@@ -1928,9 +1966,9 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                             stats,
                             target,
                         ))
-                    if "daydaymap" in enabled_platforms and ddm_key:
+                    if "daydaymap" in quality_platforms and ddm_key:
                         stats = {}
-                        target = _quality_target_for("daydaymap")
+                        target = _quality_target_for("daydaymap", len(enabled_profiles))
                         query = _with_filters(profile["daydaymap"], "daydaymap", prov)
                         profile_tasks.append((
                             _profile_label("DayDayMap", profile['label'], prov),
@@ -1939,9 +1977,9 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                             stats,
                             target,
                         ))
-                    if "fofa" in enabled_platforms and fofa_key:
+                    if "fofa" in quality_platforms and fofa_key:
                         stats = {}
-                        target = _quality_target_for("fofa")
+                        target = _quality_target_for("fofa", len(enabled_profiles))
                         query = _with_filters(profile["fofa"], "fofa", prov)
                         profile_tasks.append((
                             _profile_label("Fofa", profile['label'], prov),
@@ -1981,13 +2019,18 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         independent_tasks = []
         indep_size = size or scan_cfg.get("quake_size", 200)
 
-        if enabled_platforms:
+        if enabled_platforms and not scan_cfg.get("cost_saver_mode", True):
             independent_tasks.append(('ZHGX', zhgx_scan(indep_size, session=scan_session)))
+        elif enabled_platforms:
+            _log("[采集] 省积分模式：跳过独立 ZHGX 扫描")
 
         # JSMpeg 全国扫描（只执行一次，不限省份）
-        independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=indep_size, session=scan_session)))
+        if scan_cfg.get("cost_saver_mode", True) and 'jsmpeg' not in (scan_cfg.get("quality_query_profiles") or []):
+            _log("[采集] 省积分模式：跳过独立 JSMpeg 扫描")
+        else:
+            independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=indep_size, session=scan_session)))
 
-        if hunter_key:
+        if hunter_key and "hunter" in enabled_platforms:
             independent_tasks.append(('Tvheadend', _run_with_key_rotation('hunter', tvheadend_scan, None, 30, session=scan_session)))
             independent_tasks.append(('IPTV互动', _run_with_key_rotation('hunter', iptv_interactive_scan, None, 30, session=scan_session)))
 
@@ -2065,9 +2108,6 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         actual_platforms.append('ddgs')
     if enabled_platforms:
         actual_platforms.extend(enabled_platforms)
-    if km.get_all_keys('hunter'):
-        if 'hunter' not in actual_platforms:
-            actual_platforms.append('hunter')
 
     dropped = invalid_url_count + invalid_name_count + blacklisted_count
     if dropped:

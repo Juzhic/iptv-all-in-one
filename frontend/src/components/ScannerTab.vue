@@ -4,15 +4,17 @@
       <div class="section-title">频道扫描</div>
       <p class="section-subtitle">先在“扫描配置”里设置 API Key 和扫描参数，再启动采集和过滤流程。</p>
       <t-space>
-        <t-button theme="success" :disabled="scanRunning" :loading="scanStarting" @click="triggerScan">开始扫描</t-button>
+        <t-button theme="success" :disabled="scanRunning" :loading="scanStarting" @click="triggerScan">
+          {{ startButtonText }}
+        </t-button>
         <t-button v-if="scanRunning" theme="danger" :disabled="scanStopping" @click="stopScan">
           {{ scanStopping ? '终止中...' : '停止扫描' }}
         </t-button>
         <t-button variant="outline" theme="warning" :disabled="scanClearing" @click="forceClear">
-          {{ scanClearing ? '清除中...' : '强制清除状态' }}
+          {{ scanClearing ? '重置中...' : '重置卡死状态' }}
         </t-button>
       </t-space>
-      <p class="section-subtitle clear-hint">扫描卡死、点“开始”却提示“正在进行中”时，用此按钮强制清除残留状态。</p>
+      <p class="section-subtitle clear-hint">仅在进度卡住、或点“开始”提示“正在进行中”但没有实际任务时使用；不会清空日志和历史记录。</p>
     </t-card>
 
     <t-card size="small" :bordered="false" class="panel-card">
@@ -97,6 +99,7 @@ function createEmptySummary() {
     totalDeduped: 0,
     totalFastPass: 0,
     totalDeepPass: 0,
+    error: '',
   }
 }
 
@@ -112,6 +115,7 @@ function normalizeSummary(raw) {
     totalDeduped: Number(raw.total_deduped) || 0,
     totalFastPass: Number(raw.total_fast_pass) || 0,
     totalDeepPass: Number(raw.total_deep_pass) || 0,
+    error: raw.error || '',
   }
 }
 
@@ -151,6 +155,7 @@ function applyProgressPatch(data = {}) {
   progressVisible.value = true
   triggerPending = false
   wasRunning = true
+  startPoll()
   currentPhase.value = data.phase || currentPhase.value
   phaseText.value = buildPhaseText(currentPhase.value, data.message)
 
@@ -220,9 +225,14 @@ function applyStatus(data = {}) {
   // triggerPending 期间（10s 内）忽略 running=false，避免把刚启动的扫描误判为已完成。
   if (!running && triggerPending) return
 
+  const nextSummary = normalizeSummary(data.summary)
+  const statusMessage = !running && nextSummary.status === 'failed' && nextSummary.error
+    ? nextSummary.error
+    : data.message
+
   scanRunning.value = running
   currentPhase.value = data.phase || 'idle'
-  phaseText.value = buildPhaseText(data.phase, data.message)
+  phaseText.value = buildPhaseText(data.phase, statusMessage)
 
   const total = Number(data.total) || 0
   const processed = Number(data.processed) || 0
@@ -232,10 +242,10 @@ function applyStatus(data = {}) {
     : (total > 0 ? Math.min(100, Math.round(processed / total * 100)) : 0)
   progressLabel.value = total > 0
     ? `进度 ${Math.min(total, processed)} / ${total}`
-    : (data.message || (running ? '准备中...' : '暂无进行中的扫描任务'))
+    : (statusMessage || (running ? '准备中...' : '暂无进行中的扫描任务'))
   progressVisible.value = running || progressPct.value > 0 || scanLogLines.value.length > 0
 
-  scanSummary.value = normalizeSummary(data.summary)
+  scanSummary.value = nextSummary
   appendLogs(data.lines)
 
   if (running) {
@@ -271,8 +281,17 @@ async function refreshStatus() {
 
 const hasSummary = computed(() => Boolean(scanSummary.value.scanId))
 
+const startButtonText = computed(() => {
+  if (scanStarting.value) return '启动中...'
+  if (scanRunning.value) return '扫描中...'
+  return '开始扫描'
+})
+
 const summaryCaption = computed(() => {
   if (!hasSummary.value) return '还没有扫描记录，启动一次扫描后这里会显示最近一次摘要。'
+  if (scanSummary.value.status === 'failed' && scanSummary.value.error) {
+    return `最近一次扫描失败：${scanSummary.value.error}`
+  }
   const time = scanSummary.value.finishedAt || scanSummary.value.startedAt
   return time ? `最近一次扫描时间：${time}` : '最近一次扫描摘要'
 })
@@ -350,6 +369,7 @@ async function triggerScan() {
       phaseText.value = '扫描启动中...'
       progressLabel.value = '正在连接扫描任务...'
       connectScanStream()
+      startPoll()
       setTimeout(() => { triggerPending = false }, 10000)
     } else {
       MessagePlugin.error(res.error || '启动失败')
@@ -431,6 +451,7 @@ onMounted(async () => {
   if (scanRunning.value) {
     progressVisible.value = true
     connectScanStream()
+    startPoll()
   }
 })
 

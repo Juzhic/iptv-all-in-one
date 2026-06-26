@@ -166,6 +166,25 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
+                <label>省积分模式</label>
+                <span>未手动指定平台时优先使用 Quake，并跳过最近低收益的平台画像、JSMpeg 和独立补扫。</span>
+              </div>
+
+              <div class="field-stack field-stack--switch">
+                <div class="switch-row">
+                  <t-switch v-model="scanCfg.cost_saver_mode" size="large" :label="['开启', '关闭']" />
+                  <t-tag :theme="scanCfg.cost_saver_mode ? 'success' : 'warning'" size="small" variant="light">
+                    {{ scanCfg.cost_saver_mode ? '当前已启用' : '当前已关闭' }}
+                  </t-tag>
+                </div>
+                <div class="field-inline-hint">
+                  {{ costSaverHint }}
+                </div>
+              </div>
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
                 <label>C 段扫描</label>
                 <span>开启后会围绕已命中的可用 IP 扩展同网段探测，能补量，但会增加请求数。</span>
               </div>
@@ -197,7 +216,7 @@
                   </t-tag>
                 </div>
                 <div class="field-inline-hint">
-                  {{ scanCfg.ddgs_enabled ? '将通过搜索引擎查找公开 IPTV 源，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台（Quake/Hunter/DayDayMap）进行采集。' }}
+                  {{ scanCfg.ddgs_enabled ? '将通过搜索引擎查找公开 IPTV 源，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台（Quake/Hunter/DayDayMap/Fofa）进行采集。' }}
                 </div>
               </div>
             </div>
@@ -250,7 +269,7 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>质量优先查询</label>
-                <span>额外执行直播接口、频道 API、M3U、组播代理、Tvheadend 等高价值画像查询。</span>
+                <span>额外执行 TXIPTV、直播接口、ZHGXTV、Tvheadend 等高价值画像查询。</span>
               </div>
 
               <div class="field-stack field-stack--switch">
@@ -482,13 +501,14 @@ const scanCfg = reactive({
   quake_size: 200,
   hunter_size: 200,
   daydaymap_size: 200,
+  cost_saver_mode: true,
   enable_c_scan: true,
   update_time: '03:00',
   update_days: [0, 1, 2, 3, 4, 5, 6],
   daily_full_update: true,
   ddgs_enabled: false,
   quality_discovery_enabled: true,
-  quality_query_profile_size: 240,
+  quality_query_profile_size: 120,
   quality_hotspot_enabled: true,
   quality_hotspot_scan_limit: 120,
   quality_hotspot_min_score: 8,
@@ -565,6 +585,7 @@ const scheduleBadgeText = computed(() => {
 })
 
 const enabledStrategyCount = computed(() => ([
+  scanCfg.cost_saver_mode,
   scanCfg.ddgs_enabled,
   scanCfg.quality_discovery_enabled,
   scanCfg.quality_hotspot_enabled,
@@ -582,6 +603,12 @@ const cScanHint = computed(() => (
   scanCfg.enable_c_scan
     ? '当前会围绕已命中的网段继续扩展探测，补量能力更强，但扫描时间也会更长。'
     : '当前只使用主搜索结果，不做同网段扩展，速度更快，也更省额度。'
+))
+
+const costSaverHint = computed(() => (
+  scanCfg.cost_saver_mode
+    ? '当前会优先保留 Quake、TXIPTV 和直播接口画像；Hunter、DayDayMap 需要手动指定平台才会参与扫描。'
+    : '当前会按已配置 Key 自动启用所有可用 API 平台，覆盖更广；适合每日免费额度充足时使用。'
 ))
 
 const scheduleSummary = computed(() => {
@@ -710,13 +737,14 @@ async function loadConfig() {
     scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 200
     scanCfg.hunter_size = typeof cfg.hunter_size === 'number' ? cfg.hunter_size : 200
     scanCfg.daydaymap_size = typeof cfg.daydaymap_size === 'number' ? cfg.daydaymap_size : 200
+    scanCfg.cost_saver_mode = cfg.cost_saver_mode !== false
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
     scanCfg.ddgs_enabled = !!cfg.ddgs_enabled
     scanCfg.quality_discovery_enabled = cfg.quality_discovery_enabled !== false
-    scanCfg.quality_query_profile_size = typeof cfg.quality_query_profile_size === 'number' ? cfg.quality_query_profile_size : 240
+    scanCfg.quality_query_profile_size = typeof cfg.quality_query_profile_size === 'number' ? cfg.quality_query_profile_size : 120
     scanCfg.quality_hotspot_enabled = cfg.quality_hotspot_enabled !== false
     scanCfg.quality_hotspot_scan_limit = typeof cfg.quality_hotspot_scan_limit === 'number' ? cfg.quality_hotspot_scan_limit : 120
     scanCfg.quality_hotspot_min_score = typeof cfg.quality_hotspot_min_score === 'number' ? cfg.quality_hotspot_min_score : 8

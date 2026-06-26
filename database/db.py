@@ -1,6 +1,7 @@
 """IPTV 测速结果 MySQL 数据库模块。"""
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -85,6 +86,40 @@ def now_str():
 
 def timestamp_str(ts):
     return datetime.fromtimestamp(ts, LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _numeric_or_none(value):
+    """Normalize optional numeric DB fields for MySQL DOUBLE columns."""
+    if value in (None, ''):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _numeric_or_zero(value):
+    normalized = _numeric_or_none(value)
+    return 0 if normalized is None else normalized
+
+
+def _int_or_zero(value):
+    if value in (None, ''):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _int_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ─── 配置加载 ───
@@ -991,11 +1026,11 @@ def insert_run(run_data):
                 run_data['run_id'],
                 run_data.get('started_at', ''),
                 run_data.get('finished_at', ''),
-                run_data.get('duration_seconds', 0),
+                _numeric_or_zero(run_data.get('duration_seconds', 0)),
                 summary.get('total_tested', 0),
                 summary.get('total_passed', 0),
                 summary.get('total_failed', 0),
-                summary.get('pass_rate', 0),
+                _numeric_or_zero(summary.get('pass_rate', 0)),
                 summary.get('unique_channels_passed', 0),
                 summary.get('unique_channels_total', 0),
             )
@@ -1015,16 +1050,16 @@ def insert_run(run_data):
                         r.get('channel', ''),
                         r.get('url', ''),
                         r.get('resolution', ''),
-                        r.get('bandwidth_MBps', 0),
-                        r.get('connection_latency_ms'),
-                        r.get('quality_score', 0),
+                        _numeric_or_zero(r.get('bandwidth_MBps', 0)),
+                        _numeric_or_none(r.get('connection_latency_ms')),
+                        _numeric_or_zero(r.get('quality_score', 0)),
                         r.get('output_updated_at', ''),
                         r.get('codec', ''),
                         r.get('is_h265', False),
-                        r.get('sample_seconds', 0),
+                        _numeric_or_zero(r.get('sample_seconds', 0)),
                         r.get('passed', False),
                         r.get('reason', ''),
-                        r.get('cost_seconds', 0),
+                        _numeric_or_zero(r.get('cost_seconds', 0)),
                         r.get('source_url', ''),
                     )
                     for r in results
@@ -1932,9 +1967,9 @@ def insert_scan_results(scan_id, channels):
                     ch.get('platform', ''),
                     ch.get('resolution', ''),
                     ch.get('codec', ''),
-                    ch.get('delay'),
-                    ch.get('bandwidth'),
-                    ch.get('stability', 0),
+                    _numeric_or_none(ch.get('delay')),
+                    _numeric_or_none(ch.get('bandwidth')),
+                    _int_or_zero(ch.get('stability')),
                 )
                 for ch in channels
             ]
@@ -1948,13 +1983,15 @@ def update_scan_result_stability(scan_id, url, stability, delay=None,
     with _write_lock:
         conn = _get_conn()
         sets = ["stability = %s"]
-        vals = [stability]
-        if delay is not None:
+        vals = [_int_or_zero(stability)]
+        delay_value = _numeric_or_none(delay)
+        bandwidth_value = _numeric_or_none(bandwidth)
+        if delay_value is not None:
             sets.append("delay = %s")
-            vals.append(delay)
-        if bandwidth is not None:
+            vals.append(delay_value)
+        if bandwidth_value is not None:
             sets.append("bandwidth = %s")
-            vals.append(bandwidth)
+            vals.append(bandwidth_value)
         if resolution is not None:
             sets.append("resolution = %s")
             vals.append(resolution)
@@ -2181,7 +2218,7 @@ def finish_detection_run(cycle_id, finished_at, total, ok, failed, deleted, dura
                SET finished_at=%s, total_checked=%s, ok_count=%s,
                    failed_count=%s, deleted_count=%s, duration_seconds=%s, error=%s
                WHERE cycle_id=%s""",
-            (finished_at, total, ok, failed, deleted, duration, error, cycle_id)
+            (finished_at, total, ok, failed, deleted, _numeric_or_zero(duration), error, cycle_id)
         )
         conn.commit()
 
@@ -2202,7 +2239,7 @@ def insert_detection_results(cycle_id, results_list):
                 (
                     cycle_id,
                     r['url'], r.get('name'), int(r['check_ok']),
-                    r.get('http_status', 0), r.get('response_time_ms', 0),
+                    r.get('http_status', 0), _numeric_or_zero(r.get('response_time_ms', 0)),
                     r.get('response_size_bytes', 0), r.get('consecutive_failures', 0),
                     r.get('quality_status', 'pending'),
                 )
@@ -2369,8 +2406,10 @@ def upsert_persistent_results(rows):
                     r.get('city', ''), r.get('source_ip', ''),
                     r.get('platform', ''),
                     r.get('resolution', ''), r.get('codec', ''),
-                    r.get('delay'), r.get('bandwidth'),
-                    r.get('stability', 0), r.get('priority', 0),
+                    _numeric_or_none(r.get('delay')),
+                    _numeric_or_none(r.get('bandwidth')),
+                    _int_or_zero(r.get('stability')),
+                    _int_or_zero(r.get('priority')),
                     now, now,
                 )
                 for r in rows
@@ -2532,13 +2571,17 @@ def update_persistent_check(url, ok, stability=None, delay=None,
                 (url,)
             ).fetchone()
             old_stability = row['stability'] if row else None
+            stability = _int_or_none(stability)
+            delay = _numeric_or_none(delay)
+            bandwidth = _numeric_or_none(bandwidth)
+            jitter = _numeric_or_none(jitter)
             if stability is None:
                 if row:
                     stability = row['stability']
                     if delay is None:
-                        delay = row['delay']
+                        delay = _numeric_or_none(row['delay'])
                     if bandwidth is None:
-                        bandwidth = row['bandwidth']
+                        bandwidth = _numeric_or_none(row['bandwidth'])
             elif old_stability is not None:
                 alpha = 0.3
                 stability = int(alpha * stability + (1 - alpha) * old_stability)
@@ -2572,9 +2615,28 @@ def update_persistent_check(url, ok, stability=None, delay=None,
             ).fetchone()
             name = name_row['name'] if name_row else None
             quality_for_hist = quality if ok else 'unreachable'
-            insert_quality_history(url, name, stability, delay, bandwidth, None, quality_for_hist, 'detection')
+            conn.execute(
+                """INSERT INTO quality_history
+                   (url, name, stability, delay, bandwidth, jitter, quality_status, source, recorded_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    url,
+                    name,
+                    _int_or_none(stability),
+                    _numeric_or_none(delay),
+                    _numeric_or_none(bandwidth),
+                    None,
+                    quality_for_hist,
+                    'detection',
+                    now,
+                )
+            )
+            conn.commit()
         except Exception:
-            pass
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
 
 def batch_update_persistent_checks(updates):
@@ -2623,10 +2685,10 @@ def batch_update_persistent_checks(updates):
             for u in ok_items:
                 url = u['url']
                 old = old_map.get(url, {})
-                stability = u.get('stability')
-                delay = u.get('delay')
-                bandwidth = u.get('bandwidth')
-                jitter = u.get('jitter')
+                stability = _int_or_none(u.get('stability'))
+                delay = _numeric_or_none(u.get('delay'))
+                bandwidth = _numeric_or_none(u.get('bandwidth'))
+                jitter = _numeric_or_none(u.get('jitter'))
                 resolution = u.get('resolution')
                 codec = u.get('codec')
                 name = u.get('name')
@@ -2635,9 +2697,9 @@ def batch_update_persistent_checks(updates):
                 if stability is None:
                     stability = old_stability
                     if delay is None:
-                        delay = old.get('delay')
+                        delay = _numeric_or_none(old.get('delay'))
                     if bandwidth is None:
-                        bandwidth = old.get('bandwidth')
+                        bandwidth = _numeric_or_none(old.get('bandwidth'))
                 elif old_stability is not None:
                     try:
                         stability = int(alpha * stability + (1 - alpha) * old_stability)
@@ -2848,7 +2910,17 @@ def insert_quality_history(url, name, stability, delay, bandwidth, jitter, quali
         conn = _get_conn()
         conn.execute(
             "INSERT INTO quality_history (url, name, stability, delay, bandwidth, jitter, quality_status, source, recorded_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (url, name, stability, delay, bandwidth, jitter, quality_status, source, now_str())
+            (
+                url,
+                name,
+                _int_or_none(stability),
+                _numeric_or_none(delay),
+                _numeric_or_none(bandwidth),
+                _numeric_or_none(jitter),
+                quality_status,
+                source,
+                now_str(),
+            )
         )
         conn.commit()
 
@@ -3002,7 +3074,7 @@ def insert_ip_scan_results(scan_id, results):
                         channel_count=VALUES(channel_count), scan_type_matched=VALUES(scan_type_matched),
                         error=VALUES(error)""",
                     (scan_id, r['target'], r['ip'], r['port'], r['alive'],
-                     r['http_status'], r['response_time_ms'], r['channels_json'],
+                     r['http_status'], _numeric_or_zero(r.get('response_time_ms', 0)), r['channels_json'],
                      r['channel_count'], r['scan_type_matched'], r['error'])
                 )
             except Exception as e:

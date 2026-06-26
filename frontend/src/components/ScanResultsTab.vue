@@ -194,11 +194,24 @@
 
     <!-- ==================== 按扫描记录视图（原功能） ==================== -->
     <template v-else>
-      <t-space style="margin-bottom:12px;flex-wrap:wrap">
-        <t-select v-model="selectedScanId" placeholder="选择扫描记录..." clearable style="width:220px" @change="reloadResults">
+      <div class="legacy-toolbar">
+        <t-select
+          v-model="selectedScanId"
+          placeholder="选择扫描记录"
+          clearable
+          class="scan-record-select"
+          :loading="historyLoading"
+          @change="onScanSelectionChange"
+        >
           <t-option value="" label="全部扫描记录" />
-          <t-option v-for="r in scanHistory" :key="r.scan_id || r.id" :value="r.scan_id || r.id" :label="formatScanOptionLabel(r)" />
+          <t-option v-for="r in scanHistory" :key="scanRunId(r)" :value="scanRunId(r)" :label="formatScanOptionLabel(r)" />
         </t-select>
+        <t-button variant="outline" size="small" :disabled="!latestScanId || isLatestScanSelected" @click="selectLatestScan">
+          最新一轮
+        </t-button>
+        <t-button variant="outline" size="small" :disabled="!selectedScanId" @click="showAllScanResults">
+          全部记录
+        </t-button>
         <t-select v-model="categoryFilter" placeholder="全部分类" clearable style="width:140px" @change="reloadResults">
           <t-option value="" label="全部分类" />
           <t-option v-for="c in categories" :key="c" :value="c" :label="c" />
@@ -208,13 +221,20 @@
           <t-option v-for="p in provinces" :key="p" :value="p" :label="p" />
         </t-select>
         <t-input v-model="searchQuery" placeholder="搜索频道名..." clearable style="width:200px" />
-      </t-space>
-      <t-space style="margin-bottom:12px">
+        <div class="legacy-toolbar-spacer"></div>
+        <t-tag v-if="selectedScan" :theme="scanStatusTheme(selectedScan.status)" variant="light">
+          {{ scanStatusLabel(selectedScan.status) }}
+        </t-tag>
+        <t-tag variant="light">{{ scanHistory.length }} 次扫描</t-tag>
+        <t-tag theme="primary" variant="light">{{ total }} 条结果</t-tag>
+      </div>
+      <div class="legacy-actions-row">
         <t-button variant="outline" size="small" @click="selectAllLegacy">全选/取消</t-button>
-      </t-space>
+      </div>
       <t-table
         :columns="legacyColumns"
         :data="results"
+        :loading="resultsLoading"
         :bordered="false"
         row-key="id"
         size="small"
@@ -403,6 +423,9 @@ const categoryFilter = ref('')
 const provinceFilter = ref('')
 const searchQuery = ref('')
 const scanHistory = ref([])
+const historyLoading = ref(false)
+const resultsLoading = ref(false)
+const legacyInitialized = ref(false)
 const results = ref([])
 const total = ref(0)
 const page = ref(1)
@@ -459,6 +482,15 @@ const pagination = computed(() => ({
   showJumper: true,
   pageSizeOptions: [20, 50, 100, 200],
 }))
+
+const latestScanId = computed(() => scanRunId(scanHistory.value[0]))
+const isLatestScanSelected = computed(() => (
+  Boolean(latestScanId.value) && String(selectedScanId.value) === String(latestScanId.value)
+))
+const selectedScan = computed(() => {
+  if (!selectedScanId.value) return null
+  return scanHistory.value.find(r => String(scanRunId(r)) === String(selectedScanId.value)) || null
+})
 
 // ─── 工具函数 ───
 function stabilityClass(v) {
@@ -627,18 +659,61 @@ async function onPriorityChange(url, priority) {
 // ─── Legacy 视图函数 ───
 function onSelectChange(keys) { selectedKeys.value = keys }
 
+function scanRunId(run) {
+  return run?.scan_id || run?.id || ''
+}
+
+function scanStatusLabel(status) {
+  return ({
+    completed: '已完成',
+    finished: '已完成',
+    success: '已完成',
+    running: '运行中',
+    failed: '失败',
+    error: '失败',
+    stopped: '已停止',
+  })[status] || '扫描记录'
+}
+
+function scanStatusTheme(status) {
+  return ({
+    completed: 'success',
+    finished: 'success',
+    success: 'success',
+    running: 'primary',
+    failed: 'danger',
+    error: 'danger',
+    stopped: 'warning',
+  })[status] || 'default'
+}
+
 function formatScanOptionLabel(run) {
-  const startedAt = run.started_at || run.finished_at || run.scan_id || '未知记录'
+  const startedAt = formatDate(run.finished_at || run.started_at || run.scan_id || '未知记录')
   const channelCount = run.total_deep_pass ?? run.total_deduped ?? run.total_raw
-  const status = run.status ? ` [${run.status}]` : ''
-  return channelCount != null ? `${startedAt}${status} - ${channelCount} 频道` : `${startedAt}${status}`
+  const status = run.status ? scanStatusLabel(run.status) : ''
+  const count = channelCount != null ? `${channelCount} 频道` : '无统计'
+  return [startedAt, status, count].filter(Boolean).join(' · ')
 }
 
 async function loadHistory() {
+  historyLoading.value = true
   try {
     const data = await apiScanHistory()
-    scanHistory.value = Array.isArray(data) ? data : (data.history || [])
-  } catch (e) { console.error('加载扫描历史失败', e) }
+    scanHistory.value = scanHistoryFromResponse(data)
+  } catch (e) {
+    console.error('加载扫描历史失败', e)
+    scanHistory.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function scanHistoryFromResponse(data) {
+  if (Array.isArray(data)) return data
+  if (!data || typeof data !== 'object') return []
+  const nested = data.data && typeof data.data === 'object' ? data.data : null
+  const candidates = [data.items, data.history, nested?.items, nested?.history]
+  return candidates.find(Array.isArray) || []
 }
 
 async function loadFilterOptions() {
@@ -657,6 +732,7 @@ async function loadResults() {
   if (categoryFilter.value) params.category = categoryFilter.value
   if (provinceFilter.value) params.province = provinceFilter.value
   if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+  resultsLoading.value = true
   try {
     const data = await apiScanResults(params)
     results.value = (data.items || []).map(r => ({
@@ -666,7 +742,39 @@ async function loadResults() {
       bandwidth: r.bandwidth != null ? Math.round(r.bandwidth) : null,
     }))
     total.value = data.total || results.value.length
-  } catch (e) { results.value = []; total.value = 0 }
+  } catch (e) {
+    results.value = []
+    total.value = 0
+  } finally {
+    resultsLoading.value = false
+  }
+}
+
+async function loadLegacyView() {
+  await loadHistory()
+  if (!legacyInitialized.value && !selectedScanId.value && latestScanId.value) {
+    selectedScanId.value = latestScanId.value
+  }
+  legacyInitialized.value = true
+  await Promise.all([loadFilterOptions(), loadResults()])
+}
+
+function onScanSelectionChange() {
+  categoryFilter.value = ''
+  provinceFilter.value = ''
+  reloadResults()
+}
+
+function selectLatestScan() {
+  if (!latestScanId.value || isLatestScanSelected.value) return
+  selectedScanId.value = latestScanId.value
+  onScanSelectionChange()
+}
+
+function showAllScanResults() {
+  if (!selectedScanId.value) return
+  selectedScanId.value = ''
+  onScanSelectionChange()
 }
 
 function reloadResults() {
@@ -725,9 +833,7 @@ watch(viewMode, (mode) => {
   if (mode === 'grouped') {
     loadGrouped()
   } else {
-    loadHistory()
-    loadFilterOptions()
-    loadResults()
+    loadLegacyView()
   }
 })
 
@@ -800,6 +906,39 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+}
+
+.legacy-toolbar,
+.legacy-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.scan-record-select {
+  width: 320px;
+  max-width: 100%;
+}
+
+.legacy-toolbar-spacer {
+  flex: 1 1 24px;
+}
+
+@media (max-width: 720px) {
+  .scan-record-select {
+    width: 100%;
+  }
+
+  .legacy-toolbar :deep(.t-input),
+  .legacy-toolbar :deep(.t-select) {
+    max-width: 100%;
+  }
+
+  .legacy-toolbar-spacer {
+    display: none;
+  }
 }
 
 
