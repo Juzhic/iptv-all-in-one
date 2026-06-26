@@ -111,7 +111,7 @@
                       <span class="url-cell">{{ r.url }}</span>
                     </t-popup>
                     <t-button v-if="r.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(r.url)">
-                      <template #icon><t-icon name="copy" /></template>
+                      <template #icon><CopyIcon /></template>
                     </t-button>
                   </div>
                 </template>
@@ -268,6 +268,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import CopyIcon from 'tdesign-icons-vue-next/esm/components/copy.js'
 import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { platformTheme } from '../utils/platform.js'

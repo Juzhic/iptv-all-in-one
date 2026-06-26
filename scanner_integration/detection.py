@@ -10,6 +10,7 @@ import random
 import threading
 import uuid
 from collections import defaultdict
+from datetime import timedelta
 from urllib.parse import urlparse
 
 from . import config_bridge
@@ -28,6 +29,14 @@ def _local_now():
         return datetime.now()
 
 
+def _format_local_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return value.strftime('%Y-%m-%d %H:%M:%S')
+
+
 class DetectionManager:
     """定期检测管理器，运行在 AsyncBridge 的事件循环上。"""
 
@@ -38,16 +47,34 @@ class DetectionManager:
         self._last_cycle_at = None
         self._last_cycle_result = None
         self._last_resurrection_at = None
+        self._next_cycle_at = None
+        self._cycle_running = False
 
     @property
     def status(self):
         """返回检测模块当前状态。"""
         return {
             'running': self._running,
-            'last_cycle_at': self._last_cycle_at,
+            'cycle_running': self._cycle_running,
+            'last_cycle_at': _format_local_dt(self._last_cycle_at),
             'last_cycle_result': self._last_cycle_result,
-            'last_resurrection_at': self._last_resurrection_at,
+            'last_resurrection_at': _format_local_dt(self._last_resurrection_at),
+            'next_cycle_at': self._next_cycle_at,
         }
+
+    def _broadcast_status(self):
+        try:
+            from . import broadcast_detection_sse
+            broadcast_detection_sse('status', self.status)
+        except Exception:
+            pass
+
+    def _set_next_cycle_at(self, value):
+        next_cycle_at = _format_local_dt(value)
+        if self._next_cycle_at == next_cycle_at:
+            return
+        self._next_cycle_at = next_cycle_at
+        self._broadcast_status()
 
     def start(self):
         """启动检测循环。"""
@@ -57,12 +84,15 @@ class DetectionManager:
         from . import bridge
         self._running = True
         self._task = bridge.run_background(self._loop())
+        self._broadcast_status()
         logger.info("[Detection] 检测循环已启动")
 
     def stop(self):
         """停止检测循环。"""
         self._running = False
         self._reload_event.set()
+        self._set_next_cycle_at(None)
+        self._broadcast_status()
         if self._task and not self._task.done():
             self._task.cancel()
             logger.info("[Detection] 检测循环已停止")
@@ -109,8 +139,11 @@ class DetectionManager:
             cfg = config_bridge.get_scan_config()
             interval = cfg.get('detection_interval_minutes', 120)
             if interval <= 0:
+                self._set_next_cycle_at(None)
                 await self._sleep_or_reload(60)
                 continue
+
+            self._set_next_cycle_at(_local_now() + timedelta(minutes=interval))
 
             self._log('INFO', f"[Detection] 下次检测将在 {interval} 分钟后")
             if await self._sleep_or_reload(interval * 60):
@@ -118,6 +151,7 @@ class DetectionManager:
 
             if not self._running:
                 break
+            self._set_next_cycle_at(None)
             await self._run_detection_cycle(trigger_source='auto')
 
             # 检查是否需要执行复活检测
@@ -127,7 +161,6 @@ class DetectionManager:
                 if self._last_resurrection_at is None:
                     should_run = True
                 else:
-                    from datetime import timedelta
                     elapsed = _local_now() - self._last_resurrection_at
                     if elapsed >= timedelta(hours=resurrection_interval_hours):
                         should_run = True
@@ -138,6 +171,8 @@ class DetectionManager:
         """执行一次完整的检测周期，结果持久化到数据库。"""
         cfg = config_bridge.get_scan_config()
         timeout_minutes = cfg.get('detection_cycle_timeout_minutes', 30)
+        self._cycle_running = True
+        self._broadcast_status()
         try:
             await asyncio.wait_for(
                 self._run_detection_cycle_inner(cfg, trigger_source),
@@ -146,6 +181,9 @@ class DetectionManager:
         except asyncio.TimeoutError:
             self._log('WARNING', f"[Detection] 检测周期超时 ({timeout_minutes} 分钟)，已中止")
             self._last_cycle_at = None
+        finally:
+            self._cycle_running = False
+            self._broadcast_status()
 
     async def _run_detection_cycle_inner(self, cfg, trigger_source='auto'):
         """执行一次完整的检测周期（内部实现）。"""

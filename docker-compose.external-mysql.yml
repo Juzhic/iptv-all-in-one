@@ -1,0 +1,15 @@
+services:
+  iptv-test:
+    image: juzhic/iptv-all-in-one:latest
+    container_name: iptv-test
+    ports:
+      - "${PORT:-58080}:58080"
+    environment:
+      - DB_HOST=${DB_HOST:?Please set DB_HOST in .env}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+      - DB_NAME=${DB_NAME:-iptv-test}
+      - DB_CHARSET=${DB_CHARSET:-utf8mb4}
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

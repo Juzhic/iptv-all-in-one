@@ -39,11 +39,37 @@
       </t-table>
     </t-card>
 
+    <div class="scan-config-toolbar" aria-label="扫描配置操作">
+      <div class="toolbar-copy">
+        <div class="toolbar-title-row">
+          <span class="toolbar-title">扫描配置</span>
+          <span class="toolbar-note">保存一次会提交下面所有扫描参数和高级策略</span>
+        </div>
+        <div class="toolbar-pills">
+          <span class="toolbar-pill">{{ provinceBadgeText }}</span>
+          <span class="toolbar-pill">{{ cScanStatusLabel }}</span>
+          <span class="toolbar-pill">{{ scheduleBadgeText }}</span>
+          <span class="toolbar-pill toolbar-pill--accent">{{ strategyBadgeText }}</span>
+        </div>
+      </div>
+
+      <t-space class="toolbar-actions">
+        <t-button variant="outline" @click="loadConfig">
+          <template #icon><RefreshIcon /></template>
+          重新加载
+        </t-button>
+        <t-button class="scan-config-save-button" theme="primary" :loading="saving" @click="saveScanConfig">
+          <template #icon><SaveIcon /></template>
+          保存配置
+        </t-button>
+      </t-space>
+    </div>
+
     <t-card size="small" :bordered="false" class="config-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">扫描参数</div>
-          <p class="section-desc">把扫描范围、采集规模和定时策略拆成两块，常用项更集中，也能顺手看出 C 段扫描当前到底是开还是关。</p>
+          <p class="section-desc">常用参数集中在这里：范围、平台采集量、C 段扩展和定时执行，调整后用上方按钮统一保存。</p>
         </div>
 
         <div class="config-header-pills">
@@ -197,21 +223,18 @@
           </div>
         </section>
       </div>
-
-      <div class="config-actions">
-        <div class="config-actions-tip">当前数据库里的 C 段扫描真实值是 {{ scanCfg.enable_c_scan ? '开启' : '关闭' }}，现在页面会按真实状态显示，不再出现灰色却写"开启"的错位。</div>
-        <t-space>
-          <t-button theme="primary" :loading="saving" @click="saveScanConfig">保存配置</t-button>
-          <t-button variant="outline" @click="loadConfig">重新加载</t-button>
-        </t-space>
-      </div>
     </t-card>
 
     <t-card size="small" :bordered="false" class="config-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">高级扫描策略</div>
-          <p class="section-desc">配置 ISP 智能分析和社区源等高级扫描策略，提升扫描覆盖范围和精准度。</p>
+          <p class="section-desc">补源和智能发现放在这一块。它们和基础参数共用同一份扫描配置，保存入口保持一致。</p>
+        </div>
+
+        <div class="config-header-pills">
+          <span class="config-pill">{{ strategyBadgeText }}</span>
+          <span class="config-pill config-pill--accent">{{ communityBadgeText }}</span>
         </div>
       </div>
 
@@ -367,14 +390,6 @@
           </div>
         </section>
       </div>
-
-      <div class="config-actions">
-        <div class="config-actions-tip">配置高级扫描策略后，需要点击保存按钮才能生效。</div>
-        <t-space>
-          <t-button theme="primary" :loading="saving" @click="saveScanConfig">保存配置</t-button>
-          <t-button variant="outline" @click="loadConfig">重新加载</t-button>
-        </t-space>
-      </div>
     </t-card>
 
     <t-dialog
@@ -424,6 +439,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import RefreshIcon from 'tdesign-icons-vue-next/esm/components/refresh.js'
+import SaveIcon from 'tdesign-icons-vue-next/esm/components/save.js'
 import { useTheme } from '../composables/useTheme.js'
 import {
   apiSaveScanConfig,
@@ -538,6 +555,27 @@ const provinceBadgeText = computed(() => {
 
 const cScanStatusLabel = computed(() => (
   scanCfg.enable_c_scan ? 'C段扫描：已启用' : 'C段扫描：已关闭'
+))
+
+const scheduleBadgeText = computed(() => {
+  const time = scanCfg.update_time || '03:00'
+  if (scanCfg.daily_full_update) return `定时：每天 ${time}`
+  const count = scanCfg.update_days?.length || 0
+  return count ? `定时：每周 ${count} 天 ${time}` : '定时：未设置'
+})
+
+const enabledStrategyCount = computed(() => ([
+  scanCfg.ddgs_enabled,
+  scanCfg.quality_discovery_enabled,
+  scanCfg.quality_hotspot_enabled,
+  scanCfg.isp_intelligence_enabled,
+  scanCfg.community_sources_enabled,
+].filter(Boolean).length))
+
+const strategyBadgeText = computed(() => `策略：${enabledStrategyCount.value} 项启用`)
+
+const communityBadgeText = computed(() => (
+  scanCfg.community_sources_enabled ? '社区源：已启用' : '社区源：已关闭'
 ))
 
 const cScanHint = computed(() => (
@@ -973,6 +1011,75 @@ onBeforeUnmount(() => {
 
 .keys-card {
   margin-bottom: 12px;
+  border-radius: 10px;
+}
+
+.scan-config-toolbar {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: 10px;
+  background: var(--surface-shell-bg);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.toolbar-copy {
+  min-width: 0;
+}
+
+.toolbar-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.toolbar-title {
+  color: var(--surface-text-primary);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.toolbar-note {
+  color: var(--surface-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.toolbar-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.toolbar-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--surface-pill-bg);
+  color: var(--surface-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toolbar-pill--accent {
+  background: var(--surface-pill-accent-bg);
+  color: var(--surface-pill-accent-text);
+}
+
+.toolbar-actions {
+  flex-shrink: 0;
 }
 
 .section-header,
@@ -1008,8 +1115,12 @@ onBeforeUnmount(() => {
 
 .config-card {
   color: var(--surface-text-primary);
-  border-radius: 18px;
+  border-radius: 10px;
   background: var(--surface-shell-gradient);
+}
+
+.config-card + .config-card {
+  margin-top: 12px;
 }
 
 .config-header-pills {
@@ -1029,7 +1140,7 @@ onBeforeUnmount(() => {
   color: var(--surface-text-primary);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .config-pill--accent {
@@ -1046,7 +1157,7 @@ onBeforeUnmount(() => {
 .config-panel {
   padding: 18px;
   border: 1px solid var(--surface-border-strong);
-  border-radius: 18px;
+  border-radius: 10px;
   background: var(--surface-shell-bg);
   box-shadow: var(--surface-shadow);
   backdrop-filter: blur(8px);
@@ -1065,8 +1176,8 @@ onBeforeUnmount(() => {
   color: var(--surface-accent);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .config-panel-head h3 {
@@ -1096,7 +1207,7 @@ onBeforeUnmount(() => {
   gap: 16px;
   padding: 14px 16px;
   border: 1px solid var(--surface-border-soft);
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--surface-field-bg);
 }
 
@@ -1166,7 +1277,7 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 14px;
   border: 1px solid var(--surface-border-soft);
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--surface-inner-bg);
 }
 
@@ -1270,22 +1381,6 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
-.config-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--surface-border-soft);
-}
-
-.config-actions-tip {
-  color: var(--surface-text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .dialog-actions {
   justify-content: flex-end;
   margin-top: 16px;
@@ -1305,10 +1400,22 @@ onBeforeUnmount(() => {
 @media (max-width: 768px) {
   .section-header,
   .config-header,
-  .config-actions,
+  .scan-config-toolbar,
   .config-field {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+  }
+
+  .toolbar-actions :deep(.t-space-item) {
+    flex: 1;
+  }
+
+  .toolbar-actions :deep(.t-button) {
+    width: 100%;
   }
 
   .config-header-pills {

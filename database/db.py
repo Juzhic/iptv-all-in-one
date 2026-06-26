@@ -584,7 +584,7 @@ def init_db():
             passed TINYINT(1) DEFAULT 0,
             reason TEXT,
             cost_seconds DOUBLE,
-            source_url TEXT DEFAULT '',
+            source_url TEXT,
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 
@@ -935,7 +935,7 @@ def _ensure_run_results_columns(conn):
         'connection_latency_ms': 'DOUBLE',
         'quality_score': 'DOUBLE',
         'output_updated_at': 'TEXT',
-        'source_url': "TEXT DEFAULT ''",
+        'source_url': "TEXT",
     }
     for name, col_type in columns.items():
         if name not in existing:

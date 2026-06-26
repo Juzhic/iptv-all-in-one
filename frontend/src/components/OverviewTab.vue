@@ -91,7 +91,7 @@
   </div>
 
   <div v-else class="empty-state">
-    <t-icon name="chart" size="48px" />
+    <ChartIcon size="48px" />
     <p>暂无测速数据</p>
     <p class="empty-state-sub">请前往“系统测试”页，点击“立即测试”发起首次检测</p>
   </div>
@@ -99,6 +99,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import ChartIcon from 'tdesign-icons-vue-next/esm/components/chart.js'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from 'echarts/components'

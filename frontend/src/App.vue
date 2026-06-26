@@ -149,6 +149,12 @@ whenever(ctrl_s, () => {
       const saveBtn = settingsEl.querySelector('.t-button--theme-primary')
       if (saveBtn) saveBtn.click()
     }
+  } else if (activeTab.value === 'scan-config') {
+    const scanConfigEl = document.querySelector('.scan-config-tab')
+    if (scanConfigEl) {
+      const saveBtn = scanConfigEl.querySelector('.scan-config-save-button')
+      if (saveBtn) saveBtn.click()
+    }
   }
 })
 

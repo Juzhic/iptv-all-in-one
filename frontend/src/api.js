@@ -265,6 +265,9 @@ export function apiPersistentManualCheck() {
 export function apiDetectionLogs(limit = 200) {
   return fetchJSON('/api/scan/detection/logs?limit=' + limit)
 }
+export function apiDetectionStatus() {
+  return fetchJSON('/api/scan/detection/status')
+}
 export function apiDetectionRuns(start, end, limit = 100) {
   const params = new URLSearchParams()
   if (start) params.set('start', start)
@@ -301,6 +304,7 @@ export function connectTestSse(handlers = {}) {
 
 export function connectDetectionSse(handlers = {}) {
   const es = new EventSource('/api/detection/stream')
+  if (handlers.status) es.addEventListener('status', handlers.status)
   if (handlers.log) es.addEventListener('log', handlers.log)
   if (handlers.cycle_start) es.addEventListener('cycle_start', handlers.cycle_start)
   if (handlers.cycle_end) es.addEventListener('cycle_end', handlers.cycle_end)

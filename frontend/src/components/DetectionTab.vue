@@ -204,6 +204,7 @@ import { useTheme } from '../composables/useTheme.js'
 import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
+  apiDetectionStatus,
   apiDetectionRuns,
   apiDetectionRunResults,
   apiPersistentRecheck,
@@ -264,6 +265,7 @@ async function saveDetConfig() {
         detCfg.deletion_threshold = typeof res.config.deletion_threshold === 'number' ? res.config.deletion_threshold : detCfg.deletion_threshold
         detCfg.stable_channel_multiplier = typeof res.config.stable_channel_multiplier === 'number' ? res.config.stable_channel_multiplier : detCfg.stable_channel_multiplier
       }
+      await loadDetectionStatus()
     } else {
       MessagePlugin.error(`保存失败: ${res.error || ''}`)
     }
@@ -285,6 +287,14 @@ function connectDetectionStream() {
   disconnectDetectionSse()
   try {
     detEventSource = connectDetectionSse({
+      status(e) {
+        try {
+          const status = JSON.parse(e.data)
+          detStatus.value = status
+          updateDetectionCountdown()
+          if (!status.cycle_running) loadDetRuns()
+        } catch (_) {}
+      },
       log(e) {
         try {
           const entry = JSON.parse(e.data)
@@ -315,7 +325,10 @@ function disconnectDetectionSse() {
 
 function startDetPollFallback() {
   stopDetPollFallback()
-  detPollFallback = setInterval(loadDetectionLogs, 10000)
+  detPollFallback = setInterval(() => {
+    loadDetectionLogs()
+    loadDetectionStatus()
+  }, 10000)
 }
 
 function stopDetPollFallback() {
@@ -327,21 +340,40 @@ function stopDetPollFallback() {
 
 // ─── 下次检测倒计时 ───
 const nextCheckCountdown = ref('')
+const detStatus = ref({})
 let countdownTimer = null
 
-function updateCountdown() {
+function parseLocalDateTime(value) {
+  if (!value) return NaN
+  if (value instanceof Date) return value.getTime()
+  return new Date(String(value).replace(' ', 'T')).getTime()
+}
+
+function updateDetectionCountdown() {
   if (!detCfg.detection_interval_minutes || detCfg.detection_interval_minutes <= 0) {
     nextCheckCountdown.value = ''
     return
   }
-  const lastCycle = detRuns.value?.[0]?.started_at
-  if (!lastCycle) {
-    nextCheckCountdown.value = ''
+  if (detStatus.value?.cycle_running) {
+    nextCheckCountdown.value = '检测正在执行'
     return
   }
-  const lastTime = new Date(lastCycle).getTime()
-  const intervalMs = detCfg.detection_interval_minutes * 60 * 1000
-  const nextTime = lastTime + intervalMs
+  if (detStatus.value?.running === false && !detStatus.value?.next_cycle_at) {
+    nextCheckCountdown.value = '检测调度未启动'
+    return
+  }
+
+  let nextTime = parseLocalDateTime(detStatus.value?.next_cycle_at)
+  if (!Number.isFinite(nextTime)) {
+    const latestAutoCycle = detRuns.value?.find?.(row => row.trigger_source !== 'manual') || detRuns.value?.[0]
+    const lastTime = parseLocalDateTime(latestAutoCycle?.started_at)
+    if (!Number.isFinite(lastTime)) {
+      nextCheckCountdown.value = ''
+      return
+    }
+    nextTime = lastTime + detCfg.detection_interval_minutes * 60 * 1000
+  }
+
   const diffMs = nextTime - Date.now()
   if (diffMs <= 0) {
     nextCheckCountdown.value = '即将执行'
@@ -393,6 +425,16 @@ async function loadDetectionLogs() {
       detLogLines.value = data
     }
   } catch (_) { /* ignore */ }
+}
+
+async function loadDetectionStatus() {
+  try {
+    const data = await apiDetectionStatus()
+    if (data && typeof data === 'object') {
+      detStatus.value = data
+    }
+  } catch (_) { /* ignore */ }
+  updateDetectionCountdown()
 }
 
 watch(detLogLines, () => {
@@ -448,7 +490,7 @@ async function loadDetRuns() {
       }
       detRuns.value = data
     }
-    updateCountdown()
+    updateDetectionCountdown()
   } catch (e) {
     MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
   }
@@ -557,13 +599,12 @@ function passRateClass(row) {
   return 'det-val-fail'
 }
 
-onMounted(() => {
-  loadConfig()
+onMounted(async () => {
+  await loadConfig()
   connectDetectionStream()
-  loadDetRuns().then(() => {
-    updateCountdown()
-    countdownTimer = setInterval(updateCountdown, 60000)
-  })
+  await Promise.all([loadDetectionStatus(), loadDetRuns()])
+  updateDetectionCountdown()
+  countdownTimer = setInterval(updateDetectionCountdown, 60000)
 })
 
 onBeforeUnmount(() => {
