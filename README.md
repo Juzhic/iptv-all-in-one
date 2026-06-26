@@ -102,6 +102,46 @@
 
 ## 快速开始
 
+### Docker 部署（推荐）
+
+最简单的方式，自动包含 MySQL 和 FFmpeg：
+
+```bash
+# 创建配置文件（可选，默认使用内置MySQL）
+cp .env.example .env
+
+# 启动服务
+docker-compose up -d
+
+# 访问
+http://localhost:58080
+```
+
+**使用外部 MySQL**：
+
+编辑 `.env` 文件：
+```bash
+DB_HOST=你的数据库IP
+DB_USER=你的用户名
+DB_PASSWORD=你的密码
+DB_NAME=iptv-test
+```
+
+然后运行 `docker-compose up -d`。
+
+**更新镜像**：
+
+```bash
+docker-compose pull
+docker-compose up -d
+```
+
+MySQL 数据会自动保存在 Docker volume 中，不会丢失。
+
+---
+
+### 手动安装
+
 ### 1. 安装依赖
 
 ```bash
