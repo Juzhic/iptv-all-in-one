@@ -18,6 +18,7 @@ logs/
 basic_auth.json
 database/db_config.json
 *.log
+.env
 
 # IDE
 .idea/

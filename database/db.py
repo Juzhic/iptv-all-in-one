@@ -94,8 +94,23 @@ _db_config = None
 def _load_db_config():
     global _db_config
     if _db_config is None:
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            _db_config = json.load(f)
+        # 优先从环境变量读取
+        db_host = os.environ.get('DB_HOST')
+        if db_host:
+            _db_config = {
+                'host': db_host,
+                'port': int(os.environ.get('DB_PORT', 3306)),
+                'user': os.environ.get('DB_USER', 'root'),
+                'password': os.environ.get('DB_PASSWORD', ''),
+                'database': os.environ.get('DB_NAME', 'iptv-test'),
+                'charset': os.environ.get('DB_CHARSET', 'utf8mb4')
+            }
+            logger.info(f"[DB] 使用环境变量配置: {db_host}:{_db_config['port']}/{_db_config['database']}")
+        else:
+            # 从配置文件读取
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                _db_config = json.load(f)
+            logger.info(f"[DB] 使用配置文件: {CONFIG_PATH}")
     return _db_config
 
 
