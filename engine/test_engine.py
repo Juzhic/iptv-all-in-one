@@ -1357,7 +1357,7 @@ if __name__ == "__main__":
     run_mode = cfg.get('run_mode', 'once')
 
     print("=" * 60)
-    print("IPTV 频道质量筛选工具 v3.0")
+    print("iptv-all-in-one v3.0")
     print("=" * 60)
 
     # 初始化数据库，迁移旧数据

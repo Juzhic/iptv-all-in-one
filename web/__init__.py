@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-web 包 — IPTV 测速管理后台。
+web 包 — iptv-all-in-one 管理后台。
 
 gunicorn 入口: gunicorn web:app
 """

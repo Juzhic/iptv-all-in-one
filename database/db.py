@@ -103,7 +103,7 @@ def _load_db_config():
                 'port': int(os.environ.get('DB_PORT', 3306)),
                 'user': os.environ.get('DB_USER', 'root'),
                 'password': os.environ.get('DB_PASSWORD', ''),
-                'database': os.environ.get('DB_NAME', 'iptv-test'),
+                'database': os.environ.get('DB_NAME', 'iptv-all-in-one'),
                 'charset': os.environ.get('DB_CHARSET', 'utf8mb4')
             }
             logger.info(f"[DB] 使用环境变量配置: {db_host}:{_db_config['port']}/{_db_config['database']}")

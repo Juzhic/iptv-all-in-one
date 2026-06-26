@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 扫描配置桥接模块。
-从 IPTV-Test 的 config_data 表读写扫描专用配置（key = 'scan_config'）。
+从 iptv-all-in-one 的 config_data 表读写扫描专用配置（key = 'scan_config'）。
 替代 itv_scan 原始的 config.py + config.json 方案。
 """
 import json

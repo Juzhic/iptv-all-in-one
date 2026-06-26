@@ -28,6 +28,7 @@
 - README 补充质量优先发现、质量热点补源、扫描偏少排查和新增扫描参数说明。
 - README 完善 Docker 部署教程，明确默认 MySQL 容器、外部 MySQL 和端口映射的使用方式。
 - README 补充说明 `docker pull` 只下载镜像，不会启动应用或 MySQL，避免误解部署命令。
+- README 新增飞牛 fnOS 图形界面部署说明，提供可直接粘贴的 Compose 配置。
 - 新增 `docker-compose.external-mysql.yml`，支持只启动应用容器并连接用户已有的 MySQL。
 
 ### 修复

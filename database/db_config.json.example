@@ -3,6 +3,6 @@
     "port": 3306,
     "user": "your_username",
     "password": "your_password",
-    "database": "iptv-test",
+    "database": "iptv-all-in-one",
     "charset": "utf8mb4"
 }
