@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.10）
+## 当前版本说明（v1.6.11）
 
 本项目当前以 MySQL 作为主要数据存储，数据库配置位于 `database/db_config.json`。
 

@@ -182,6 +182,9 @@ def filter_high_delay(channels, max_delay=MAX_DELAY_MS):
         logger.info(f"[延迟] 丢弃 {removed} 个")
     return filtered
 
+def _sort_number(value, default):
+    return value if isinstance(value, (int, float)) else default
+
 async def fast_check_with_fallback(session, url):
     async with global_sem:
         for attempt in range(2):
@@ -230,7 +233,7 @@ async def fast_filter(sources, log_fn=None):
                     speed = done[0] / elapsed if elapsed > 0 else 0
                     _log(f"[快速检测] {done[0]}/{total}  {speed:.1f}/s")
                 if ok:
-                    entry = {**src, 'protocol': 'http', 'delay': '', 'bandwidth': '', 'resolution': '', 'codec': '', 'stability': 0}
+                    entry = {**src, 'protocol': 'http', 'delay': None, 'bandwidth': None, 'resolution': '', 'codec': '', 'stability': 0}
                     if entry.get('ip_province') and not entry.get('name_province'):
                         entry['stability'] = 60
                     if 'category' not in entry:
@@ -380,7 +383,11 @@ async def background_deep_update(initial_list, log_fn=None):
             new_list.extend(stable_upd)
             new_list = filter_hd(filter_high_delay(new_list))
             # 按稳定性、带宽、延迟综合排序（供实时展示用）
-            new_list.sort(key=lambda c: (-c.get('stability', 0), -c.get('bandwidth', 0), c.get('delay', 9999)))
+            new_list.sort(key=lambda c: (
+                -_sort_number(c.get('stability'), 0),
+                -_sort_number(c.get('bandwidth'), 0),
+                _sort_number(c.get('delay'), 9999),
+            ))
             LATEST_CHANNELS = new_list
             QUICK_CHANNELS = new_list
             LAST_UPDATE_TIME = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
