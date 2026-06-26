@@ -115,6 +115,8 @@ Docker 部署默认使用 Docker Compose 编排两个独立容器：
 也就是说，MySQL 不是打包进 `iptv-test` 应用容器里，而是由 Compose 自动拉起一个独立的 MySQL 容器。两个容器在同一个 Docker 内部网络里通信，应用默认通过 `DB_HOST=mysql` 连接数据库。
 
 > 下面命令使用新版 Docker 写法 `docker compose`。如果你的环境只支持旧版 Compose，可以把命令替换成 `docker-compose`。
+>
+> 注意：单独执行 `docker pull juzhic/iptv-all-in-one:latest` 只会下载应用镜像，不会启动应用，也不会启动 MySQL。要自动启动应用和默认 MySQL 容器，请使用下面的 `docker compose up -d`。
 
 **方式 A：使用默认 MySQL 容器**
 
