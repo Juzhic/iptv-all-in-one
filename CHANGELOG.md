@@ -16,6 +16,7 @@
 ### 运维
 - `.env.example` 改为留空 `DB_PASSWORD` 并提示生成随机密码，部署打包脚本同步带上 `.env.example` 和 `generate_env.py`。
 - README 同步更新随机密码生成流程、飞牛 Compose 示例和当前版本号。
+- README 新增 GitHub 首页可见的最近更新摘要，并补充默认 MySQL Docker volume 持久化、备份、恢复和 `docker compose down -v` 风险说明。
 
 ## [1.6.14] - 2026-06-27
 
