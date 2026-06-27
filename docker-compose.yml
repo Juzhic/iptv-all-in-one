@@ -1,11 +1,20 @@
 services:
   mysql:
     image: mysql:8.4
-    container_name: iptv-mysql
+    container_name: mysql
+    command:
+      - --performance-schema=${MYSQL_PERFORMANCE_SCHEMA:-OFF}
+      - --innodb-buffer-pool-size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-64M}
+      - --innodb-log-buffer-size=${MYSQL_INNODB_LOG_BUFFER_SIZE:-8M}
+      - --max-connections=${MYSQL_MAX_CONNECTIONS:-50}
+      - --table-open-cache=${MYSQL_TABLE_OPEN_CACHE:-200}
+      - --table-definition-cache=${MYSQL_TABLE_DEFINITION_CACHE:-400}
+    ports:
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-iptv123456}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请先运行 python generate_env.py 生成 .env 并设置 DB_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME:-iptv-all-in-one}
     restart: unless-stopped
     healthcheck:
@@ -26,7 +35,7 @@ services:
       - DB_HOST=${DB_HOST:-mysql}
       - DB_PORT=${DB_PORT:-3306}
       - DB_USER=${DB_USER:-root}
-      - DB_PASSWORD=${DB_PASSWORD:-iptv123456}
+      - DB_PASSWORD=${DB_PASSWORD:?请先运行 python generate_env.py 生成 .env 并设置 DB_PASSWORD}
       - DB_NAME=${DB_NAME:-iptv-all-in-one}
       - DB_CHARSET=${DB_CHARSET:-utf8mb4}
       - TZ=Asia/Shanghai

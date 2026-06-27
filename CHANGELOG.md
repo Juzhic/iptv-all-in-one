@@ -7,6 +7,36 @@
 
 **重要说明：每次代码修改都必须将更新内容写入本文件；只有发布级或用户可见变更才提升版本号。**
 
+## [1.6.15] - 2026-06-27
+
+### 安全
+- 移除 Docker Compose 默认 MySQL root 弱密码，`DB_PASSWORD` 未设置时会拒绝启动，避免误用固定默认密码。
+- 新增 `generate_env.py`，可自动生成带随机 `DB_PASSWORD` 的 `.env`，并避免默认覆盖已有数据库密码。
+
+### 运维
+- `.env.example` 改为留空 `DB_PASSWORD` 并提示生成随机密码，部署打包脚本同步带上 `.env.example` 和 `generate_env.py`。
+- README 同步更新随机密码生成流程、飞牛 Compose 示例和当前版本号。
+
+## [1.6.14] - 2026-06-27
+
+### 运维
+- 默认 Docker Compose 内置 MySQL 新增宿主机本地端口映射，仅监听 `127.0.0.1:${MYSQL_HOST_PORT:-3306}`，便于本机数据库客户端访问且不暴露到局域网或公网。
+- `.env.example` 新增 `MYSQL_HOST_PORT`，可在宿主机 3306 被占用时调整本地映射端口。
+- README 同步更新 MySQL 本地访问说明、飞牛 Compose 示例和当前版本号。
+
+## [1.6.13] - 2026-06-27
+
+### 运维
+- 默认 Docker Compose 内置 MySQL 容器名从 `iptv-mysql` 调整为 `mysql`，与服务名保持一致，避免额外的项目名前缀。
+- README 同步更新默认 MySQL 容器命名、飞牛 Compose 示例和当前版本号。
+
+## [1.6.12] - 2026-06-27
+
+### 运维
+- 默认 Docker Compose 内置 MySQL 启用轻量启动参数，关闭 Performance Schema，并收紧 InnoDB 缓冲池、日志缓冲、连接数和表缓存，降低小内存服务器上的基础内存占用。
+- `.env.example` 新增默认 MySQL 容器内存相关调优项，用户可按服务器规格覆盖缓冲池、连接数和缓存大小。
+- README 同步更新默认 MySQL 低内存配置说明、飞牛 Compose 示例和当前版本号。
+
 ## [1.6.11] - 2026-06-27
 
 ### 修复

@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.11）
+## 当前版本说明（v1.6.15）
 
 本项目当前以 MySQL 作为主要数据存储，数据库配置位于 `database/db_config.json`。
 
@@ -110,7 +110,7 @@
 Docker 部署默认使用 Docker Compose 编排两个独立容器：
 
 - `iptv-all-in-one`：运行 Web 后台、测速程序和 FFmpeg。
-- `iptv-mysql`：运行 MySQL 8.4 LTS，数据保存在 Docker volume `mysql_data` 中。
+- `mysql`：运行 MySQL 8.4 LTS，默认带轻量内存参数，数据保存在 Docker volume `mysql_data` 中。
 
 也就是说，MySQL 不是打包进 `iptv-all-in-one` 应用容器里，而是由 Compose 自动拉起一个独立的 MySQL 容器。两个容器在同一个 Docker 内部网络里通信，应用默认通过 `DB_HOST=mysql` 连接数据库。
 
@@ -121,8 +121,11 @@ Docker 部署默认使用 Docker Compose 编排两个独立容器：
 **方式 A：使用默认 MySQL 容器**
 
 ```bash
-# 创建环境变量文件
-cp .env.example .env
+# 创建环境变量文件，并自动生成随机 DB_PASSWORD
+python generate_env.py
+
+# 如果你的系统没有 python 命令，改用：
+# python3 generate_env.py
 
 # 启动服务
 docker compose up -d
@@ -131,7 +134,13 @@ docker compose up -d
 http://localhost:58080
 ```
 
-首次启动前建议修改 `.env` 里的 `DB_PASSWORD`，它会作为默认 MySQL 容器的 root 密码。默认数据库镜像固定为 `mysql:8.4`，MySQL 数据会自动保存在 Docker volume 中，重启或更新应用容器不会丢失。
+首次启动前必须设置 `.env` 里的 `DB_PASSWORD`，它会作为默认 MySQL 容器的 root 密码。推荐运行 `python generate_env.py` 自动生成随机密码；如果手动复制 `.env.example`，也请填写强密码后再启动。默认数据库镜像固定为 `mysql:8.4`，MySQL 数据会自动保存在 Docker volume 中，重启或更新应用容器不会丢失。
+
+已有部署如果已经初始化过 `mysql_data`，请保持 `.env` 中的 `DB_PASSWORD` 与当前 MySQL root 密码一致。MySQL 官方镜像只在首次初始化数据目录时读取 `MYSQL_ROOT_PASSWORD`，后续直接改 `.env` 不会自动修改数据库里的 root 密码；需要先进入 MySQL 修改密码，再同步更新 `.env`。
+
+默认 MySQL 端口只映射到宿主机本地 `127.0.0.1:3306`，方便在服务器本机使用数据库客户端连接，不会对局域网或公网开放。如果宿主机 3306 已被占用，可在 `.env` 中修改 `MYSQL_HOST_PORT`。
+
+默认 `docker-compose.yml` 已为 8G 或更小服务器收紧 MySQL 基础内存占用：关闭 Performance Schema，并降低 InnoDB 缓冲池、日志缓冲、连接数和表缓存。需要更高并发或更大数据量时，可在 `.env` 中调大 `MYSQL_INNODB_BUFFER_POOL_SIZE`、`MYSQL_MAX_CONNECTIONS` 等参数后重启。
 
 **方式 B：使用已有的外部 MySQL**
 
@@ -146,7 +155,7 @@ DB_NAME=iptv-all-in-one
 DB_CHARSET=utf8mb4
 ```
 
-然后使用外部 MySQL 专用 compose 文件启动，这样不会额外创建 `iptv-mysql` 容器：
+然后使用外部 MySQL 专用 compose 文件启动，这样不会额外创建 `mysql` 容器：
 
 ```bash
 docker compose -f docker-compose.external-mysql.yml up -d
@@ -202,17 +211,26 @@ docker compose -f docker-compose.external-mysql.yml logs -f iptv-all-in-one
 5. 创建或编辑 `docker-compose.yml`，粘贴下面内容。
 6. 保存后点击启动。启动完成后访问 `http://飞牛IP:58080`。
 
-默认模式会启动两个容器：`iptv-all-in-one` 应用容器和 `iptv-mysql` MySQL 容器。
+默认模式会启动两个容器：`iptv-all-in-one` 应用容器和 `mysql` MySQL 容器。
 
 ```yaml
 services:
   mysql:
     image: mysql:8.4
-    container_name: iptv-mysql
+    container_name: mysql
+    command:
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --innodb-log-buffer-size=8M
+      - --max-connections=50
+      - --table-open-cache=200
+      - --table-definition-cache=400
+    ports:
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: iptv123456
+      MYSQL_ROOT_PASSWORD: 请换成强随机密码
       MYSQL_DATABASE: iptv-all-in-one
     restart: unless-stopped
     healthcheck:
@@ -233,7 +251,7 @@ services:
       - DB_HOST=mysql
       - DB_PORT=3306
       - DB_USER=root
-      - DB_PASSWORD=iptv123456
+      - DB_PASSWORD=请换成同一个强随机密码
       - DB_NAME=iptv-all-in-one
       - DB_CHARSET=utf8mb4
       - TZ=Asia/Shanghai
@@ -243,7 +261,7 @@ volumes:
   mysql_data:
 ```
 
-建议首次部署前把上面两处 `iptv123456` 改成你自己的强密码，并保持 `MYSQL_ROOT_PASSWORD` 和 `DB_PASSWORD` 一致。
+建议首次部署前把上面两处密码改成同一个强随机密码，并保持 `MYSQL_ROOT_PASSWORD` 和 `DB_PASSWORD` 一致。上面的 MySQL `command` 是低内存默认参数；如果机器内存充足或并发较高，可以按需调大 `innodb-buffer-pool-size` 和 `max-connections`。`ports` 只绑定 `127.0.0.1`，因此只有宿主机本地能连接 MySQL。
 
 如需改访问端口，例如想用 `8080` 访问，只改端口映射左边：
 
@@ -254,7 +272,7 @@ ports:
 
 然后访问 `http://飞牛IP:8080`。
 
-如果你已经有独立 MySQL，不想启动 `iptv-mysql`，请在 Compose 项目里改用 `docker-compose.external-mysql.yml` 的内容，并填写你的 `DB_HOST`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
+如果你已经有独立 MySQL，不想启动 `mysql` 容器，请在 Compose 项目里改用 `docker-compose.external-mysql.yml` 的内容，并填写你的 `DB_HOST`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
 
 ---
 
@@ -497,21 +515,28 @@ server {
 **默认模式：应用容器 + MySQL 容器**
 
 ```bash
-cp .env.example .env
+# 创建环境变量文件，并自动生成随机 DB_PASSWORD
+python generate_env.py
 
-# 建议先编辑 .env，至少修改 DB_PASSWORD
+# 如果你的系统没有 python 命令，改用：
+# python3 generate_env.py
+
 docker compose up -d
 ```
 
 这会启动：
 
 - `iptv-all-in-one`：应用容器，容器内固定监听 `58080`。
-- `iptv-mysql`：MySQL 8.4 LTS 容器，数据写入 `mysql_data` volume。
+- `mysql`：MySQL 8.4 LTS 容器，默认带轻量内存参数，数据写入 `mysql_data` volume。
+
+默认 `docker-compose.yml` 会关闭 MySQL Performance Schema，并把 InnoDB 缓冲池、日志缓冲、最大连接数和表缓存调到更适合小服务器的值。若后续数据量或并发明显增加，可在 `.env` 中调大对应的 `MYSQL_*` 参数后执行 `docker compose up -d` 重新创建 MySQL 容器。
+
+默认 MySQL 仅映射到宿主机本地地址 `127.0.0.1:${MYSQL_HOST_PORT:-3306}`，不会开放给局域网或公网。需要在宿主机上用数据库客户端连接时，主机填 `127.0.0.1`，端口默认 `3306`。
 
 **外部 MySQL 模式：只启动应用容器**
 
 ```bash
-cp .env.example .env
+python generate_env.py
 
 # 编辑 .env，把 DB_HOST/DB_USER/DB_PASSWORD/DB_NAME 改成外部 MySQL
 docker compose -f docker-compose.external-mysql.yml up -d
@@ -519,7 +544,7 @@ docker compose -f docker-compose.external-mysql.yml up -d
 
 使用这个模式后，后续 `pull`、`up`、`logs`、`ps`、`down` 等命令也请继续带上 `-f docker-compose.external-mysql.yml`。
 
-如果只是把 `.env` 的 `DB_HOST` 改成外部地址后继续运行默认 `docker-compose.yml`，应用会连接外部 MySQL，但 Compose 仍会启动 `iptv-mysql` 这个本地数据库容器。若不想启动本地 MySQL，请使用 `docker-compose.external-mysql.yml`。
+如果只是把 `.env` 的 `DB_HOST` 改成外部地址后继续运行默认 `docker-compose.yml`，应用会连接外部 MySQL，但 Compose 仍会启动 `mysql` 这个本地数据库容器。若不想启动本地 MySQL，请使用 `docker-compose.external-mysql.yml`。
 
 **自定义访问端口**
 
@@ -563,9 +588,16 @@ docker run -d \
 | `DB_HOST` | MySQL 地址；默认 Compose 内置 MySQL 时为 `mysql` | 未设置 |
 | `DB_PORT` | MySQL 端口 | `3306` |
 | `DB_USER` | MySQL 用户 | `root` |
-| `DB_PASSWORD` | MySQL 密码 | 未设置 |
+| `DB_PASSWORD` | MySQL 密码；默认部署必须设置，推荐用 `python generate_env.py` 随机生成 | 未设置 |
 | `DB_NAME` | MySQL 数据库名 | `iptv-all-in-one` |
 | `DB_CHARSET` | MySQL 字符集 | `utf8mb4` |
+| `MYSQL_HOST_PORT` | 默认 MySQL 容器映射到宿主机本地的端口，仅监听 `127.0.0.1` | `3306` |
+| `MYSQL_PERFORMANCE_SCHEMA` | 默认 MySQL 容器是否启用 Performance Schema | `OFF` |
+| `MYSQL_INNODB_BUFFER_POOL_SIZE` | 默认 MySQL 容器 InnoDB 缓冲池大小 | `64M` |
+| `MYSQL_INNODB_LOG_BUFFER_SIZE` | 默认 MySQL 容器 InnoDB 日志缓冲大小 | `8M` |
+| `MYSQL_MAX_CONNECTIONS` | 默认 MySQL 容器最大连接数 | `50` |
+| `MYSQL_TABLE_OPEN_CACHE` | 默认 MySQL 容器表打开缓存 | `200` |
+| `MYSQL_TABLE_DEFINITION_CACHE` | 默认 MySQL 容器表定义缓存 | `400` |
 | `FFMPEG_BIN` | FFmpeg 可执行文件路径 | `ffmpeg`（从 PATH 查找） |
 | `IPTV_HOST` | Web 服务监听地址 | `0.0.0.0` |
 | `IPTV_PORT` | `python -m web` 直接运行时的 Web 服务端口；官方 Docker 镜像内固定监听 `58080` | `58080` |
