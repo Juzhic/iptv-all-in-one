@@ -45,6 +45,8 @@ copy /y "requirements.txt"    "%DEPLOY%\"
 copy /y "basic_auth.json"     "%DEPLOY%\"
 copy /y "Dockerfile"          "%DEPLOY%\"
 copy /y "docker-compose.yml"  "%DEPLOY%\"
+copy /y ".env.example"        "%DEPLOY%\"
+copy /y "generate_env.py"     "%DEPLOY%\"
 
 for /d /r "%DEPLOY%" %%d in (__pycache__) do (
     if exist "%%d" rd /s /q "%%d"
