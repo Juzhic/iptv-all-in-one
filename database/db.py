@@ -2249,23 +2249,42 @@ def insert_detection_results(cycle_id, results_list):
         conn.commit()
 
 
+def _normalize_detection_run_bound(value, end_of_day=False):
+    """Normalize date-only detection filters to full local datetimes."""
+    if not value:
+        return value
+    text = str(value).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return f"{text} {'23:59:59' if end_of_day else '00:00:00'}"
+    return text
+
+
 def get_detection_runs(start=None, end=None, limit=100):
     """按时间范围查询检测轮次记录。"""
     conn = _get_conn()
     conditions = []
-    params = []
+    filter_params = []
+    start = _normalize_detection_run_bound(start)
+    end = _normalize_detection_run_bound(end, end_of_day=True)
     if start:
         conditions.append("started_at >= %s")
-        params.append(start)
+        filter_params.append(start)
     if end:
         conditions.append("started_at <= %s")
-        params.append(end)
+        filter_params.append(end)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.append(limit)
+    stale_before = (datetime.now(LOCAL_TZ) - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+    params = [stale_before, *filter_params, limit]
     rows = conn.execute(
         f"""SELECT cycle_id, started_at, finished_at, trigger_source,
                    total_checked, ok_count, failed_count, deleted_count,
-                   duration_seconds, error
+                   duration_seconds,
+                   CASE
+                       WHEN error IS NOT NULL AND error <> '' THEN error
+                       WHEN finished_at IS NULL AND started_at <= %s
+                           THEN '检测轮次未正常结束，可能由服务重启、超时或异常中断导致'
+                       ELSE error
+                   END AS error
             FROM detection_runs {where}
             ORDER BY started_at DESC LIMIT %s""",
         params

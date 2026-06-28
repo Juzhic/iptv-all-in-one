@@ -34,6 +34,11 @@
             {{ row.trigger_source === 'manual' ? '手动' : '自动' }}
           </t-tag>
         </template>
+        <template #run_status="{ row }">
+          <t-tag :theme="detRunStatus(row).theme" size="small" variant="light" :title="detRunStatus(row).content">
+            {{ detRunStatus(row).label }}
+          </t-tag>
+        </template>
         <template #duration_seconds="{ row }">
           {{ row.duration_seconds != null ? row.duration_seconds.toFixed(1) + 's' : '-' }}
         </template>
@@ -460,6 +465,7 @@ const detRunColumns = [
   { colKey: 'cycle_id', title: '轮次 ID', width: 220, ellipsis: true },
   { colKey: 'started_at', title: '开始时间', width: 170 },
   { colKey: 'trigger_source', title: '触发', width: 80 },
+  { colKey: 'run_status', title: '状态', width: 80, align: 'center' },
   { colKey: 'total_checked', title: '检测数', width: 80, align: 'center' },
   { colKey: 'ok_count', title: '通过', width: 70, align: 'center' },
   { colKey: 'failed_count', title: '失败', width: 70, align: 'center' },
@@ -468,6 +474,12 @@ const detRunColumns = [
   { colKey: 'pass_rate', title: '通过率', width: 90, align: 'center' },
   { colKey: 'op', title: '操作', width: 80, align: 'center' },
 ]
+
+function detRunStatus(row) {
+  if (row.error) return { label: '异常', theme: 'danger', content: row.error }
+  if (row.finished_at) return { label: '完成', theme: 'success', content: '' }
+  return { label: '进行中', theme: 'warning', content: '' }
+}
 
 async function loadDetRuns() {
   try {
