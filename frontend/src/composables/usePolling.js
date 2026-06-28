@@ -13,11 +13,12 @@ export function usePolling(fn, interval = 2000, options = {}) {
   }
 
   async function tick() {
+    timer = null
     if (!active || paused) return
     try {
       await fn()
     } catch (_) {}
-    if (active) {
+    if (active && !paused) {
       timer = setTimeout(tick, getDelay())
     }
   }
@@ -25,6 +26,10 @@ export function usePolling(fn, interval = 2000, options = {}) {
   function handleVisibility() {
     if (!pauseWhenHidden) return
     paused = document.hidden
+    if (paused && timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
     if (!paused && active && timer === null) {
       tick()
     }

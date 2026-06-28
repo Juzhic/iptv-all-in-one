@@ -263,19 +263,13 @@ async function saveDetConfig() {
   saving.value = true
   try {
     const res = await apiSaveScanConfig({ ...detCfg })
-    if (res.ok) {
-      MessagePlugin.success('检测配置已保存')
-      if (res.config) {
-        detCfg.detection_interval_minutes = typeof res.config.detection_interval_minutes === 'number' ? res.config.detection_interval_minutes : detCfg.detection_interval_minutes
-        detCfg.deletion_threshold = typeof res.config.deletion_threshold === 'number' ? res.config.deletion_threshold : detCfg.deletion_threshold
-        detCfg.stable_channel_multiplier = typeof res.config.stable_channel_multiplier === 'number' ? res.config.stable_channel_multiplier : detCfg.stable_channel_multiplier
-      }
-      await loadDetectionStatus()
-    } else {
-      MessagePlugin.error(`保存失败: ${res.error || ''}`)
-    }
-  } catch (_) {
-    MessagePlugin.error('保存失败')
+    MessagePlugin.success('检测配置已保存')
+    detCfg.detection_interval_minutes = typeof res.detection_interval_minutes === 'number' ? res.detection_interval_minutes : detCfg.detection_interval_minutes
+    detCfg.deletion_threshold = typeof res.deletion_threshold === 'number' ? res.deletion_threshold : detCfg.deletion_threshold
+    detCfg.stable_channel_multiplier = typeof res.stable_channel_multiplier === 'number' ? res.stable_channel_multiplier : detCfg.stable_channel_multiplier
+    await loadDetectionStatus()
+  } catch (error) {
+    MessagePlugin.error(`保存失败: ${error.message}`)
   } finally {
     saving.value = false
   }

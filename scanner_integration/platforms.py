@@ -196,6 +196,32 @@ def _stats_set(stats, key, value):
         stats[key] = value
 
 
+def _yield_stat_key(scope, platform_key, profile='', province=''):
+    return ':'.join([
+        scope or 'platform',
+        platform_key or 'unknown',
+        profile or 'base',
+        province or 'all',
+    ])
+
+
+def _build_yield_stat(stat_key, scope, platform, profile, profile_label, province, stats, result_count):
+    stats = stats if isinstance(stats, dict) else {}
+    return {
+        'stat_key': stat_key,
+        'scope': scope or 'platform',
+        'platform': platform or '',
+        'profile': profile or '',
+        'profile_label': profile_label or '',
+        'province': province or '',
+        'target_size': stats.get('target_size', 0),
+        'api_items': stats.get('api_items', 0),
+        'probed_hosts': stats.get('probed_hosts', 0),
+        'extracted_channels': stats.get('extracted_channels', result_count),
+        'c_segment_channels': stats.get('c_segment_channels', 0),
+    }
+
+
 def _decode_text(raw):
     for encoding in ('utf-8', 'gbk', 'gb2312'):
         try:
@@ -1864,9 +1890,10 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
 
     if not enabled_platforms and not ddgs_enabled and not km.get_all_keys('hunter'):
         _log("[采集] 未启用任何平台且无 Hunter Key，请检查配置")
-        return [], []
+        return [], [], []
 
     all_raw = []
+    yield_stats = []
     async with get_session(limit=30, force_close=True) as scan_session:
         for prov_idx, prov in enumerate(selected_provs, 1):
             if len(selected_provs) > 1:
@@ -1881,42 +1908,56 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
             if "quake" in enabled_platforms and quake_key:
                 stats = {}
                 target = _target_for("quake")
-                api_tasks.append(('Quake 360', _run_with_key_rotation('quake', quake_scan, qq, target, session=scan_session, stats=stats), stats, target))
+                stat_key = _yield_stat_key('platform', 'quake', province=prov)
+                api_tasks.append((stat_key, 'Quake 360', 'quake', '', '', prov, _run_with_key_rotation('quake', quake_scan, qq, target, session=scan_session, stats=stats), stats, target))
             elif "quake" in enabled_platforms:
                 _log("[采集] Quake 360 已启用但未配置 API Key，跳过")
             if "hunter" in enabled_platforms and hunter_key:
                 stats = {}
                 target = _target_for("hunter")
-                api_tasks.append(('Hunter', _run_with_key_rotation('hunter', hunter_scan, hq, target, session=scan_session, stats=stats), stats, target))
+                stat_key = _yield_stat_key('platform', 'hunter', province=prov)
+                api_tasks.append((stat_key, 'Hunter', 'hunter', '', '', prov, _run_with_key_rotation('hunter', hunter_scan, hq, target, session=scan_session, stats=stats), stats, target))
             elif "hunter" in enabled_platforms:
                 _log("[采集] Hunter 已启用但未配置 API Key，跳过")
             if "daydaymap" in enabled_platforms and ddm_key:
                 stats = {}
                 target = _target_for("daydaymap")
-                api_tasks.append(('DayDayMap', _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target, session=scan_session, stats=stats), stats, target))
+                stat_key = _yield_stat_key('platform', 'daydaymap', province=prov)
+                api_tasks.append((stat_key, 'DayDayMap', 'daydaymap', '', '', prov, _run_with_key_rotation('daydaymap', daydaymap_scan, ddm_q, target, session=scan_session, stats=stats), stats, target))
             elif "daydaymap" in enabled_platforms:
                 _log("[采集] DayDayMap 已启用但未配置 API Key，跳过")
             if "fofa" in enabled_platforms and fofa_key:
                 stats = {}
                 target = _target_for("fofa")
-                api_tasks.append(('Fofa', _run_with_key_rotation('fofa', fofa_scan, fofa_q, target, session=scan_session, stats=stats), stats, target))
+                stat_key = _yield_stat_key('platform', 'fofa', province=prov)
+                api_tasks.append((stat_key, 'Fofa', 'fofa', '', '', prov, _run_with_key_rotation('fofa', fofa_scan, fofa_q, target, session=scan_session, stats=stats), stats, target))
             elif "fofa" in enabled_platforms:
                 _log("[采集] Fofa 已启用但未配置 API Key，跳过")
 
             if api_tasks:
-                labels = ', '.join(f"{n}(目标{target})" for n, _, _, target in api_tasks)
+                labels = ', '.join(f"{n}(目标{target})" for _, n, _, _, _, _, _, _, target in api_tasks)
                 _log(f"[采集] ({len(all_raw)}条) 并行扫描: {labels}...")
-                async def _run_and_tag(name, coro, stats):
+                async def _run_and_tag(stat_key, name, platform_key, profile, profile_label, stat_prov, coro, stats):
                     try:
                         result = await coro
                         for ch in result:
                             ch['platform'] = name
+                            ch['yield_stat_key'] = stat_key
                         _log(_platform_result_log(name, stats, len(result)))
+                        yield_stats.append(_build_yield_stat(
+                            stat_key, 'platform', platform_key, profile, profile_label, stat_prov, stats, len(result)
+                        ))
                         return result
                     except Exception as e:
                         _log(f"[采集] {name} 失败: {e}")
+                        yield_stats.append(_build_yield_stat(
+                            stat_key, 'platform', platform_key, profile, profile_label, stat_prov, stats, 0
+                        ))
                         return []
-                results = await asyncio.gather(*[_run_and_tag(n, c, s) for n, c, s, _ in api_tasks])
+                results = await asyncio.gather(*[
+                    _run_and_tag(stat_key, n, platform_key, profile, profile_label, stat_prov, c, s)
+                    for stat_key, n, platform_key, profile, profile_label, stat_prov, c, s, _ in api_tasks
+                ])
                 for res in results:
                     all_raw.extend(res)
                 _log(f"[采集] API 平台完成，本轮获得 {sum(len(r) for r in results)} 条，累计 {len(all_raw)} 条")
@@ -1948,9 +1989,15 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                         stats = {}
                         target = _quality_target_for("quake", len(enabled_profiles))
                         query = _with_filters(profile["quake"], "quake", prov)
+                        stat_key = _yield_stat_key('quality_profile', 'quake', profile["name"], prov)
                         profile_tasks.append((
+                            stat_key,
                             _profile_label("Quake 360", profile['label'], prov),
                             "Quake 360",
+                            "quake",
+                            profile["name"],
+                            profile["label"],
+                            prov,
                             _run_with_key_rotation('quake', quake_scan, query, target, session=scan_session, stats=stats),
                             stats,
                             target,
@@ -1959,9 +2006,15 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                         stats = {}
                         target = _quality_target_for("hunter", len(enabled_profiles))
                         query = _with_filters(profile["hunter"], "hunter", prov)
+                        stat_key = _yield_stat_key('quality_profile', 'hunter', profile["name"], prov)
                         profile_tasks.append((
+                            stat_key,
                             _profile_label("Hunter", profile['label'], prov),
                             "Hunter",
+                            "hunter",
+                            profile["name"],
+                            profile["label"],
+                            prov,
                             _run_with_key_rotation('hunter', hunter_scan, query, target, session=scan_session, stats=stats),
                             stats,
                             target,
@@ -1970,9 +2023,15 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                         stats = {}
                         target = _quality_target_for("daydaymap", len(enabled_profiles))
                         query = _with_filters(profile["daydaymap"], "daydaymap", prov)
+                        stat_key = _yield_stat_key('quality_profile', 'daydaymap', profile["name"], prov)
                         profile_tasks.append((
+                            stat_key,
                             _profile_label("DayDayMap", profile['label'], prov),
                             "DayDayMap",
+                            "daydaymap",
+                            profile["name"],
+                            profile["label"],
+                            prov,
                             _run_with_key_rotation('daydaymap', daydaymap_scan, query, target, session=scan_session, stats=stats),
                             stats,
                             target,
@@ -1981,35 +2040,48 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                         stats = {}
                         target = _quality_target_for("fofa", len(enabled_profiles))
                         query = _with_filters(profile["fofa"], "fofa", prov)
+                        stat_key = _yield_stat_key('quality_profile', 'fofa', profile["name"], prov)
                         profile_tasks.append((
+                            stat_key,
                             _profile_label("Fofa", profile['label'], prov),
                             "Fofa",
+                            "fofa",
+                            profile["name"],
+                            profile["label"],
+                            prov,
                             _run_with_key_rotation('fofa', fofa_scan, query, target, session=scan_session, stats=stats),
                             stats,
                             target,
                         ))
 
             if profile_tasks:
-                labels = ', '.join(f"{name}(目标{target})" for name, _, _, _, target in profile_tasks)
+                labels = ', '.join(f"{name}(目标{target})" for _, name, _, _, _, _, _, _, _, target in profile_tasks)
                 _log(f"[采集] ({len(all_raw)}条) 质量优先查询: {labels}...")
                 profile_sem = asyncio.Semaphore(4)
 
-                async def _run_quality_profile(log_name, platform_name, coro, stats):
+                async def _run_quality_profile(stat_key, log_name, platform_name, platform_key, profile_name, profile_label, stat_prov, coro, stats):
                     async with profile_sem:
                         try:
                             result = await coro
                             for ch in result:
                                 ch['platform'] = platform_name
                                 ch['discovery_profile'] = log_name
+                                ch['yield_stat_key'] = stat_key
                             _log(_platform_result_log(log_name, stats, len(result)))
+                            yield_stats.append(_build_yield_stat(
+                                stat_key, 'quality_profile', platform_key, profile_name, profile_label, stat_prov, stats, len(result)
+                            ))
                             return result
                         except Exception as e:
                             _log(f"[采集] {log_name} 失败: {e}")
+                            yield_stats.append(_build_yield_stat(
+                                stat_key, 'quality_profile', platform_key, profile_name, profile_label, stat_prov, stats, 0
+                            ))
                             return []
 
                 results = await asyncio.gather(*[
-                    _run_quality_profile(log_name, platform_name, coro, stats)
-                    for log_name, platform_name, coro, stats, _ in profile_tasks
+                    _run_quality_profile(stat_key, log_name, platform_name, platform_key, profile_name, profile_label, stat_prov, coro, stats)
+                    for stat_key, log_name, platform_name, platform_key, profile_name, profile_label, stat_prov, coro, stats, _ in profile_tasks
                 ])
                 for res in results:
                     all_raw.extend(res)
@@ -2115,5 +2187,13 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
             f"[采集] 清洗丢弃 {dropped} 条：无效URL {invalid_url_count}，"
             f"无效频道名 {invalid_name_count}，黑名单 {blacklisted_count}"
         )
+    clean_counts = {}
+    for ent in clean:
+        stat_key = ent.get('yield_stat_key')
+        if stat_key:
+            clean_counts[stat_key] = clean_counts.get(stat_key, 0) + 1
+    for row in yield_stats:
+        stat_key = row.get('stat_key')
+        row['cleaned_channels'] = clean_counts.get(stat_key, 0)
     _log(f"[采集] 全部平台扫描完成，原始 {len(all_raw)} 条，清洗后 {len(clean)} 条")
-    return clean, actual_platforms
+    return clean, actual_platforms, yield_stats

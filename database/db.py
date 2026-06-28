@@ -710,6 +710,37 @@ def init_db():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_results_unique ON scan_results(scan_id(100), url(200))",
         "CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at(100))",
 
+        """CREATE TABLE IF NOT EXISTS scan_yield_stats (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            scan_id VARCHAR(255) NOT NULL,
+            stat_key VARCHAR(255) NOT NULL,
+            scope VARCHAR(50) DEFAULT 'platform',
+            platform VARCHAR(100),
+            profile VARCHAR(100),
+            profile_label VARCHAR(255),
+            province VARCHAR(100),
+            target_size INT DEFAULT 0,
+            api_items INT DEFAULT 0,
+            probed_hosts INT DEFAULT 0,
+            extracted_channels INT DEFAULT 0,
+            c_segment_channels INT DEFAULT 0,
+            cleaned_channels INT DEFAULT 0,
+            deduped_channels INT DEFAULT 0,
+            candidate_channels INT DEFAULT 0,
+            fast_pass INT DEFAULT 0,
+            deep_checked INT DEFAULT 0,
+            deep_pass INT DEFAULT 0,
+            good_count INT DEFAULT 0,
+            poor_count INT DEFAULT 0,
+            unreachable_count INT DEFAULT 0,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE KEY idx_scan_yield_unique (scan_id, stat_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE INDEX IF NOT EXISTS idx_scan_yield_scan ON scan_yield_stats(scan_id(100))",
+        "CREATE INDEX IF NOT EXISTS idx_scan_yield_platform ON scan_yield_stats(platform)",
+        "CREATE INDEX IF NOT EXISTS idx_scan_yield_profile ON scan_yield_stats(profile)",
+
         """CREATE TABLE IF NOT EXISTS scan_progress (
             id INT PRIMARY KEY CHECK (id = 1),
             running TINYINT(1) DEFAULT 0,
@@ -896,6 +927,7 @@ def init_db():
     _ensure_run_results_columns(conn)
     _ensure_scan_results_columns(conn)
     _ensure_scan_logs_level_column(conn)
+    _ensure_schema_migrations(conn)
     conn.commit()
     _init_default_data()
     # 启动时重置卡死的进度状态
@@ -960,6 +992,269 @@ def _execute_create_index_compat(conn, sql):
     index_kind = 'UNIQUE ' if unique else ''
     conn.execute(f"CREATE {index_kind}INDEX `{index_name}` ON `{table_name}` ({columns_sql})")
     return True
+
+
+_POST_MIGRATION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_results_channel ON run_results(channel(100))",
+    "CREATE INDEX IF NOT EXISTS idx_results_run_passed ON run_results(run_id, passed)",
+    "CREATE INDEX IF NOT EXISTS idx_results_quality ON run_results(quality_score)",
+    "CREATE INDEX IF NOT EXISTS idx_results_run_channel ON run_results(run_id, channel(100))",
+    "CREATE INDEX IF NOT EXISTS idx_runs_finished_at ON runs(finished_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_logs_run_id ON run_logs(run_id(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_category ON scan_results(category(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_province ON scan_results(province(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_name ON scan_results(name(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_scan_url ON scan_results(scan_id(100), url(200))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_results_unique ON scan_results(scan_id(100), url(200))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_scan_yield_scan ON scan_yield_stats(scan_id(100))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_yield_unique ON scan_yield_stats(scan_id, stat_key)",
+    "CREATE INDEX IF NOT EXISTS idx_scan_yield_platform ON scan_yield_stats(platform)",
+    "CREATE INDEX IF NOT EXISTS idx_scan_yield_profile ON scan_yield_stats(profile)",
+    "CREATE INDEX IF NOT EXISTS idx_scan_logs_seq ON scan_logs(seq)",
+    "CREATE INDEX IF NOT EXISTS idx_psr_src ON persistent_scan_results(source_ip(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_quality ON persistent_scan_results(quality_status)",
+    "CREATE INDEX IF NOT EXISTS idx_psr_platform ON persistent_scan_results(platform(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_name ON persistent_scan_results(name(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_validated_quality ON persistent_scan_results(validated, quality_status)",
+    "CREATE INDEX IF NOT EXISTS idx_psr_failures ON persistent_scan_results(consecutive_failures)",
+    "CREATE INDEX IF NOT EXISTS idx_psr_last_checked ON persistent_scan_results(last_checked_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_deleted_at ON persistent_scan_results(deleted_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_deleted_src ON persistent_scan_results(deleted_at(100), source_ip(100))",
+    "CREATE INDEX IF NOT EXISTS idx_psr_deleted_quality ON persistent_scan_results(deleted_at(100), quality_status)",
+    "CREATE INDEX IF NOT EXISTS idx_psr_deleted_platform ON persistent_scan_results(deleted_at(100), platform(100))",
+    "CREATE INDEX IF NOT EXISTS idx_detection_logs_ts ON detection_logs(ts(100))",
+    "CREATE INDEX IF NOT EXISTS idx_det_runs_started ON detection_runs(started_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_det_results_cycle ON detection_results(cycle_id(100))",
+    "CREATE INDEX IF NOT EXISTS idx_det_results_cycle_ok ON detection_results(cycle_id(100), check_ok)",
+    "CREATE INDEX IF NOT EXISTS idx_det_results_url ON detection_results(url(200))",
+    "CREATE INDEX IF NOT EXISTS idx_qh_url_time ON quality_history(url(200), recorded_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_qh_recorded_at ON quality_history(recorded_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_ip_scan_runs_started ON ip_scan_runs(started_at(100))",
+    "CREATE INDEX IF NOT EXISTS idx_ip_scan_results_scan ON ip_scan_results(scan_id(100))",
+    "CREATE INDEX IF NOT EXISTS idx_ip_scan_results_alive ON ip_scan_results(scan_id(100), alive)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_scan_results_target ON ip_scan_results(scan_id(100), ip(100), port)",
+    "CREATE INDEX IF NOT EXISTS idx_ip_scan_logs_seq ON ip_scan_logs(seq)",
+)
+
+
+def _describe_table_columns(conn, table_name):
+    """Return column names for an existing table."""
+    if not _table_exists(conn, table_name):
+        return set()
+    rows = conn.execute(f"DESCRIBE `{table_name}`").fetchall()
+    return {row['Field'] for row in rows}
+
+
+def _ensure_table_columns(conn, table_name, columns):
+    """Add missing columns for old Docker volumes upgraded in place."""
+    existing = _describe_table_columns(conn, table_name)
+    if not existing:
+        return
+    for name, col_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{name}` {col_type}")
+            existing.add(name)
+
+
+def _ensure_schema_migrations(conn):
+    """Backfill columns added by newer releases on existing MySQL tables."""
+    table_columns = {
+        'runs': {
+            'duration_seconds': 'DOUBLE DEFAULT 0',
+            'total_tested': 'INT DEFAULT 0',
+            'total_passed': 'INT DEFAULT 0',
+            'total_failed': 'INT DEFAULT 0',
+            'pass_rate': 'DOUBLE DEFAULT 0',
+            'unique_channels_passed': 'INT DEFAULT 0',
+            'unique_channels_total': 'INT DEFAULT 0',
+        },
+        'run_results': {
+            'connection_latency_ms': 'DOUBLE',
+            'quality_score': 'DOUBLE',
+            'output_updated_at': 'TEXT',
+            'codec': 'TEXT',
+            'is_h265': 'TINYINT(1) DEFAULT 0',
+            'sample_seconds': 'DOUBLE',
+            'cost_seconds': 'DOUBLE',
+            'source_url': 'TEXT',
+        },
+        'run_logs': {
+            'level': "VARCHAR(20) DEFAULT 'INFO'",
+        },
+        'run_progress': {
+            'started_at': 'TEXT',
+            'total': 'INT DEFAULT 0',
+            'processed': 'INT DEFAULT 0',
+            'passed': 'INT DEFAULT 0',
+            'failed': 'INT DEFAULT 0',
+            'elapsed': 'DOUBLE DEFAULT 0',
+            'source': 'TEXT',
+            'updated_at': 'TEXT',
+        },
+        'scan_runs': {
+            'finished_at': 'TEXT',
+            'status': "VARCHAR(20) DEFAULT 'running'",
+            'trigger_source': "VARCHAR(50) DEFAULT 'web'",
+            'platforms_used': 'TEXT',
+            'total_raw': 'INT DEFAULT 0',
+            'total_deduped': 'INT DEFAULT 0',
+            'total_fast_pass': 'INT DEFAULT 0',
+            'total_deep_pass': 'INT DEFAULT 0',
+            'duration_seconds': 'DOUBLE DEFAULT 0',
+            'error': 'TEXT',
+        },
+        'scan_results': {
+            'category': 'TEXT',
+            'province': 'TEXT',
+            'city': 'TEXT',
+            'source_ip': 'TEXT',
+            'platform': 'TEXT',
+            'resolution': 'TEXT',
+            'codec': 'TEXT',
+            'delay': 'DOUBLE',
+            'bandwidth': 'DOUBLE',
+            'stability': 'INT DEFAULT 0',
+            'tested_in_run': 'TEXT',
+            'test_passed': 'TINYINT(1)',
+        },
+        'scan_yield_stats': {
+            'stat_key': "VARCHAR(255) NOT NULL DEFAULT ''",
+            'scope': "VARCHAR(50) DEFAULT 'platform'",
+            'platform': 'VARCHAR(100)',
+            'profile': 'VARCHAR(100)',
+            'profile_label': 'VARCHAR(255)',
+            'province': 'VARCHAR(100)',
+            'target_size': 'INT DEFAULT 0',
+            'api_items': 'INT DEFAULT 0',
+            'probed_hosts': 'INT DEFAULT 0',
+            'extracted_channels': 'INT DEFAULT 0',
+            'c_segment_channels': 'INT DEFAULT 0',
+            'cleaned_channels': 'INT DEFAULT 0',
+            'deduped_channels': 'INT DEFAULT 0',
+            'candidate_channels': 'INT DEFAULT 0',
+            'fast_pass': 'INT DEFAULT 0',
+            'deep_checked': 'INT DEFAULT 0',
+            'deep_pass': 'INT DEFAULT 0',
+            'good_count': 'INT DEFAULT 0',
+            'poor_count': 'INT DEFAULT 0',
+            'unreachable_count': 'INT DEFAULT 0',
+            'created_at': 'TEXT',
+            'updated_at': 'TEXT',
+        },
+        'scan_progress': {
+            'started_at': 'TEXT',
+            'phase': 'TEXT',
+            'total': 'INT DEFAULT 0',
+            'processed': 'INT DEFAULT 0',
+            'percent': 'DOUBLE DEFAULT 0',
+            'message': 'TEXT',
+            'updated_at': 'TEXT',
+        },
+        'scan_logs': {
+            'level': "VARCHAR(20) DEFAULT 'INFO'",
+        },
+        'persistent_scan_results': {
+            'category': 'TEXT',
+            'province': 'TEXT',
+            'city': 'TEXT',
+            'source_ip': 'TEXT',
+            'platform': 'TEXT',
+            'resolution': 'TEXT',
+            'codec': 'TEXT',
+            'delay': 'DOUBLE',
+            'bandwidth': 'DOUBLE',
+            'jitter': 'DOUBLE',
+            'stability': 'INT DEFAULT 0',
+            'priority': 'INT DEFAULT 0',
+            'quality_status': "VARCHAR(20) DEFAULT 'pending'",
+            'consecutive_failures': 'INT DEFAULT 0',
+            'last_checked_at': 'TEXT',
+            'first_seen_at': 'TEXT',
+            'last_updated_at': 'TEXT',
+            'validated': 'INT DEFAULT 0',
+            'deleted_at': 'TEXT',
+        },
+        'detection_logs': {
+            'level': "VARCHAR(20) DEFAULT 'INFO'",
+        },
+        'detection_runs': {
+            'finished_at': 'TEXT',
+            'trigger_source': "VARCHAR(50) DEFAULT 'auto'",
+            'total_checked': 'INT DEFAULT 0',
+            'ok_count': 'INT DEFAULT 0',
+            'failed_count': 'INT DEFAULT 0',
+            'deleted_count': 'INT DEFAULT 0',
+            'duration_seconds': 'DOUBLE DEFAULT 0',
+            'error': 'TEXT',
+        },
+        'detection_results': {
+            'name': 'TEXT',
+            'check_ok': 'INT DEFAULT 0',
+            'http_status': 'INT DEFAULT 0',
+            'response_time_ms': 'DOUBLE DEFAULT 0',
+            'response_size_bytes': 'INT DEFAULT 0',
+            'consecutive_failures': 'INT DEFAULT 0',
+            'quality_status': "VARCHAR(20) DEFAULT 'pending'",
+        },
+        'quality_history': {
+            'name': 'TEXT',
+            'stability': 'INT',
+            'delay': 'DOUBLE',
+            'bandwidth': 'DOUBLE',
+            'jitter': 'DOUBLE',
+            'quality_status': 'VARCHAR(20)',
+            'source': "VARCHAR(50) DEFAULT 'detection'",
+            'recorded_at': 'TEXT',
+        },
+        'ip_scan_runs': {
+            'finished_at': 'TEXT',
+            'status': "VARCHAR(20) DEFAULT 'running'",
+            'input_count': 'INT DEFAULT 0',
+            'total_alive': 'INT DEFAULT 0',
+            'total_channels': 'INT DEFAULT 0',
+            'scan_types': 'TEXT',
+            'ports': 'TEXT',
+            'duration_seconds': 'DOUBLE DEFAULT 0',
+            'error': 'TEXT',
+        },
+        'ip_scan_results': {
+            'target': 'TEXT',
+            'ip': 'TEXT',
+            'port': 'INT DEFAULT 0',
+            'alive': 'TINYINT(1) DEFAULT 0',
+            'http_status': 'INT DEFAULT 0',
+            'response_time_ms': 'DOUBLE DEFAULT 0',
+            'channels_json': 'TEXT',
+            'channel_count': 'INT DEFAULT 0',
+            'scan_type_matched': 'VARCHAR(50)',
+            'error': 'TEXT',
+        },
+        'ip_scan_progress': {
+            'started_at': 'TEXT',
+            'phase': 'TEXT',
+            'total': 'INT DEFAULT 0',
+            'processed': 'INT DEFAULT 0',
+            'alive': 'INT DEFAULT 0',
+            'channels': 'INT DEFAULT 0',
+            'percent': 'DOUBLE DEFAULT 0',
+            'message': 'TEXT',
+            'updated_at': 'TEXT',
+        },
+    }
+
+    for table_name, columns in table_columns.items():
+        try:
+            _ensure_table_columns(conn, table_name, columns)
+        except Exception as e:
+            logger.warning(f"[DB] 迁移表 {table_name} 失败: {e}")
+
+    for sql in _POST_MIGRATION_INDEXES:
+        try:
+            _execute_create_index_compat(conn, sql)
+        except Exception as e:
+            logger.warning(f"[DB] 迁移索引失败: {e}")
 
 
 def _ensure_run_results_columns(conn):
@@ -2084,6 +2379,7 @@ def delete_scan_run(scan_id):
     """删除扫描记录及其所有结果。"""
     with _write_lock:
         conn = _get_conn()
+        conn.execute("DELETE FROM scan_yield_stats WHERE scan_id = %s", (scan_id,))
         conn.execute("DELETE FROM scan_results WHERE scan_id = %s", (scan_id,))
         conn.execute("DELETE FROM scan_runs WHERE scan_id = %s", (scan_id,))
         conn.commit()
@@ -2099,6 +2395,7 @@ def _cleanup_old_scan_runs(conn):
         return
     ids = [row['scan_id'] for row in rows]
     placeholders = ','.join(['%s'] * len(ids))
+    conn.execute(f"DELETE FROM scan_yield_stats WHERE scan_id IN ({placeholders})", ids)
     conn.execute(f"DELETE FROM scan_results WHERE scan_id IN ({placeholders})", ids)
     conn.execute(f"DELETE FROM scan_runs WHERE scan_id IN ({placeholders})", ids)
 
@@ -2357,6 +2654,125 @@ def cleanup_old_detection_runs(keep=50):
                 conn.commit()
 
 
+SCAN_YIELD_INSERT_COLUMNS = (
+    'scan_id', 'stat_key', 'scope', 'platform', 'profile', 'profile_label',
+    'province', 'target_size', 'api_items', 'probed_hosts',
+    'extracted_channels', 'c_segment_channels', 'cleaned_channels',
+    'deduped_channels', 'candidate_channels', 'fast_pass', 'deep_checked',
+    'deep_pass', 'good_count', 'poor_count', 'unreachable_count',
+    'created_at', 'updated_at',
+)
+
+
+def insert_scan_yield_stats(scan_id, rows):
+    """Persist platform/profile yield stats for a scan."""
+    if not rows:
+        return
+
+    now = now_str()
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stat_key = row.get('stat_key')
+        if not stat_key:
+            continue
+        normalized.append({
+            'scan_id': scan_id,
+            'stat_key': stat_key,
+            'scope': row.get('scope') or 'platform',
+            'platform': row.get('platform') or '',
+            'profile': row.get('profile') or '',
+            'profile_label': row.get('profile_label') or '',
+            'province': row.get('province') or '',
+            'target_size': _int_or_zero(row.get('target_size')),
+            'api_items': _int_or_zero(row.get('api_items')),
+            'probed_hosts': _int_or_zero(row.get('probed_hosts')),
+            'extracted_channels': _int_or_zero(row.get('extracted_channels')),
+            'c_segment_channels': _int_or_zero(row.get('c_segment_channels')),
+            'cleaned_channels': _int_or_zero(row.get('cleaned_channels')),
+            'deduped_channels': _int_or_zero(row.get('deduped_channels')),
+            'candidate_channels': _int_or_zero(row.get('candidate_channels')),
+            'fast_pass': _int_or_zero(row.get('fast_pass')),
+            'deep_checked': _int_or_zero(row.get('deep_checked')),
+            'deep_pass': _int_or_zero(row.get('deep_pass')),
+            'good_count': _int_or_zero(row.get('good_count')),
+            'poor_count': _int_or_zero(row.get('poor_count')),
+            'unreachable_count': _int_or_zero(row.get('unreachable_count')),
+            'created_at': row.get('created_at') or now,
+            'updated_at': now,
+        })
+    if not normalized:
+        return
+
+    columns_sql = ', '.join(SCAN_YIELD_INSERT_COLUMNS)
+    placeholders = ', '.join(['%s'] * len(SCAN_YIELD_INSERT_COLUMNS))
+    update_columns = [c for c in SCAN_YIELD_INSERT_COLUMNS if c not in ('scan_id', 'stat_key', 'created_at')]
+    update_sql = ', '.join(f"{col}=VALUES({col})" for col in update_columns)
+    with _write_lock:
+        conn = _get_conn()
+        conn.executemany(
+            f"""INSERT INTO scan_yield_stats ({columns_sql})
+                VALUES ({placeholders})
+                ON DUPLICATE KEY UPDATE {update_sql}""",
+            [
+                tuple(row[col] for col in SCAN_YIELD_INSERT_COLUMNS)
+                for row in normalized
+            ]
+        )
+        conn.commit()
+
+
+def update_scan_yield_stage_counts(scan_id, counts_by_key):
+    """Update later-stage yield counters keyed by stat_key."""
+    if not counts_by_key:
+        return
+    allowed = {
+        'cleaned_channels', 'deduped_channels', 'candidate_channels',
+        'fast_pass', 'deep_checked', 'deep_pass',
+        'good_count', 'poor_count', 'unreachable_count',
+    }
+    now = now_str()
+    with _write_lock:
+        conn = _get_conn()
+        for stat_key, counts in counts_by_key.items():
+            if not stat_key or not isinstance(counts, dict):
+                continue
+            fields = [key for key in counts if key in allowed]
+            if not fields:
+                continue
+            sets = [f"{key} = %s" for key in fields]
+            sets.append("updated_at = %s")
+            values = [_int_or_zero(counts.get(key)) for key in fields]
+            values.extend([now, scan_id, stat_key])
+            conn.execute(
+                f"UPDATE scan_yield_stats SET {', '.join(sets)} WHERE scan_id = %s AND stat_key = %s",
+                values
+            )
+        conn.commit()
+
+
+def get_scan_yield_stats(scan_id=None, limit=200):
+    """Return persisted platform/profile yield stats."""
+    conn = _get_conn()
+    params = []
+    where = ""
+    if scan_id:
+        where = "WHERE scan_id = %s"
+        params.append(scan_id)
+    try:
+        limit = max(1, min(1000, int(limit or 200)))
+    except (TypeError, ValueError):
+        limit = 200
+    rows = conn.execute(
+        f"""SELECT * FROM scan_yield_stats {where}
+            ORDER BY id DESC
+            LIMIT %s""",
+        params + [limit]
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_scan_stats(scan_id=None):
     """获取扫描结果的统计信息（按分类、省份分布）。"""
     conn = _get_conn()
@@ -2437,14 +2853,32 @@ def upsert_persistent_results(rows):
         conn.commit()
 
 
-def get_persistent_details_by_ip(source_ip, page=None, size=50):
+def get_persistent_details_by_ip(source_ip, page=None, size=50, search=None, quality=None, category=None, province=None):
     """查询某个来源 IP 下的所有频道明细。page 为 None 时返回全部结果。"""
     conn = _get_conn()
+    where = ["source_ip = %s", "deleted_at IS NULL"]
+    params = [source_ip]
+
+    if search:
+        where.append("(name LIKE %s OR url LIKE %s)")
+        keyword = f"%{search}%"
+        params.extend([keyword, keyword])
+    if quality:
+        where.append("quality_status = %s")
+        params.append(quality)
+    if category:
+        where.append("category = %s")
+        params.append(category)
+    if province:
+        where.append("province = %s")
+        params.append(province)
+
+    where_sql = " AND ".join(where)
 
     if page is not None:
         total = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM persistent_scan_results WHERE source_ip = %s AND deleted_at IS NULL",
-            (source_ip,)
+            f"SELECT COUNT(*) AS cnt FROM persistent_scan_results WHERE {where_sql}",
+            tuple(params)
         ).fetchone()['cnt']
         offset = (page - 1) * size
         rows = conn.execute(
@@ -2453,10 +2887,10 @@ def get_persistent_details_by_ip(source_ip, page=None, size=50):
                       quality_status, consecutive_failures,
                       last_checked_at, first_seen_at, last_updated_at, validated
                FROM persistent_scan_results
-               WHERE source_ip = %s AND deleted_at IS NULL
+               WHERE """ + where_sql + """
                ORDER BY stability DESC, bandwidth DESC
                LIMIT %s OFFSET %s""",
-            (source_ip, size, offset)
+            tuple(params + [size, offset])
         ).fetchall()
         return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
     else:
@@ -2466,9 +2900,9 @@ def get_persistent_details_by_ip(source_ip, page=None, size=50):
                       quality_status, consecutive_failures,
                       last_checked_at, first_seen_at, last_updated_at, validated
                FROM persistent_scan_results
-               WHERE source_ip = %s AND deleted_at IS NULL
+               WHERE """ + where_sql + """
                ORDER BY stability DESC, bandwidth DESC""",
-            (source_ip,)
+            tuple(params)
         ).fetchall()
         return [dict(r) for r in rows]
 

@@ -64,6 +64,9 @@ from database.db import (  # noqa: F401
     clear_scan_logs,
     # 扫描统计
     get_scan_stats,
+    insert_scan_yield_stats,
+    update_scan_yield_stage_counts,
+    get_scan_yield_stats,
     # 持久化结果
     upsert_persistent_results,
     get_persistent_details_by_ip,

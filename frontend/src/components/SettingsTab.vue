@@ -231,7 +231,7 @@
       <div class="config-actions">
         <div class="config-actions-tip">保存后会用于后续测速和定时任务，新布局不会影响现有配置值。</div>
         <t-space>
-          <t-button theme="primary" :loading="configSaving" @click="saveConfig">保存配置</t-button>
+          <t-button class="settings-config-save-button" theme="primary" :loading="configSaving" @click="saveConfig">保存配置</t-button>
           <t-button variant="outline" @click="loadConfig">重新加载</t-button>
           <t-button variant="outline" theme="success" :loading="exporting" @click="exportConfig">导出配置</t-button>
           <t-button variant="outline" theme="warning" :loading="importing" @click="triggerImport">导入配置</t-button>
@@ -408,20 +408,16 @@ async function saveConfig() {
   try {
     const data = { ...config, run_times: runTimesInput.value }
     const res = await apiSaveConfig(data)
-    if (res.ok) {
-      MessagePlugin.success('配置已保存')
-      if (res.config) {
-        CONFIG_FIELDS.forEach((key) => {
-          if (res.config[key] !== undefined) config[key] = res.config[key]
-        })
+    MessagePlugin.success('配置已保存')
+    if (res.config) {
+      CONFIG_FIELDS.forEach((key) => {
+        if (res.config[key] !== undefined) config[key] = res.config[key]
+      })
 
-        if (Array.isArray(res.config.run_times)) {
-          runTimesInput.value = res.config.run_times.join(', ')
-          runTimesHint.value = res.config.run_times.length ? `已规范化为：${res.config.run_times.join(', ')}` : ''
-        }
+      if (Array.isArray(res.config.run_times)) {
+        runTimesInput.value = res.config.run_times.join(', ')
+        runTimesHint.value = res.config.run_times.length ? `已规范化为：${res.config.run_times.join(', ')}` : ''
       }
-    } else {
-      MessagePlugin.error(`保存失败: ${res.error || ''}`)
     }
   } catch (error) {
     MessagePlugin.error(`保存失败: ${error.message}`)
@@ -464,12 +460,9 @@ async function importConfig(event) {
     const text = await file.text()
     const data = JSON.parse(text)
     const res = await apiImportConfig(data)
-    if (res.ok) {
-      MessagePlugin.success('配置已导入')
-      loadConfig()
-    } else {
-      MessagePlugin.error(`导入失败: ${res.error || ''}`)
-    }
+    const importedCount = Array.isArray(res.imported) ? res.imported.length : res.imported
+    MessagePlugin.success(`配置已导入${importedCount != null ? `，共 ${importedCount} 项` : ''}`)
+    loadConfig()
   } catch (error) {
     MessagePlugin.error(`导入失败: ${error.message}`)
   } finally {
@@ -534,13 +527,8 @@ async function saveFile() {
   fileStatus.value = '保存中...'
   try {
     const res = await apiSaveText(currentFile.value, fileContent.value)
-    if (res.ok) {
-      fileStatus.value = '已保存'
-      MessagePlugin.success(`${currentFile.value} 已保存`)
-    } else {
-      fileStatus.value = '保存失败'
-      MessagePlugin.error('保存失败')
-    }
+    fileStatus.value = '已保存'
+    MessagePlugin.success(`${res.filename || currentFile.value} 已保存`)
   } catch (error) {
     fileStatus.value = '保存失败'
     MessagePlugin.error(`保存失败: ${error.message}`)

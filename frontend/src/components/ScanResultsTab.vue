@@ -4,7 +4,7 @@
     <div class="view-tabs-row">
       <t-tabs v-model="viewMode" theme="normal" size="medium" :destroy-on-hide="false">
         <t-tab-panel value="grouped" label="按来源分组" />
-        <t-tab-panel value="legacy" label="按扫描记录" />
+        <t-tab-panel value="legacy" label="历史模式" />
       </t-tabs>
       <t-button v-if="viewMode === 'grouped'" variant="outline" size="small" :loading="manualChecking" @click="triggerManualCheck">
         手动检测一轮
@@ -45,7 +45,6 @@
       <!-- 来源IP 详情弹窗 -->
       <t-dialog
         v-model:visible="detailDialogVisible"
-        :header="false"
         :footer="false"
         width="1200px"
         destroy-on-close
@@ -83,58 +82,60 @@
           <t-button theme="primary" size="small" @click="exportDetailM3U">导出 M3U</t-button>
           <t-button theme="primary" size="small" variant="outline" @click="exportDetailCSV">导出 CSV</t-button>
         </div>
-        <t-table
-          :columns="detailColumns"
-          :data="filteredDetailData"
-          :bordered="false"
-          row-key="id"
-          size="small"
-          :selected-row-keys="selectedDetailKeys"
-          @select-change="(keys) => selectedDetailKeys = keys"
-          :sort="detailSortInfo"
-          @sort-change="onDetailSortChange"
-          :pagination="detailPagination"
-          @page-change="onDetailPageChange"
-        >
-          <template #url="{ row }">
-            <div class="url-with-copy">
-              <t-popup :content="row.url" placement="top">
-                <span class="url-text">{{ row.url }}</span>
-              </t-popup>
-              <t-button v-if="row.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(row.url)">
-                <template #icon><CopyIcon /></template>
-              </t-button>
-            </div>
-          </template>
-          <template #stability="{ row }">
-            <div class="stability-cell">
-              <div class="stability-track">
-                <div class="stability-fill" :class="stabilityClass(row.stability)" :style="{ width: (row.stability || 0) + '%' }"></div>
+        <div class="detail-table-shell">
+          <t-table
+            :columns="detailColumns"
+            :data="filteredDetailData"
+            :bordered="false"
+            row-key="id"
+            size="small"
+            :selected-row-keys="selectedDetailKeys"
+            @select-change="(keys) => selectedDetailKeys = keys"
+            :sort="detailSortInfo"
+            @sort-change="onDetailSortChange"
+            :pagination="detailPagination"
+            @page-change="onDetailPageChange"
+          >
+            <template #url="{ row }">
+              <div class="url-with-copy">
+                <t-popup :content="row.url" placement="top">
+                  <span class="url-text">{{ row.url }}</span>
+                </t-popup>
+                <t-button v-if="row.url" variant="text" size="small" class="copy-btn" @click.stop="copyText(row.url)">
+                  <template #icon><CopyIcon /></template>
+                </t-button>
               </div>
-              <span style="font-size:11px;color:var(--td-text-color-placeholder)">{{ Math.round(row.stability || 0) }}%</span>
-            </div>
-          </template>
-          <template #delay="{ row }">{{ row.delay != null ? Math.round(row.delay) + ' ms' : '-' }}</template>
-          <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
-          <template #quality_status="{ row }">
-            <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">{{ qualityLabel(row.quality_status) }}</t-tag>
-          </template>
-          <template #priority="{ row }">
-            <t-select
-              :model-value="row.priority ?? 0"
-              size="small"
-              style="width:90px"
-              @change="(val) => onPriorityChange(row.url, val)"
-            >
-              <t-option :value="0" label="普通" />
-              <t-option :value="1" label="高" />
-              <t-option :value="2" label="最高" />
-            </t-select>
-          </template>
-          <template #op="{ row }">
-            <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">重新检测</t-button>
-          </template>
-        </t-table>
+            </template>
+            <template #stability="{ row }">
+              <div class="stability-cell">
+                <div class="stability-track">
+                  <div class="stability-fill" :class="stabilityClass(row.stability)" :style="{ width: (row.stability || 0) + '%' }"></div>
+                </div>
+                <span style="font-size:11px;color:var(--td-text-color-placeholder)">{{ Math.round(row.stability || 0) }}%</span>
+              </div>
+            </template>
+            <template #delay="{ row }">{{ row.delay != null ? Math.round(row.delay) + ' ms' : '-' }}</template>
+            <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
+            <template #quality_status="{ row }">
+              <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">{{ qualityLabel(row.quality_status) }}</t-tag>
+            </template>
+            <template #priority="{ row }">
+              <t-select
+                :model-value="row.priority ?? 0"
+                size="small"
+                style="width:90px"
+                @change="(val) => onPriorityChange(row.url, val)"
+              >
+                <t-option :value="0" label="普通" />
+                <t-option :value="1" label="高" />
+                <t-option :value="2" label="最高" />
+              </t-select>
+            </template>
+            <template #op="{ row }">
+              <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">重新检测</t-button>
+            </template>
+          </t-table>
+        </div>
       </t-dialog>
 
       <!-- 分组视图（默认） -->
@@ -192,7 +193,7 @@
       </t-skeleton>
     </template>
 
-    <!-- ==================== 按扫描记录视图（原功能） ==================== -->
+    <!-- ==================== 历史模式视图（原按扫描记录功能） ==================== -->
     <template v-else>
       <div class="legacy-toolbar">
         <t-select
@@ -360,9 +361,19 @@ const detailQualityFilter = ref('')
 const detailCategoryFilter = ref('')
 const detailProvinceFilter = ref('')
 const detailSortInfo = ref({})
+let detailFiltersReady = true
 
 const detailCategories = ref([])
 const detailProvinces = ref([])
+
+function getDetailFilters() {
+  return {
+    search: detailSearch.value.trim(),
+    quality: detailQualityFilter.value,
+    category: detailCategoryFilter.value,
+    province: detailProvinceFilter.value,
+  }
+}
 
 const filteredDetailData = computed(() => {
   // 服务端已分页，allDetailData 即当前页数据
@@ -402,7 +413,12 @@ function onDetailPageChange(info) {
 
 async function loadDetailPage() {
   try {
-    const data = await apiPersistentDetails(detailSourceIp.value, detailPage.value, detailPerPage.value)
+    const data = await apiPersistentDetails(
+      detailSourceIp.value,
+      detailPage.value,
+      detailPerPage.value,
+      getDetailFilters(),
+    )
     if (data && data.items) {
       allDetailData.value = data.items
       detailTotal.value = data.total || 0
@@ -539,6 +555,8 @@ async function loadGrouped() {
 
 // ─── 详情弹窗 ───
 async function openSourceDetail(sourceIp) {
+  detailFiltersReady = false
+  clearTimeout(detailFilterTimer)
   detailSourceIp.value = sourceIp
   detailPage.value = 1
   detailPerPage.value = 50
@@ -550,7 +568,7 @@ async function openSourceDetail(sourceIp) {
   detailSortInfo.value = {}
   detailDialogVisible.value = true
   try {
-    const data = await apiPersistentDetails(sourceIp, 1, 50)
+    const data = await apiPersistentDetails(sourceIp, 1, 50, getDetailFilters())
     if (data && data.items) {
       allDetailData.value = data.items
       detailTotal.value = data.total || 0
@@ -572,6 +590,8 @@ async function openSourceDetail(sourceIp) {
   } catch (e) {
     allDetailData.value = []
     detailTotal.value = 0
+  } finally {
+    detailFiltersReady = true
   }
 }
 
@@ -792,6 +812,7 @@ function onPageChange(pageInfo) {
 }
 
 let debounceTimer = null
+let detailFilterTimer = null
 function debouncedLoad() {
   clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
@@ -799,6 +820,19 @@ function debouncedLoad() {
     selectedKeys.value = []
     loadResults()
   }, 400)
+}
+
+function reloadDetailWithFilters() {
+  if (!detailFiltersReady) return
+  if (!detailDialogVisible.value || !detailSourceIp.value) return
+  detailPage.value = 1
+  selectedDetailKeys.value = []
+  loadDetailPage()
+}
+
+function debouncedDetailFilterLoad() {
+  clearTimeout(detailFilterTimer)
+  detailFilterTimer = setTimeout(reloadDetailWithFilters, 350)
 }
 
 function selectAllLegacy() {
@@ -828,6 +862,8 @@ function downloadM3U(items, filename) {
 
 // ─── 生命周期 ───
 watch(searchQuery, debouncedLoad)
+watch(detailSearch, debouncedDetailFilterLoad)
+watch([detailQualityFilter, detailCategoryFilter, detailProvinceFilter], reloadDetailWithFilters)
 
 watch(viewMode, (mode) => {
   if (mode === 'grouped') {
@@ -844,6 +880,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer)
+  if (detailFilterTimer) clearTimeout(detailFilterTimer)
 })
 </script>
 
@@ -906,6 +943,15 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+}
+
+.detail-table-shell {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.detail-table-shell :deep(.t-table) {
+  min-width: 1520px;
 }
 
 .legacy-toolbar,

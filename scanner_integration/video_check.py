@@ -185,6 +185,34 @@ def filter_high_delay(channels, max_delay=MAX_DELAY_MS):
 def _sort_number(value, default):
     return value if isinstance(value, (int, float)) else default
 
+
+def _config_int(name, default, min_value, max_value):
+    try:
+        value = int(config_bridge.get_scan_config().get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def get_deep_check_options():
+    return {
+        'duration': _config_int('deep_check_duration', DEEP_CHECK_DURATION, 1, 120),
+        'min_bytes': _config_int('deep_check_min_bytes', 131072, 4096, 10485760),
+        'request_timeout': _config_int('deep_check_request_timeout', 10, 2, 120),
+    }
+
+
+async def run_deep_check(session, url):
+    options = get_deep_check_options()
+    return await deep_check(
+        session,
+        url,
+        check_duration=options['duration'],
+        min_bytes=options['min_bytes'],
+        request_timeout=options['request_timeout'],
+    )
+
+
 async def fast_check_with_fallback(session, url):
     async with global_sem:
         for attempt in range(2):
@@ -247,7 +275,8 @@ async def fast_filter(sources, log_fn=None):
     _log(f"[快速检测] 完成，{len(valid)}/{total} 存活，耗时 {elapsed:.1f}s")
     return valid
 
-async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测速时长由配置常量控制
+async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION,
+                     min_bytes=131072, request_timeout=10):   # 测速时长由配置常量控制
     async with global_sem:
         try:
             start = time.time()
@@ -257,7 +286,7 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测�
             max_interval = 0
             last_chunk = start
             intervals = []                     # 记录所有 chunk 间隔，用于计算抖动
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as r:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=request_timeout), allow_redirects=True) as r:
                 if r.status != 200:
                     return None
                 if 'text/html' in r.headers.get('Content-Type', ''):
@@ -275,7 +304,7 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测�
                         if interval > max_interval:
                             max_interval = interval
                         last_chunk = now
-                    if now - start > check_duration or total_bytes >= 131072:   # 至少 128KB 数据
+                    if now - start > check_duration or total_bytes >= min_bytes:
                         break
                 elapsed = time.time() - start
                 if total_bytes == 0:
@@ -332,7 +361,7 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION):   # 测�
 async def deep_filter_batch(batch, sem, session):
     async def work(src):
         async with sem:
-            perf = await deep_check(session, src['url'])
+            perf = await run_deep_check(session, src['url'])
             if not perf:
                 return None
             src['delay'] = perf['delay']
