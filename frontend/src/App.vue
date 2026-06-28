@@ -99,7 +99,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount, defineAsyncComponent, watch } from 'vue'
 import { useTheme } from './composables/useTheme.js'
 import { useDialogDrag } from './composables/useDialogDrag.js'
 import { apiGetInitial, apiGetProgress, connectTestSse } from './api.js'
@@ -444,11 +444,19 @@ function refreshOverview(runsData) {
 }
 
 function onTabChange(value) {
-  visitedTabs.add(value)
+  markTabVisited(value)
   if (value === 'overview') {
     nextTick(() => overviewRef.value?.refreshCharts?.())
   }
 }
+
+function markTabVisited(value) {
+  if (TAB_LIST.includes(value)) {
+    visitedTabs.add(value)
+  }
+}
+
+watch(activeTab, markTabVisited, { immediate: true })
 
 onMounted(async () => {
   await loadInitialData()
