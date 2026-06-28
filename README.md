@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.16）
+## 当前版本说明（v1.6.17）
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 
@@ -32,6 +32,8 @@
 
 ### 最近更新摘要
 
+- 定期检测轮次异常中断时会写入错误状态和已完成的部分结果，检测概览不再只留下全 0 汇总。
+- 检测概览日期范围查询会包含结束日完整数据，并在表格中显示轮次状态。
 - README 已按当前代码重新校准：区分 Docker `.env` 与源码运行 `database/db_config.json` 的数据库配置入口。
 - 健康检查说明改为当前真实响应：默认轻量返回，设置 `IPTV_HEALTH_DETAILED=1` 后才返回版本、运行时间、磁盘、内存、调度和最近测速摘要。
 - 修正 Gunicorn 端口、API 响应格式例外、结果订阅端点和 Webhook 可用性说明，避免把未开放的后台配置写成可直接使用。
@@ -1144,7 +1146,7 @@ iptv-all-in-one/
     "scanner": "ok",
     "disk": "ok"
   },
-  "version": "1.6.16",
+  "version": "1.6.17",
   "uptime": 123.45,
   "system": {
     "disk_percent": 38.2,
