@@ -244,9 +244,12 @@ def api_scan_config_set():
 def api_scan_keys_list():
     """列出所有平台的 API Key（快速，不含积分信息）。"""
     try:
+        from scanner_integration.config_bridge import get_scan_config
         from scanner_integration.key_manager import KeyManager, init_key_manager
         init_key_manager()
         km = KeyManager.instance()
+        cfg = get_scan_config()
+        fofa_email = cfg.get('fofa_email', '')
         result = []
         for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
             keys = km.get_all_keys(platform)
@@ -260,6 +263,7 @@ def api_scan_keys_list():
                     'role': '',
                     'role_limit': None,
                     'error': '',
+                    'email': fofa_email if platform == 'fofa' else '',
                 })
         return jsonify({'ok': True, 'data': result})
     except Exception as e:
@@ -279,6 +283,9 @@ def api_scan_keys_credits():
         )
         init_key_manager()
         km = KeyManager.instance()
+        from scanner_integration.config_bridge import get_scan_config
+        cfg = get_scan_config()
+        fofa_email = cfg.get('fofa_email', '')
         credits_info = {}
         try:
             import asyncio
@@ -319,6 +326,7 @@ def api_scan_keys_credits():
                     'role': ci.get('role', ''),
                     'role_limit': _finite_number_or_none(ci.get('role_limit')),
                     'error': ci.get('error', ''),
+                    'email': fofa_email if platform == 'fofa' else '',
                 })
         return jsonify({'ok': True, 'data': result})
     except Exception as e:
@@ -351,8 +359,9 @@ def api_scan_keys_add():
         # Fofa 需要同步 email
         if platform == 'fofa':
             email = data.get('email', '').strip()
-            if email:
-                cfg['fofa_email'] = email
+            if not email:
+                return jsonify({'ok': False, 'error': 'Fofa Email 不能为空'}), 400
+            cfg['fofa_email'] = email
 
         save_scan_config(cfg)
         init_key_manager()
@@ -413,13 +422,20 @@ def api_scan_keys_update():
             return jsonify({'ok': False, 'error': '参数不完整'}), 400
         if platform not in SUPPORTED_KEY_PLATFORMS:
             return jsonify({'ok': False, 'error': '不支持的平台'}), 400
-        if old_key == new_key:
-            return jsonify({'ok': True, 'message': 'Key 未变更'})
 
         cfg = get_scan_config()
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
+        if platform == 'fofa':
+            email = data.get('email', '').strip()
+            if not email:
+                return jsonify({'ok': False, 'error': 'Fofa Email 不能为空'}), 400
+            cfg['fofa_email'] = email
+        if old_key == new_key:
+            save_scan_config(cfg)
+            init_key_manager()
+            return jsonify({'ok': True, 'message': 'Fofa Email 已更新' if platform == 'fofa' else 'Key 未变更'})
         # 支持后缀匹配（前端传 ...xxx，后端存完整 key）
         if old_key in keys_list:
             idx = keys_list.index(old_key)
@@ -435,11 +451,6 @@ def api_scan_keys_update():
         cfg[f'{platform}_api_keys'] = keys_list
         if len(keys_list) == 1:
             cfg[f'{platform}_api_key'] = keys_list[0]
-        # Fofa 需要同步 email
-        if platform == 'fofa':
-            email = data.get('email', '').strip()
-            if email:
-                cfg['fofa_email'] = email
         save_scan_config(cfg)
         init_key_manager()
         return jsonify({'ok': True, 'message': 'Key 已更新'})
@@ -455,6 +466,14 @@ def api_scan_stats():
         return jsonify({'ok': True, 'data': {'by_category': {}, 'by_province': {}}})
     scan_id = request.args.get('scan_id')
     return jsonify({'ok': True, 'data': scanner.get_scan_stats(scan_id=scan_id)})
+
+
+@scan_bp.route('/api/scan/yield-stats', methods=['GET'])
+def api_scan_yield_stats():
+    """Return persisted platform/profile yield stats."""
+    scan_id = request.args.get('scan_id')
+    limit = int_arg(request.args, 'limit', 200, 1, 1000)
+    return jsonify({'ok': True, 'data': db.get_scan_yield_stats(scan_id=scan_id, limit=limit)})
 
 
 # ─────────────── 持久化扫描结果 API ───────────────
@@ -479,7 +498,19 @@ def api_persistent_details():
         return jsonify({'ok': False, 'error': 'source_ip is required'}), 400
     page = int_arg(request.args, 'page', 1, 1, None)
     size = int_arg(request.args, 'size', 50, 1, 200)
-    return jsonify({'ok': True, 'data': scanner.get_persistent_details(source_ip, page=page, size=size)})
+    search = request.args.get('search', '').strip()
+    quality = request.args.get('quality', '').strip()
+    category = request.args.get('category', '').strip()
+    province = request.args.get('province', '').strip()
+    return jsonify({'ok': True, 'data': scanner.get_persistent_details(
+        source_ip,
+        page=page,
+        size=size,
+        search=search,
+        quality=quality,
+        category=category,
+        province=province,
+    )})
 
 
 @scan_bp.route('/api/scan/persistent/stats', methods=['GET'])
@@ -555,7 +586,7 @@ def api_detection_run_results(cycle_id):
 def api_persistent_recheck():
     """重新检测指定频道。"""
     import database as db
-    from scanner_integration.video_check import deep_check
+    from scanner_integration.video_check import run_deep_check
     from scanner_integration.network import get_session
     import asyncio
 
@@ -570,7 +601,7 @@ def api_persistent_recheck():
 
     async def _do_recheck():
         async with get_session(limit=5, timeout=10) as session:
-            result = await deep_check(session, url)
+            result = await run_deep_check(session, url)
             if result:
                 db.update_persistent_check(
                     url, ok=True,

@@ -109,6 +109,9 @@ DEFAULT_SCAN_CONFIG = {
     "update_days": [0, 1, 2, 3, 4, 5, 6],  # 0=周一, 6=周日
     "deep_concurrent": 15,
     "deep_batch_size": 50,
+    "deep_check_duration": DEEP_CHECK_DURATION,
+    "deep_check_min_bytes": 131072,
+    "deep_check_request_timeout": 10,
     "enabled_platforms": [],
     "selected_provinces": [],
     "cost_saver_mode": True,
@@ -249,6 +252,9 @@ def _normalize_scan_config(raw_cfg):
     int_ranges = {
         'deep_concurrent': (1, 200),
         'deep_batch_size': (1, 500),
+        'deep_check_duration': (1, 120),
+        'deep_check_min_bytes': (4096, 10485760),
+        'deep_check_request_timeout': (2, 120),
         'c_scan_limit': (1, 5000),
         'c_segment_max_segments': (1, 50),
         'c_segment_max_total_ips': (1, 5000),

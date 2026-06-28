@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 from . import config_bridge
 from .network import get_session, quick_http_check
-from .video_check import deep_check
+from .video_check import run_deep_check
 
 logger = logging.getLogger('scanner.detection')
 
@@ -293,10 +293,10 @@ class DetectionManager:
                             return False
 
                         try:
-                            perf = await deep_check(session, url)
+                            perf = await run_deep_check(session, url)
                             if perf is None:
                                 await asyncio.sleep(2)
-                                perf = await deep_check(session, url)
+                                perf = await run_deep_check(session, url)
                         except Exception as exc:
                             perf = None
                             self._log(
@@ -492,7 +492,7 @@ class DetectionManager:
 
                     result = await quick_http_check(session, url)
                     if result['alive']:
-                        perf = await deep_check(session, url)
+                        perf = await run_deep_check(session, url)
                         if perf is not None:
                             _db.restore_persistent(url)
                             _db.update_persistent_check(

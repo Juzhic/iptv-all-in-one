@@ -341,6 +341,85 @@ def _deduplicate_and_normalize(raw):
     return uniq
 
 
+def _count_by_yield_key(channels):
+    counts = {}
+    for ch in channels or []:
+        if not isinstance(ch, dict):
+            continue
+        key = ch.get('yield_stat_key')
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _prepare_yield_stats(yield_stats, raw_channels, deduped_channels, candidate_channels=None):
+    if not yield_stats:
+        return []
+    cleaned_counts = _count_by_yield_key(raw_channels)
+    deduped_counts = _count_by_yield_key(deduped_channels)
+    candidate_counts = _count_by_yield_key(candidate_channels if candidate_channels is not None else deduped_channels)
+    prepared = []
+    for row in yield_stats:
+        if not isinstance(row, dict):
+            continue
+        stat_key = row.get('stat_key')
+        if not stat_key:
+            continue
+        item = dict(row)
+        item['cleaned_channels'] = cleaned_counts.get(stat_key, item.get('cleaned_channels', 0))
+        item['deduped_channels'] = deduped_counts.get(stat_key, 0)
+        item['candidate_channels'] = candidate_counts.get(stat_key, 0)
+        prepared.append(item)
+    return prepared
+
+
+def _yield_stage_counts(channels, field_name):
+    return {
+        key: {field_name: value}
+        for key, value in _count_by_yield_key(channels).items()
+    }
+
+
+def _yield_deep_counts(quick_channels, deep_channels, db_module):
+    counts = {}
+    for key, value in _count_by_yield_key(quick_channels).items():
+        counts[key] = {
+            'deep_checked': value,
+            'deep_pass': 0,
+            'good_count': 0,
+            'poor_count': 0,
+            'unreachable_count': value,
+        }
+    for ch in deep_channels or []:
+        if not isinstance(ch, dict):
+            continue
+        key = ch.get('yield_stat_key')
+        if not key:
+            continue
+        bucket = counts.setdefault(key, {
+            'deep_checked': 0,
+            'deep_pass': 0,
+            'good_count': 0,
+            'poor_count': 0,
+            'unreachable_count': 0,
+        })
+        bucket['deep_pass'] += 1
+        status = db_module._evaluate_quality(
+            ch.get('stability'),
+            ch.get('delay'),
+            ch.get('bandwidth'),
+        )
+        if status == 'good':
+            bucket['good_count'] += 1
+        elif status == 'poor':
+            bucket['poor_count'] += 1
+        else:
+            bucket['unreachable_count'] += 1
+        if bucket['unreachable_count'] > 0:
+            bucket['unreachable_count'] -= 1
+    return counts
+
+
 async def _do_scan(platforms_override=None, provinces_override=None):
     """执行完整的扫描流程：采集 -> 快速过滤 -> 深度检测 -> 保存数据库。"""
     from .platforms import collect_all
@@ -385,7 +464,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     try:
         # 阶段1：采集
         _scan_log(f"[Scan:{scan_id}] 开始采集...")
-        raw, actual_platforms = await collect_all(
+        raw, actual_platforms, yield_stats = await collect_all(
             log_fn=_scan_log,
             platforms_override=platforms_override,
             provinces_override=provinces_override,
@@ -477,6 +556,10 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             _broadcast_sse('scan_complete', {'ok': True, 'total': 0, 'message': '采集完成，未获取到频道。'})
             return scan_id
 
+        prepared_yield_stats = _prepare_yield_stats(yield_stats, raw, uniq)
+        if prepared_yield_stats:
+            _db.insert_scan_yield_stats(scan_id, prepared_yield_stats)
+
         _db.update_scan_progress(phase='fast_filter', total=len(uniq),
                                  message=f'快速过滤 {len(uniq)} 个频道...')
         _broadcast_sse('progress', {
@@ -502,6 +585,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 ch['category'] = name_cat[1] if isinstance(name_cat, tuple) else ''
 
         _db.update_scan_run(scan_id, total_fast_pass=len(quick))
+        _db.update_scan_yield_stage_counts(scan_id, _yield_stage_counts(quick, 'fast_pass'))
 
         # 批量写入数据库
         _db.insert_scan_results(scan_id, quick)
@@ -539,6 +623,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                     delay=ch.get('delay'), bandwidth=ch.get('bandwidth'),
                     resolution=ch.get('resolution'), codec=ch.get('codec')
                 )
+        _db.update_scan_yield_stage_counts(scan_id, _yield_deep_counts(quick, sorted_channels, _db))
 
         # 更新最终结果
         if sorted_channels:
@@ -637,7 +722,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
 
         # 阶段2：采集新源
         _scan_log(f"[Incremental:{scan_id}] 开始采集新源...")
-        raw, actual_platforms = await collect_all(
+        raw, actual_platforms, yield_stats = await collect_all(
             log_fn=_scan_log,
             platforms_override=platforms_override,
             provinces_override=provinces_override,
@@ -682,6 +767,10 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
                 _scan_log(f"[Incremental:{scan_id}] 质量热点异常: {e}")
                 logger.warning(f"[Incremental:{scan_id}] 质量热点异常: {e}")
 
+        prepared_yield_stats = _prepare_yield_stats(yield_stats, raw, uniq, new_channels)
+        if prepared_yield_stats:
+            _db.insert_scan_yield_stats(scan_id, prepared_yield_stats)
+
         if not new_channels:
             _scan_log(f"[Incremental:{scan_id}] 无新频道，跳过过滤。")
             _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str())
@@ -713,6 +802,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
                 ch['category'] = name_cat[1] if isinstance(name_cat, tuple) else ''
 
         _db.update_scan_run(scan_id, total_fast_pass=len(quick))
+        _db.update_scan_yield_stage_counts(scan_id, _yield_stage_counts(quick, 'fast_pass'))
         _db.insert_scan_results(scan_id, quick)
         _scan_log(f"[Incremental:{scan_id}] 新频道快速过滤完成，{len(quick)} 个通过。")
 
@@ -739,6 +829,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
                         delay=ch.get('delay'), bandwidth=ch.get('bandwidth'),
                         resolution=ch.get('resolution'), codec=ch.get('codec')
                     )
+            _db.update_scan_yield_stage_counts(scan_id, _yield_deep_counts(quick, sorted_channels, _db))
 
         duration = (_local_now() - datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S')).total_seconds()
         _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
@@ -912,10 +1003,18 @@ def get_persistent_grouped():
     return _db.get_persistent_grouped()
 
 
-def get_persistent_details(source_ip, page=None, size=50):
+def get_persistent_details(source_ip, page=None, size=50, search=None, quality=None, category=None, province=None):
     """获取某个来源 IP 的频道明细。"""
     import database as _db
-    return _db.get_persistent_details_by_ip(source_ip, page=page, size=size)
+    return _db.get_persistent_details_by_ip(
+        source_ip,
+        page=page,
+        size=size,
+        search=search,
+        quality=quality,
+        category=category,
+        province=province,
+    )
 
 
 def get_persistent_stats():

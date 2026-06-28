@@ -282,9 +282,17 @@ function getPalette() {
   }
 }
 
-function labelInterval(length) {
-  if (length <= 8) return 0
-  return Math.max(1, Math.floor(length / 7))
+function chartLabelOptions(length, width) {
+  const usableWidth = Math.max(160, width || 0)
+  const maxVisibleLabels = Math.max(2, Math.floor((usableWidth - 72) / 74))
+  const interval = length <= maxVisibleLabels ? 0 : Math.ceil(length / maxVisibleLabels) - 1
+  const rotate = usableWidth < 460 && length > 4 ? 35 : (interval > 1 ? 24 : 0)
+  return {
+    interval,
+    rotate,
+    hideOverlap: true,
+    margin: rotate ? 14 : 8,
+  }
 }
 
 function createPassRateOption() {
@@ -292,6 +300,7 @@ function createPassRateOption() {
   const orderedRuns = [...chartData.value].reverse()
   const labels = orderedRuns.map((run) => formatShortTime(run.finished_at))
   const values = orderedRuns.map((run) => Number(run.summary?.pass_rate || 0))
+  const labelOptions = chartLabelOptions(labels.length, passRateChartRef.value?.clientWidth || 0)
 
   return {
     animationDuration: 420,
@@ -312,7 +321,7 @@ function createPassRateOption() {
       left: 52,
       right: 24,
       top: 26,
-      bottom: 32,
+      bottom: labelOptions.rotate ? 58 : 32,
     },
     xAxis: {
       type: 'category',
@@ -324,7 +333,7 @@ function createPassRateOption() {
       axisTick: { show: false },
       axisLabel: {
         color: colors.muted,
-        interval: labelInterval(labels.length),
+        ...labelOptions,
       },
     },
     yAxis: {
@@ -391,6 +400,7 @@ function createVolumeOption() {
     const ok = Number(run.summary?.total_passed || 0)
     return Math.max(total - ok, 0)
   })
+  const labelOptions = chartLabelOptions(labels.length, volumeChartRef.value?.clientWidth || 0)
 
   return {
     animationDuration: 420,
@@ -412,7 +422,7 @@ function createVolumeOption() {
       left: 52,
       right: 18,
       top: 26,
-      bottom: 32,
+      bottom: labelOptions.rotate ? 58 : 32,
     },
     legend: {
       top: 0,
@@ -430,7 +440,7 @@ function createVolumeOption() {
       axisTick: { show: false },
       axisLabel: {
         color: colors.muted,
-        interval: labelInterval(labels.length),
+        ...labelOptions,
       },
     },
     yAxis: {

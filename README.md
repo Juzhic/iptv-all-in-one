@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.6.17）
+## 当前版本说明（v1.7.2）
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 
@@ -20,6 +20,7 @@
 | 频道方案 | `config_data` 表，key 为 `profiles` / `profile:<name>` | 可供订阅接口按方案输出的扩展频道模板 |
 | 测速历史 | `runs`、`run_results` | 最近运行结果和每个频道 URL 的测速详情 |
 | 扫描历史 | `scan_runs`、`scan_results` | 扫描任务记录和扫描到的频道数据 |
+| 扫描收益统计 | `scan_yield_stats` | 记录测绘平台和质量画像在 API 命中、探测、快筛、深度检测上的真实产出 |
 | 运行日志 | `run_logs` | 每轮任务日志 |
 | 运行进度 | `run_progress` | Web 页面实时进度 |
 | 扫描进度 | `scan_progress` | 扫描实时进度 |
@@ -33,6 +34,11 @@
 ### 最近更新摘要
 
 - 定期检测轮次异常中断时会写入错误状态和已完成的部分结果，检测概览不再只留下全 0 汇总。
+- Docker 旧 MySQL 数据卷升级新版镜像时会自动补齐新增表字段，避免检测、扫描等轮询接口持续返回 500。
+- 系统配置、配置导入、文本保存和检测配置保存已按前端 API 解包后的响应处理，避免成功操作误报失败。
+- 扫描结果来源详情筛选改为服务端过滤并恢复弹窗标题，Fofa Key 保存会同步 Email，移动端详情/API Key 表格支持明确横向滚动。
+- 快捷键改为原生 `keydown` 统一处理，修复 `Ctrl+F` 报错；隐藏页签恢复后频道扫描轮询会继续执行。
+- 扫描模块新增测绘平台/画像收益统计，记录 API 命中、探测、提取、快筛、深度检测和质量分档产出，并统一扫描板块深度检测入口。
 - 检测概览日期范围查询会包含结束日完整数据，并在表格中显示轮次状态。
 - README 已按当前代码重新校准：区分 Docker `.env` 与源码运行 `database/db_config.json` 的数据库配置入口。
 - 健康检查说明改为当前真实响应：默认轻量返回，设置 `IPTV_HEALTH_DETAILED=1` 后才返回版本、运行时间、磁盘、内存、调度和最近测速摘要。
@@ -657,6 +663,7 @@ docker run -d \
 5. **凭证管理**：`basic_auth.json` 和 `database/db_config.json` 包含敏感信息，生产环境建议：
    - 通过环境变量传递 BasicAuth 凭证：`IPTV_AUTH_USERNAME`、`IPTV_AUTH_PASSWORD`、`IPTV_AUTH_REALM`
    - `basic_auth.json` 和 `database/db_config.json` 已加入 `.gitignore`，避免意外提交
+   - 如果 `basic_auth.json` 曾被提交或推送到远端，请立即轮换对应 BasicAuth 凭据，并评估是否需要清理 Git 历史
    - 使用 Docker volumes 挂载而非复制到镜像中
 
 ### 目录结构要求
@@ -1082,6 +1089,9 @@ iptv-all-in-one/
 | --- | --- | --- |
 | `deep_concurrent` | `15` | 深度检测并发数（1-200） |
 | `deep_batch_size` | `50` | 深度检测批次大小（1-500） |
+| `deep_check_duration` | `6` | 扫描板块统一深度检测的采样时长，单位秒（1-120） |
+| `deep_check_min_bytes` | `131072` | 扫描板块统一深度检测的最小采样字节数（4096-10485760） |
+| `deep_check_request_timeout` | `10` | 扫描板块统一深度检测单次请求超时，单位秒（2-120） |
 
 ### 健康检测与复活
 
@@ -1146,7 +1156,7 @@ iptv-all-in-one/
     "scanner": "ok",
     "disk": "ok"
   },
-  "version": "1.6.17",
+  "version": "1.7.2",
   "uptime": 123.45,
   "system": {
     "disk_percent": 38.2,

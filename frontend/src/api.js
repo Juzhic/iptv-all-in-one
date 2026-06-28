@@ -201,6 +201,10 @@ export function apiScanStats(params = {}) {
   const qs = new URLSearchParams(params).toString()
   return fetchJSON('/api/scan/stats' + (qs ? '?' + qs : ''))
 }
+export function apiScanYieldStats(params = {}) {
+  const qs = new URLSearchParams(params).toString()
+  return fetchJSON('/api/scan/yield-stats' + (qs ? '?' + qs : ''))
+}
 export function apiScanConfig() {
   return fetchJSON('/api/scan/config')
 }
@@ -208,7 +212,7 @@ export function apiSaveScanConfig(data) {
   return postJSON('/api/scan/config', data)
 }
 
-// ─── 频道发现 ───
+// ─── 频道发现（清理候选：当前前端未消费，保留兼容后端路由）───
 export function apiDiscover() {
   return fetchJSON('/api/discover', { timeout: 120000 })
 }
@@ -216,7 +220,7 @@ export function apiDiscoverMerge(channels) {
   return postJSON('/api/discover/merge', { channels })
 }
 
-// ─── 多方案管理 ───
+// ─── 多方案管理（清理候选：当前前端未消费，保留兼容后端路由）───
 export function apiListProfiles() {
   return fetchJSON('/api/profiles')
 }
@@ -250,10 +254,14 @@ export function apiScanKeyDelete(platform, key) {
 export function apiPersistentGrouped() {
   return fetchJSON('/api/scan/persistent/grouped')
 }
-export function apiPersistentDetails(sourceIp, page, size) {
+export function apiPersistentDetails(sourceIp, page, size, filters = {}) {
   const params = new URLSearchParams({ source_ip: sourceIp })
   if (page != null) params.set('page', page)
   if (size != null) params.set('size', size)
+  if (filters.search) params.set('search', filters.search)
+  if (filters.quality) params.set('quality', filters.quality)
+  if (filters.category) params.set('category', filters.category)
+  if (filters.province) params.set('province', filters.province)
   return fetchJSON('/api/scan/persistent/details?' + params.toString())
 }
 export function apiPersistentStats() {

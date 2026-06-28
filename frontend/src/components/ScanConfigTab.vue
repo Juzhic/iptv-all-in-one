@@ -4,7 +4,7 @@
       <div class="section-header">
         <div>
           <div class="section-title section-title--flush">API Key 管理</div>
-          <p class="section-desc">统一管理 Quake、Hunter 和 DayDayMap 的扫描 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
+          <p class="section-desc">统一管理 Quake、Hunter、DayDayMap 和 Fofa 的扫描 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
         </div>
 
         <t-space>
@@ -13,30 +13,32 @@
         </t-space>
       </div>
 
-      <t-table
-        :columns="keyColumns"
-        :data="keyList"
-        :bordered="false"
-        row-key="key"
-        size="small"
-        :pagination="null"
-      >
-        <template #platform="{ row }">
-          {{ platformLabelMap[row.platform] || row.platform }}
-        </template>
-        <template #credit="{ row }">
-          {{ formatCredit(row.credit, row.role_limit) }}
-        </template>
-        <template #status="{ row }">
-          <t-tag :theme="statusTheme(row.status)" size="small" variant="light">{{ row.status }}</t-tag>
-        </template>
-        <template #actions="{ row }">
-          <t-space :size="4">
-            <t-button variant="outline" size="small" @click="editKey(row)">编辑</t-button>
-            <t-button variant="outline" size="small" theme="danger" @click="deleteKey(row)">删除</t-button>
-          </t-space>
-        </template>
-      </t-table>
+      <div class="table-scroll-shell">
+        <t-table
+          :columns="keyColumns"
+          :data="keyList"
+          :bordered="false"
+          row-key="key"
+          size="small"
+          :pagination="null"
+        >
+          <template #platform="{ row }">
+            {{ platformLabelMap[row.platform] || row.platform }}
+          </template>
+          <template #credit="{ row }">
+            {{ formatCredit(row.credit, row.role_limit) }}
+          </template>
+          <template #status="{ row }">
+            <t-tag :theme="statusTheme(row.status)" size="small" variant="light">{{ row.status }}</t-tag>
+          </template>
+          <template #actions="{ row }">
+            <t-space :size="4">
+              <t-button variant="outline" size="small" @click="editKey(row)">编辑</t-button>
+              <t-button variant="outline" size="small" theme="danger" @click="deleteKey(row)">删除</t-button>
+            </t-space>
+          </template>
+        </t-table>
+      </div>
     </t-card>
 
     <div class="scan-config-toolbar" aria-label="扫描配置操作">
@@ -322,6 +324,30 @@
               <t-input-number v-model="scanCfg.quality_source_min_stability" :min="0" :max="100" :step="5" class="field-control" />
             </div>
 
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>深测时长</label>
+                <span>扫描板块统一深度检测的单源采样时长，手动重检和定时检测共用。</span>
+              </div>
+              <t-input-number v-model="scanCfg.deep_check_duration" :min="1" :max="120" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>深测采样</label>
+                <span>单源深度检测至少读取的字节数，增大后更能暴露短时断流但扫描更慢。</span>
+              </div>
+              <t-input-number v-model="scanCfg.deep_check_min_bytes" :min="4096" :max="10485760" :step="65536" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>深测超时</label>
+                <span>单次深度检测请求超时，过低会误杀慢启动源，过高会拖慢批次。</span>
+              </div>
+              <t-input-number v-model="scanCfg.deep_check_request_timeout" :min="2" :max="120" :step="1" class="field-control" />
+            </div>
+
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>ISP Intelligence</label>
@@ -513,6 +539,9 @@ const scanCfg = reactive({
   quality_hotspot_scan_limit: 120,
   quality_hotspot_min_score: 8,
   quality_source_min_stability: 45,
+  deep_check_duration: 6,
+  deep_check_min_bytes: 131072,
+  deep_check_request_timeout: 10,
   isp_intelligence_enabled: false,
   hot_segment_min_channels: 5,
   hot_segment_scan_limit: 50,
@@ -749,6 +778,9 @@ async function loadConfig() {
     scanCfg.quality_hotspot_scan_limit = typeof cfg.quality_hotspot_scan_limit === 'number' ? cfg.quality_hotspot_scan_limit : 120
     scanCfg.quality_hotspot_min_score = typeof cfg.quality_hotspot_min_score === 'number' ? cfg.quality_hotspot_min_score : 8
     scanCfg.quality_source_min_stability = typeof cfg.quality_source_min_stability === 'number' ? cfg.quality_source_min_stability : 45
+    scanCfg.deep_check_duration = typeof cfg.deep_check_duration === 'number' ? cfg.deep_check_duration : 6
+    scanCfg.deep_check_min_bytes = typeof cfg.deep_check_min_bytes === 'number' ? cfg.deep_check_min_bytes : 131072
+    scanCfg.deep_check_request_timeout = typeof cfg.deep_check_request_timeout === 'number' ? cfg.deep_check_request_timeout : 10
     scanCfg.isp_intelligence_enabled = !!cfg.isp_intelligence_enabled
     scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 5
     scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 50
@@ -789,6 +821,15 @@ function validateScanConfig() {
   }
   if (scanCfg.quality_source_min_stability < 0 || scanCfg.quality_source_min_stability > 100) {
     errors.push('最低稳定性需要在 0 到 100 之间')
+  }
+  if (scanCfg.deep_check_duration < 1 || scanCfg.deep_check_duration > 120) {
+    errors.push('深测时长需要在 1 到 120 秒之间')
+  }
+  if (scanCfg.deep_check_min_bytes < 4096 || scanCfg.deep_check_min_bytes > 10485760) {
+    errors.push('深测采样需要在 4096 到 10485760 字节之间')
+  }
+  if (scanCfg.deep_check_request_timeout < 2 || scanCfg.deep_check_request_timeout > 120) {
+    errors.push('深测超时需要在 2 到 120 秒之间')
   }
   const timeParts = (scanCfg.update_time || '').split(':')
   const hour = Number.parseInt(timeParts[0], 10)
@@ -913,6 +954,7 @@ function openAddModal() {
   keyModalTitle.value = '添加 API Key'
   keyForm.platform = 'quake'
   keyForm.key = ''
+  keyForm.email = ''
   oldKey.value = ''
   keyModalVisible.value = true
 }
@@ -922,6 +964,7 @@ function editKey(row) {
   keyModalTitle.value = '编辑 API Key'
   keyForm.platform = row.platform
   keyForm.key = row.key
+  keyForm.email = row.platform === 'fofa' ? (row.email || scanCfg.fofa_email || '') : ''
   oldKey.value = row.key
   keyModalVisible.value = true
 }
@@ -931,28 +974,41 @@ async function submitKey() {
     MessagePlugin.error('请输入 Key')
     return
   }
+  const email = keyForm.platform === 'fofa' ? keyForm.email.trim() : ''
+  if (keyForm.platform === 'fofa') {
+    if (!email) {
+      MessagePlugin.error('请输入 Fofa 注册邮箱')
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      MessagePlugin.error('Fofa 邮箱格式不正确')
+      return
+    }
+  }
 
   try {
     let res
     if (keyEditMode.value) {
-      if (keyForm.key === oldKey.value) {
+      const emailChanged = keyForm.platform === 'fofa' && email !== (scanCfg.fofa_email || '')
+      if (keyForm.key === oldKey.value && !emailChanged) {
         keyModalVisible.value = false
         return
       }
-      res = await apiScanKeyUpdate(keyForm.platform, oldKey.value, keyForm.key)
+      res = await apiScanKeyUpdate(keyForm.platform, oldKey.value, keyForm.key, email)
     } else {
-      res = await apiScanKeyAdd(keyForm.platform, keyForm.key)
+      res = await apiScanKeyAdd(keyForm.platform, keyForm.key, email)
     }
 
     if (res.ok) {
       MessagePlugin.success(keyEditMode.value ? 'Key 已更新' : 'Key 已添加')
+      if (keyForm.platform === 'fofa') scanCfg.fofa_email = email
       keyModalVisible.value = false
       loadKeys()
     } else {
       MessagePlugin.error(res.error || '操作失败')
     }
-  } catch (_) {
-    MessagePlugin.error('操作失败')
+  } catch (error) {
+    MessagePlugin.error(error.message || '操作失败')
   }
 }
 
@@ -1040,6 +1096,15 @@ onBeforeUnmount(() => {
 .keys-card {
   margin-bottom: 12px;
   border-radius: 10px;
+}
+
+.table-scroll-shell {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll-shell :deep(.t-table) {
+  min-width: 700px;
 }
 
 .scan-config-toolbar {

@@ -34,6 +34,33 @@ export default defineConfig(({ command }) => ({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const moduleId = id.replace(/\\/g, '/')
+          if (!moduleId.includes('node_modules')) return undefined
+          if (
+            moduleId.includes('/node_modules/echarts/') ||
+            moduleId.includes('/node_modules/zrender/') ||
+            moduleId.includes('/node_modules/tslib/')
+          ) return 'echarts'
+          if (
+            moduleId.includes('/node_modules/tdesign-vue-next/') ||
+            moduleId.includes('/node_modules/tdesign-icons-vue-next/') ||
+            moduleId.includes('/node_modules/@popperjs/') ||
+            moduleId.includes('/node_modules/@babel/runtime/') ||
+            moduleId.includes('/node_modules/dayjs/') ||
+            moduleId.includes('/node_modules/lodash-es/') ||
+            moduleId.includes('/node_modules/mitt/') ||
+            moduleId.includes('/node_modules/sortablejs/') ||
+            moduleId.includes('/node_modules/tinycolor2/') ||
+            moduleId.includes('/node_modules/validator/')
+          ) return 'tdesign'
+          if (moduleId.includes('/node_modules/@vue/') || moduleId.includes('/node_modules/vue/')) return 'vue'
+          return 'vendor'
+        },
+      },
+    },
   },
   server: {
     port: 3000,

@@ -214,25 +214,28 @@ def api_config_import():
     """Import configuration from a JSON file."""
     import json
 
-    if not request.files:
-        return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
+    if request.is_json:
+        data = request.get_json(silent=True)
+    else:
+        if not request.files:
+            return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
 
-    file = request.files.get('file')
-    if not file:
-        return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
+        file = request.files.get('file')
+        if not file:
+            return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
 
-    # Check file size (max 1MB)
-    file.seek(0, 2)  # Seek to end
-    file_size = file.tell()
-    file.seek(0)  # Reset to beginning
-    if file_size > 1 * 1024 * 1024:
-        return jsonify({'ok': False, 'error': '配置文件过大，最大支持 1MB'}), 400
+        # Check file size (max 1MB)
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        if file_size > 1 * 1024 * 1024:
+            return jsonify({'ok': False, 'error': '配置文件过大，最大支持 1MB'}), 400
 
-    try:
-        content = file.read().decode('utf-8')
-        data = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        return jsonify({'ok': False, 'error': f'文件格式错误: {e}'}), 400
+        try:
+            content = file.read().decode('utf-8')
+            data = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            return jsonify({'ok': False, 'error': f'文件格式错误: {e}'}), 400
 
     if not isinstance(data, dict):
         return jsonify({'ok': False, 'error': '配置文件格式错误，应为 JSON 对象'}), 400

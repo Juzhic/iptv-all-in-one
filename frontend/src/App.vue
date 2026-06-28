@@ -99,20 +99,20 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount } from 'vue'
-import { useMagicKeys, whenever } from '@vueuse/core'
+import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useTheme } from './composables/useTheme.js'
 import { useDialogDrag } from './composables/useDialogDrag.js'
 import { apiGetInitial, apiGetProgress, connectTestSse } from './api.js'
-import OverviewTab from './components/OverviewTab.vue'
-import HistoryTab from './components/HistoryTab.vue'
-import TestingTab from './components/TestingTab.vue'
-import SettingsTab from './components/SettingsTab.vue'
-import ScannerTab from './components/ScannerTab.vue'
-import ScanConfigTab from './components/ScanConfigTab.vue'
-import DetectionTab from './components/DetectionTab.vue'
-import ScanResultsTab from './components/ScanResultsTab.vue'
-import IpScanTab from './components/IpScanTab.vue'
+
+const OverviewTab = defineAsyncComponent(() => import('./components/OverviewTab.vue'))
+const HistoryTab = defineAsyncComponent(() => import('./components/HistoryTab.vue'))
+const TestingTab = defineAsyncComponent(() => import('./components/TestingTab.vue'))
+const SettingsTab = defineAsyncComponent(() => import('./components/SettingsTab.vue'))
+const ScannerTab = defineAsyncComponent(() => import('./components/ScannerTab.vue'))
+const ScanConfigTab = defineAsyncComponent(() => import('./components/ScanConfigTab.vue'))
+const DetectionTab = defineAsyncComponent(() => import('./components/DetectionTab.vue'))
+const ScanResultsTab = defineAsyncComponent(() => import('./components/ScanResultsTab.vue'))
+const IpScanTab = defineAsyncComponent(() => import('./components/IpScanTab.vue'))
 
 const globalConfig = {}
 const { theme, setTheme } = useTheme()
@@ -136,17 +136,13 @@ const codecStats = ref({})
 const overviewRef = ref(null)
 const historyRef = ref(null)
 
-// Keyboard shortcuts
-const { ctrl_s, ctrl_f, escape } = useMagicKeys()
-
 const TAB_LIST = ['overview', 'history', 'testing', 'settings', 'scanner', 'scan-config', 'detection', 'scan-results', 'ip-scan']
 
-// Ctrl+S 保存配置
-whenever(ctrl_s, () => {
+function triggerActiveSave() {
   if (activeTab.value === 'settings') {
     const settingsEl = document.querySelector('.settings-tab')
     if (settingsEl) {
-      const saveBtn = settingsEl.querySelector('.t-button--theme-primary')
+      const saveBtn = settingsEl.querySelector('.settings-config-save-button')
       if (saveBtn) saveBtn.click()
     }
   } else if (activeTab.value === 'scan-config') {
@@ -156,17 +152,27 @@ whenever(ctrl_s, () => {
       if (saveBtn) saveBtn.click()
     }
   }
-})
+}
 
-// Ctrl+F 聚焦搜索
-whenever(ctrl_f, (e) => {
-  e.preventDefault()
+function focusSearchInput() {
   const searchInput = document.querySelector('.search-input input, .t-input input[placeholder*="搜索"]')
   if (searchInput) searchInput.focus()
-})
+}
 
 // 数字键切换Tab
 function handleKeyDown(e) {
+  const key = e.key.toLowerCase()
+  const isModifierShortcut = e.ctrlKey || e.metaKey
+  if (isModifierShortcut && key === 's') {
+    e.preventDefault()
+    triggerActiveSave()
+    return
+  }
+  if (isModifierShortcut && key === 'f') {
+    e.preventDefault()
+    focusSearchInput()
+    return
+  }
   if (e.altKey && e.key >= '1' && e.key <= '9') {
     e.preventDefault()
     const tabIndex = parseInt(e.key) - 1
