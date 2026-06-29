@@ -11,6 +11,8 @@
 
 ### 修复
 - 修复 Docker 部署中 `database` 包入口未导出质量评估、频道复活和 IP 扫描数据库函数，导致频道扫描、检测复活或 IP 扫描相关接口返回 `module 'database' has no attribute ...` 的问题。
+- 前端新增运行时 SSE 能力自动判断：多线程 WSGI 环境自动使用 SSE，旧 Compose 或面板仍覆盖为单同步 worker 时自动降级短轮询，避免长连接占满唯一 worker。
+- 新增 `/api/ip-scan/logs` 增量日志接口，让 IP 扫描在短轮询模式下仍能刷新日志。
 
 ### 运维
 - 同步 `deploy/Dockerfile` 的 Gunicorn 默认启动参数为 `gthread` 多线程模式，避免使用部署产物构建镜像时仍保留旧的单同步 worker 配置。

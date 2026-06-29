@@ -239,12 +239,14 @@ import {
   apiIpScanStop, 
   apiIpScanForceClear,
   apiIpScanStatus, 
+  apiIpScanLogs,
   apiIpScanResults,
   apiIpScanLatest,
   apiIpScanStats,
   apiIpScanToTest,
   apiIpScanExportUrl,
-  connectIpScanSse
+  connectIpScanSse,
+  shouldUseSse
 } from '../api.js'
 import LogPanel from './LogPanel.vue'
 
@@ -475,6 +477,21 @@ function clearLogs() {
   lastLogSeq = 0
 }
 
+function appendLogEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) return
+  entries.forEach((data) => {
+    const seq = Number(data.seq)
+    if (Number.isFinite(seq) && seq <= lastLogSeq) return
+    logLines.value.push(data)
+    if (Number.isFinite(seq)) lastLogSeq = seq
+  })
+
+  const MAX_LOG_LINES = 2000
+  if (logLines.value.length > MAX_LOG_LINES) {
+    logLines.value = logLines.value.slice(-1500)
+  }
+}
+
 // 开始扫描
 async function startScan() {
   if (!targets.value.trim()) {
@@ -558,10 +575,14 @@ async function forceClear() {
 }
 
 // SSE连接
-function connectSse() {
+async function connectSse() {
   if (sseSource) {
     sseSource.close()
     sseSource = null
+  }
+  if (!await shouldUseSse()) {
+    startPolling()
+    return
   }
   
   try {
@@ -569,15 +590,7 @@ function connectSse() {
     log: (event) => {
       try {
         const data = JSON.parse(event.data)
-        if (data.seq && data.seq <= lastLogSeq) return
-        logLines.value.push(data)
-        if (data.seq) lastLogSeq = data.seq
-        
-        // 限制日志行数
-        const MAX_LOG_LINES = 2000
-        if (logLines.value.length > MAX_LOG_LINES) {
-          logLines.value = logLines.value.slice(-1500)
-        }
+        appendLogEntries([data])
       } catch (e) {
         console.error('解析日志失败:', e)
       }
@@ -609,14 +622,23 @@ function connectSse() {
 // 轮询状态
 let pollTimer = null
 
+async function pollOnce() {
+  const [status, logs] = await Promise.all([
+    apiIpScanStatus(),
+    apiIpScanLogs(lastLogSeq),
+  ])
+  if (status) {
+    updateStatus(status)
+  }
+  appendLogEntries(logs?.lines || logs || [])
+}
+
 function startPolling() {
   stopPolling()
+  pollOnce().catch((e) => console.error('轮询失败:', e))
   pollTimer = setInterval(async () => {
     try {
-      const status = await apiIpScanStatus()
-      if (status) {
-        updateStatus(status)
-      }
+      await pollOnce()
     } catch (e) {
       console.error('轮询失败:', e)
     }

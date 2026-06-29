@@ -216,6 +216,7 @@ import {
   apiSaveScanConfig,
   apiScanConfig,
   connectDetectionSse,
+  shouldUseSse,
 } from '../api.js'
 
 const { theme } = useTheme()
@@ -282,8 +283,12 @@ const detLogPanelRef = ref(null)
 let detEventSource = null
 let detPollFallback = null
 
-function connectDetectionStream() {
+async function connectDetectionStream() {
   disconnectDetectionSse()
+  if (!await shouldUseSse()) {
+    startDetPollFallback()
+    return
+  }
   try {
     detEventSource = connectDetectionSse({
       status(e) {

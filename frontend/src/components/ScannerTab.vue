@@ -67,7 +67,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
-import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger, connectScanSse } from '../api.js'
+import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger, connectScanSse, shouldUseSse } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
 import LogPanel from './LogPanel.vue'
 
@@ -175,8 +175,12 @@ function handleScanStreamError() {
   }
 }
 
-function connectScanStream() {
+async function connectScanStream() {
   disconnectScanStream()
+  if (!await shouldUseSse()) {
+    startPoll()
+    return
+  }
   try {
     scanEventSource = connectScanSse({
       status(event) {
@@ -457,6 +461,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disconnectScanStream()
+  stopPoll()
 })
 </script>
 

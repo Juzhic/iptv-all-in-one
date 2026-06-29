@@ -8,7 +8,7 @@ import os
 import time
 import shutil
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from database import get_latest_run, get_scheduler_state, _get_conn
 from web import state as _state
@@ -34,6 +34,26 @@ def _get_version():
     except Exception:
         pass
     return 'unknown'
+
+
+@health_bp.route('/api/runtime', methods=['GET'])
+def runtime_info():
+    """Return runtime capabilities that affect frontend transport choices."""
+    multithread = bool(request.environ.get('wsgi.multithread'))
+    multiprocess = bool(request.environ.get('wsgi.multiprocess'))
+    server_software = request.environ.get('SERVER_SOFTWARE', '')
+    sse_enabled = multithread
+    return jsonify({'ok': True, 'data': {
+        'server': server_software,
+        'wsgi': {
+            'multithread': multithread,
+            'multiprocess': multiprocess,
+        },
+        'sse': {
+            'enabled': sse_enabled,
+            'reason': 'wsgi_multithread' if sse_enabled else 'single_sync_wsgi',
+        },
+    }})
 
 
 @health_bp.route('/api/health', methods=['GET'])

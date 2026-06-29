@@ -153,6 +153,19 @@ def api_ip_scan_status():
         return jsonify({'ok': False, 'error': str(e)})
 
 
+@ip_scan_bp.route('/api/ip-scan/logs', methods=['GET'])
+def api_ip_scan_logs():
+    """获取IP扫描日志（短轮询增量拉取）。"""
+    try:
+        after = int_arg(request.args, 'after', 0, 0, None)
+        limit = int_arg(request.args, 'limit', 500, 1, 1000)
+        lines = db.get_ip_scan_logs(after, limit)
+        last_seq = lines[-1]['seq'] if lines else after
+        return jsonify({'ok': True, 'data': {'lines': lines, 'last_seq': last_seq}})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
 @ip_scan_bp.route('/api/ip-scan/stream', methods=['GET'])
 def api_ip_scan_stream():
     """SSE实时推送IP扫描进度和日志。"""
