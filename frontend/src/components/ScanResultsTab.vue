@@ -185,7 +185,8 @@
                 </t-space>
               </template>
               <template #first_seen="{ row }">{{ formatDate(row.first_seen) }}</template>
-              <template #last_updated="{ row }">{{ formatDate(row.last_updated) }}</template>
+              <template #last_checked_at="{ row }">{{ formatDate(row.last_checked_at || row.last_updated) }}</template>
+              <template #last_ingested_at="{ row }">{{ formatDate(row.last_ingested_at) }}</template>
             </t-table>
           </t-collapse-panel>
         </t-collapse>
@@ -459,7 +460,8 @@ const sourceColumns = [
   { colKey: 'avg_bandwidth', title: '平均带宽', width: 120, sorter: true },
   { colKey: 'quality_dist', title: '质量分布', width: 220 },
   { colKey: 'first_seen', title: '首次发现', width: 110, sorter: true },
-  { colKey: 'last_updated', title: '最近更新', width: 110, sorter: true },
+  { colKey: 'last_checked_at', title: '最近检测', width: 110, sorter: true },
+  { colKey: 'last_ingested_at', title: '最近入库', width: 110, sorter: true },
 ]
 
 const detailColumns = [

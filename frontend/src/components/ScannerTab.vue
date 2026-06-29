@@ -35,7 +35,17 @@
       />
     </t-card>
 
-    <div class="summary-head">
+    <div v-if="showScanError" class="scan-error" role="alert">
+      <div class="scan-error-main">
+        <span class="scan-error-label">最近一次扫描失败</span>
+        <span class="scan-error-message">{{ scanSummary.error }}</span>
+      </div>
+      <t-button size="small" theme="danger" variant="outline" :disabled="scanRunning || scanStarting" @click="triggerScan">
+        重新扫描
+      </t-button>
+    </div>
+
+    <div class="summary-head" :class="{ 'is-failed': showScanError }">
       <div>
         <div class="section-title summary-title">扫描概览</div>
         <div class="summary-caption">{{ summaryCaption }}</div>
@@ -65,7 +75,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger, connectScanSse, shouldUseSse } from '../api.js'
 import { usePolling } from '../composables/usePolling.js'
@@ -202,7 +212,7 @@ async function connectScanStream() {
         try {
           const data = JSON.parse(event.data)
           if (data?.ok === false) {
-            applyStatus({ running: false, phase: 'idle', message: data.error, error: data.error })
+            refreshStatus()
           } else {
             refreshStatus()
           }
@@ -260,7 +270,8 @@ function applyStatus(data = {}) {
 
   if (wasRunning) {
     wasRunning = false
-    if (data.error) MessagePlugin.error(`扫描异常: ${data.error}`)
+    const terminalError = data.error || (nextSummary.status === 'failed' ? nextSummary.error : '')
+    if (terminalError) MessagePlugin.error(`扫描异常: ${terminalError}`)
     else MessagePlugin.success(data.message || (currentPhase.value === 'health_check' ? '健康检查已完成' : '扫描已完成'))
     stopPoll()
     disconnectScanStream()
@@ -285,6 +296,12 @@ async function refreshStatus() {
 
 const hasSummary = computed(() => Boolean(scanSummary.value.scanId))
 
+const showScanError = computed(() => (
+  !scanRunning.value &&
+  scanSummary.value.status === 'failed' &&
+  Boolean(scanSummary.value.error)
+))
+
 const startButtonText = computed(() => {
   if (scanStarting.value) return '启动中...'
   if (scanRunning.value) return '扫描中...'
@@ -294,7 +311,8 @@ const startButtonText = computed(() => {
 const summaryCaption = computed(() => {
   if (!hasSummary.value) return '还没有扫描记录，启动一次扫描后这里会显示最近一次摘要。'
   if (scanSummary.value.status === 'failed' && scanSummary.value.error) {
-    return `最近一次扫描失败：${scanSummary.value.error}`
+    const time = scanSummary.value.finishedAt || scanSummary.value.startedAt
+    return time ? `最近一次扫描失败时间：${time}` : '最近一次扫描失败，已保留阶段统计。'
   }
   const time = scanSummary.value.finishedAt || scanSummary.value.startedAt
   return time ? `最近一次扫描时间：${time}` : '最近一次扫描摘要'
@@ -472,6 +490,8 @@ onBeforeUnmount(() => {
 
 .panel-card {
   margin-bottom: 12px;
+  background: var(--td-bg-color-container);
+  border-radius: var(--td-radius-default);
 }
 
 .section-title {
@@ -525,6 +545,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+  padding-top: 2px;
 }
 
 .summary-title {
@@ -537,34 +558,66 @@ onBeforeUnmount(() => {
   color: var(--td-text-color-placeholder, #6b7280);
 }
 
+.scan-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--td-error-color, #d54941) 26%, transparent);
+  border-radius: var(--td-radius-default);
+  background: color-mix(in srgb, var(--td-error-color-1, #fff0ed) 86%, transparent);
+}
+
+.scan-error-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scan-error-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--td-error-color, #d54941);
+}
+
+.scan-error-message {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--td-text-color-primary, #111827);
+  word-break: break-word;
+}
+
 .summary-status {
   flex-shrink: 0;
   padding: 7px 12px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
-  background: #eef2ff;
-  color: #4f46e5;
+  background: var(--td-brand-color-1, #edf3ff);
+  color: var(--td-brand-color, #366ef4);
 }
 
 .summary-status.running {
-  background: #dbeafe;
-  color: #2563eb;
+  background: var(--td-brand-color-1, #edf3ff);
+  color: var(--td-brand-color, #366ef4);
 }
 
 .summary-status.success {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--td-success-color-1, #e3f9e9);
+  color: var(--td-success-color, #00a870);
 }
 
 .summary-status.danger {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--td-error-color-1, #fff0ed);
+  color: var(--td-error-color, #d54941);
 }
 
 .summary-status.idle {
-  background: #f3f4f6;
-  color: #4b5563;
+  background: var(--td-bg-color-component, #f3f4f6);
+  color: var(--td-text-color-secondary, #4b5563);
 }
 
 .stats-grid {
@@ -575,8 +628,10 @@ onBeforeUnmount(() => {
 
 .stat-card {
   overflow: hidden;
-  border-radius: 18px;
-  box-shadow: var(--td-shadow-1);
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: var(--td-radius-default);
+  background: var(--td-bg-color-container);
+  box-shadow: none;
 }
 
 .stat-card :deep(.t-card__body) {
@@ -585,21 +640,18 @@ onBeforeUnmount(() => {
 }
 
 .stat-card.blue {
-  background:
-    radial-gradient(circle at top right, rgba(59, 130, 246, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 1));
+  --stat-color: var(--td-brand-color, #366ef4);
+  --stat-soft: var(--td-brand-color-1, #edf3ff);
 }
 
 .stat-card.green {
-  background:
-    radial-gradient(circle at top right, rgba(34, 197, 94, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(240, 253, 244, 0.92), rgba(255, 255, 255, 1));
+  --stat-color: var(--td-success-color, #00a870);
+  --stat-soft: var(--td-success-color-1, #e3f9e9);
 }
 
 .stat-card.purple {
-  background:
-    radial-gradient(circle at top right, rgba(124, 58, 237, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(245, 243, 255, 0.94), rgba(255, 255, 255, 1));
+  --stat-color: var(--td-warning-color, #ed7b2f);
+  --stat-soft: var(--td-warning-color-1, #fff1e9);
 }
 
 .stat-top {
@@ -617,10 +669,11 @@ onBeforeUnmount(() => {
   min-width: 52px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--stat-soft, var(--td-bg-color-component, #f3f4f6));
+  color: var(--stat-color, var(--td-text-color-secondary, #4b5563));
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .stat-foot {
@@ -633,20 +686,20 @@ onBeforeUnmount(() => {
   font-size: 34px;
   font-weight: 700;
   line-height: 1;
-  color: #0f172a;
+  color: var(--stat-color, var(--td-text-color-primary, #111827));
 }
 
 .stat-label {
   margin-bottom: 6px;
   font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: var(--td-text-color-primary, #111827);
 }
 
 .stat-sub {
   font-size: 12px;
   line-height: 1.65;
-  color: #4b5563;
+  color: var(--td-text-color-secondary, #4b5563);
 }
 
 @media (max-width: 768px) {
@@ -657,6 +710,11 @@ onBeforeUnmount(() => {
 
   .summary-status {
     align-self: flex-start;
+  }
+
+  .scan-error {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .stat-card :deep(.t-card__body) {

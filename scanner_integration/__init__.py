@@ -380,6 +380,13 @@ def _yield_stage_counts(channels, field_name):
     }
 
 
+def _evaluate_channel_quality(db_module, stability, delay, bandwidth):
+    quality_fn = getattr(db_module, '_evaluate_quality', None)
+    if quality_fn is None:
+        from database.db import _evaluate_quality as quality_fn
+    return quality_fn(stability, delay, bandwidth)
+
+
 def _yield_deep_counts(quick_channels, deep_channels, db_module):
     counts = {}
     for key, value in _count_by_yield_key(quick_channels).items():
@@ -404,7 +411,8 @@ def _yield_deep_counts(quick_channels, deep_channels, db_module):
             'unreachable_count': 0,
         })
         bucket['deep_pass'] += 1
-        status = db_module._evaluate_quality(
+        status = _evaluate_channel_quality(
+            db_module,
             ch.get('stability'),
             ch.get('delay'),
             ch.get('bandwidth'),
