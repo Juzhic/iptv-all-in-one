@@ -42,4 +42,4 @@ EXPOSE 58080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:58080/api/health || exit 1
 
-CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]
+CMD ["gunicorn", "-w", "1", "--worker-class", "gthread", "--threads", "8", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]
