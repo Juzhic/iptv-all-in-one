@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.7.3）
+## 当前版本说明（v1.7.5）
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 
@@ -34,6 +34,8 @@
 ### 最近更新摘要
 
 - 定期检测轮次异常中断时会写入错误状态和已完成的部分结果，检测概览不再只留下全 0 汇总。
+- Docker 部署补齐 `database` 包入口导出，避免频道扫描、检测复活和 IP 扫描接口因缺少数据库函数属性而报错。
+- Docker/Gunicorn 默认使用单进程多线程模式，避免 SSE 长连接占住唯一同步 worker 后导致页面、接口和异步标签页资源请求挂起。
 - 生产构建切换标签页时会基于当前标签值兜底挂载已访问组件，避免页面空白且不请求接口。
 - Docker 旧 MySQL 数据卷升级新版镜像时会自动补齐新增表字段，避免检测、扫描等轮询接口持续返回 500。
 - 系统配置、配置导入、文本保存和检测配置保存已按前端 API 解包后的响应处理，避免成功操作误报失败。
@@ -473,18 +475,19 @@ pip install gunicorn
 2. 启动服务：
 
 ```bash
-gunicorn -w 1 -b 0.0.0.0:58080 --timeout 120 web:app
+gunicorn -w 1 --worker-class gthread --threads 8 -b 0.0.0.0:58080 --timeout 120 web:app
 ```
 
 参数说明：
 - `-w 1`：单工作进程。后台测速、SSE 和停止信号依赖进程内状态，生产环境建议保持单 worker。
+- `--worker-class gthread --threads 8`：单进程多线程。SSE 长连接会占用请求处理线程，必须保留多个线程给普通页面、静态资源和 API 请求使用。
 - `-b 0.0.0.0:58080`：监听所有网卡的 58080 端口。Gunicorn 不读取 `IPTV_PORT`，如需改端口请直接修改 `-b` 参数。
 - `--timeout 120`：请求超时 120 秒（测速任务耗时较长）
 
 自定义 Gunicorn 端口示例：
 
 ```bash
-gunicorn -w 1 -b 0.0.0.0:8080 --timeout 120 web:app
+gunicorn -w 1 --worker-class gthread --threads 8 -b 0.0.0.0:8080 --timeout 120 web:app
 ```
 
 3. 使用 Systemd 打包为服务（可选）：
@@ -500,7 +503,7 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/path/to/iptv-all-in-one
-ExecStart=/path/to/venv/bin/gunicorn -w 1 -b 127.0.0.1:58080 --timeout 120 web:app
+ExecStart=/path/to/venv/bin/gunicorn -w 1 --worker-class gthread --threads 8 -b 127.0.0.1:58080 --timeout 120 web:app
 Restart=always
 RestartSec=5
 Environment="FFMPEG_BIN=/usr/bin/ffmpeg"
@@ -1157,7 +1160,7 @@ iptv-all-in-one/
     "scanner": "ok",
     "disk": "ok"
   },
-  "version": "1.7.3",
+  "version": "1.7.5",
   "uptime": 123.45,
   "system": {
     "disk_percent": 38.2,
