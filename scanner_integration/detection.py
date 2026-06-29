@@ -37,6 +37,43 @@ def _format_local_dt(value):
     return value.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _quality_from_metrics(stability, delay, bandwidth):
+    try:
+        stability_value = float(stability) if stability not in (None, '') else 0
+    except (TypeError, ValueError):
+        return 'unreachable'
+    try:
+        delay_value = float(delay) if delay not in (None, '') else None
+    except (TypeError, ValueError):
+        delay_value = None
+    try:
+        bandwidth_value = float(bandwidth) if bandwidth not in (None, '') else None
+    except (TypeError, ValueError):
+        bandwidth_value = None
+
+    if stability_value >= 60 and (delay_value is None or delay_value < 2000) and (
+        bandwidth_value is None or bandwidth_value >= 300
+    ):
+        return 'good'
+    if stability_value >= 30:
+        return 'poor'
+    return 'unreachable'
+
+
+def _evaluate_quality_safe(db_module, stability, delay, bandwidth):
+    evaluator = getattr(db_module, '_evaluate_quality', None)
+    if callable(evaluator):
+        try:
+            return evaluator(stability, delay, bandwidth)
+        except Exception as exc:
+            logger.warning(
+                "[Detection] 数据库质量评估函数异常，使用本地兜底: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+    return _quality_from_metrics(stability, delay, bandwidth)
+
+
 class DetectionManager:
     """定期检测管理器，运行在 AsyncBridge 的事件循环上。"""
 
@@ -187,15 +224,16 @@ class DetectionManager:
                 'ERROR',
                 f"[Detection] 检测周期异常中止: {type(exc).__name__}: {exc}"
             )
-            self._last_cycle_at = None
-            self._last_cycle_result = {
-                'total': 0,
-                'ok': 0,
-                'failed': 0,
-                'skipped': 0,
-                'deleted': 0,
-                'error': f"{type(exc).__name__}: {exc}",
-            }
+            if not self._last_cycle_result or not self._last_cycle_result.get('error'):
+                self._last_cycle_at = None
+                self._last_cycle_result = {
+                    'total': 0,
+                    'ok': 0,
+                    'failed': 0,
+                    'skipped': 0,
+                    'deleted': 0,
+                    'error': f"{type(exc).__name__}: {exc}",
+                }
         finally:
             self._cycle_running = False
             self._broadcast_status()
@@ -231,6 +269,9 @@ class DetectionManager:
         updates_to_apply = []
         finalized = False
 
+        def processed_count():
+            return max(len(results_list), ok_count + fail_count + skipped_count)
+
         def finish_cycle(total_checked, deleted, elapsed, error=None):
             nonlocal finalized
             if finalized:
@@ -238,6 +279,7 @@ class DetectionManager:
 
             finished_at = _db.now_str()
             final_error = error
+            checked_total = max(total_checked or 0, processed_count())
             if results_list:
                 try:
                     _db.insert_detection_results(cycle_id, results_list)
@@ -248,7 +290,7 @@ class DetectionManager:
 
             _db.finish_detection_run(
                 cycle_id, finished_at,
-                total_checked, ok_count, fail_count, deleted,
+                checked_total, ok_count, fail_count, deleted,
                 round(elapsed, 1), final_error,
             )
             finalized = True
@@ -273,6 +315,20 @@ class DetectionManager:
 
             sem = asyncio.Semaphore(10)
             async with get_session(limit=10, timeout=6) as session:
+                def record_failed(url, name, quality_status='unreachable', count_failure=True):
+                    nonlocal fail_count
+                    updates_to_apply.append({'url': url, 'ok': False, 'name': name})
+                    cf_cache[url] = cf_cache.get(url, 0) + 1
+                    if count_failure:
+                        fail_count += 1
+                    results_list.append({
+                        'url': url, 'name': name, 'check_ok': False,
+                        'http_status': 0, 'response_time_ms': 0,
+                        'response_size_bytes': 0,
+                        'consecutive_failures': cf_cache.get(url, 0),
+                        'quality_status': quality_status,
+                    })
+
                 async def check_one(item):
                     nonlocal ok_count, fail_count
                     async with sem:
@@ -280,16 +336,7 @@ class DetectionManager:
                         name = item.get('name', '')
 
                         if not url.startswith(('http://', 'https://')):
-                            updates_to_apply.append({'url': url, 'ok': False, 'name': name})
-                            cf_cache[url] = cf_cache.get(url, 0) + 1
-                            fail_count += 1
-                            results_list.append({
-                                'url': url, 'name': name, 'check_ok': False,
-                                'http_status': 0, 'response_time_ms': 0,
-                                'response_size_bytes': 0,
-                                'consecutive_failures': cf_cache.get(url, 0),
-                                'quality_status': 'unreachable',
-                            })
+                            record_failed(url, name)
                             return False
 
                         try:
@@ -306,37 +353,38 @@ class DetectionManager:
                             )
 
                         if perf is not None:
-                            updates_to_apply.append({
-                                'url': url, 'ok': True, 'name': name,
-                                'stability': perf['stability'],
-                                'delay': perf['delay'],
-                                'bandwidth': perf['bandwidth'],
-                                'jitter': perf.get('jitter'),
-                            })
-                            ok_count += 1
-                            quality_status = _db._evaluate_quality(
-                                perf['stability'], perf['delay'], perf['bandwidth']
-                            )
-                            results_list.append({
-                                'url': url, 'name': name, 'check_ok': True,
-                                'http_status': 200,
-                                'response_time_ms': perf['delay'],
-                                'response_size_bytes': 0,
-                                'consecutive_failures': 0,
-                                'quality_status': quality_status,
-                            })
-                            return True
+                            try:
+                                stability = perf['stability']
+                                delay = perf['delay']
+                                bandwidth = perf['bandwidth']
+                                quality_status = _evaluate_quality_safe(_db, stability, delay, bandwidth)
+                                updates_to_apply.append({
+                                    'url': url, 'ok': True, 'name': name,
+                                    'stability': stability,
+                                    'delay': delay,
+                                    'bandwidth': bandwidth,
+                                    'jitter': perf.get('jitter'),
+                                })
+                                ok_count += 1
+                                results_list.append({
+                                    'url': url, 'name': name, 'check_ok': True,
+                                    'http_status': 200,
+                                    'response_time_ms': delay,
+                                    'response_size_bytes': 0,
+                                    'consecutive_failures': 0,
+                                    'quality_status': quality_status,
+                                })
+                                return True
+                            except Exception as exc:
+                                self._log(
+                                    'WARNING',
+                                    f"[Detection] 单项结果处理异常: {name} ({url}) - "
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                record_failed(url, name)
+                                return False
                         else:
-                            updates_to_apply.append({'url': url, 'ok': False, 'name': name})
-                            cf_cache[url] = cf_cache.get(url, 0) + 1
-                            fail_count += 1
-                            results_list.append({
-                                'url': url, 'name': name, 'check_ok': False,
-                                'http_status': 0, 'response_time_ms': 0,
-                                'response_size_bytes': 0,
-                                'consecutive_failures': cf_cache.get(url, 0),
-                                'quality_status': 'unreachable',
-                            })
+                            record_failed(url, name)
                             return False
 
                 async def check_group(host, items):
@@ -357,15 +405,7 @@ class DetectionManager:
                         for item in rest:
                             url = item['url']
                             name = item.get('name', '')
-                            updates_to_apply.append({'url': url, 'ok': False, 'name': name})
-                            cf_cache[url] = cf_cache.get(url, 0) + 1
-                            results_list.append({
-                                'url': url, 'name': name, 'check_ok': False,
-                                'http_status': 0, 'response_time_ms': 0,
-                                'response_size_bytes': 0,
-                                'consecutive_failures': cf_cache.get(url, 0),
-                                'quality_status': 'circuit_breaker_skipped',
-                            })
+                            record_failed(url, name, quality_status='circuit_breaker_skipped', count_failure=False)
                             self._log(
                                 'WARNING',
                                 f"[Detection] 熔断跳过: {name} ({url})"
@@ -429,11 +469,11 @@ class DetectionManager:
             elapsed = (_local_now() - start_time).total_seconds()
             error = "检测被取消或超时"
             finished_at, final_error = finish_cycle(
-                len(results_list), 0, elapsed, error=error
+                processed_count(), 0, elapsed, error=error
             )
             self._last_cycle_at = finished_at
             self._last_cycle_result = {
-                'total': len(results_list),
+                'total': processed_count(),
                 'ok': ok_count,
                 'failed': fail_count,
                 'skipped': skipped_count,
@@ -446,11 +486,11 @@ class DetectionManager:
             elapsed = (_local_now() - start_time).total_seconds()
             error = f"{type(exc).__name__}: {exc}"
             finished_at, final_error = finish_cycle(
-                len(results_list), 0, elapsed, error=error
+                processed_count(), 0, elapsed, error=error
             )
             self._last_cycle_at = finished_at
             self._last_cycle_result = {
-                'total': len(results_list),
+                'total': processed_count(),
                 'ok': ok_count,
                 'failed': fail_count,
                 'skipped': skipped_count,

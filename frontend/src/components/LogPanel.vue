@@ -79,14 +79,13 @@ function msgClass(line) {
 }
 
 .log-panel {
-  height: 400px;
+  height: clamp(220px, 34vh, 360px);
   overflow-y: auto;
   padding: 12px;
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at top right, rgba(124, 58, 237, 0.18), transparent 34%),
-    linear-gradient(160deg, #161822 0%, #1e2230 100%);
-  color: #cdd6f4;
+  border: 1px solid var(--td-border-level-1-color);
+  border-radius: var(--td-radius-default);
+  background: var(--td-bg-color-secondarycontainer, #f8fafc);
+  color: var(--td-text-color-primary);
   font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.7;
@@ -99,39 +98,39 @@ function msgClass(line) {
 }
 
 .log-empty {
-  color: #94a3b8;
+  color: var(--td-text-color-placeholder);
   padding: 8px;
 }
 
 .log-time {
   margin-right: 8px;
-  color: #93c5fd;
+  color: var(--td-brand-color);
 }
 
 .log-level-error {
-  color: #f38ba8;
+  color: var(--td-error-color);
   margin-right: 4px;
 }
 
 .log-level-warn {
-  color: #f59e0b;
+  color: var(--td-warning-color);
   margin-right: 4px;
 }
 
 .log-level-info {
-  color: #cba6f7;
+  color: var(--td-brand-color);
   margin-right: 4px;
 }
 
 .log-msg-fail {
-  color: #f38ba8;
+  color: var(--td-error-color);
 }
 
 .log-msg-pass {
-  color: #a6e3a1;
+  color: var(--td-success-color);
 }
 
 .log-msg-info {
-  color: #cdd6f4;
+  color: var(--td-text-color-primary);
 }
 </style>

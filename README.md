@@ -4,7 +4,7 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.7.5）
+## 当前版本说明（v1.7.7）
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 
@@ -33,7 +33,9 @@
 
 ### 最近更新摘要
 
+- 定期检测质量评估入口缺失时会使用本地兜底，不再因单条后处理异常中断整轮检测；扫描结果来源分组拆分显示“最近检测”和“最近入库”。
 - 定期检测轮次异常中断时会写入错误状态和已完成的部分结果，检测概览不再只留下全 0 汇总。
+- 频道扫描页的失败态改为独立告警块展示，部署包同步补齐数据库入口导出，避免 deploy 包继续出现 `_evaluate_quality` 缺失报错。
 - Docker 部署补齐 `database` 包入口导出，避免频道扫描、检测复活和 IP 扫描接口因缺少数据库函数属性而报错。
 - 前端会自动判断运行时是否适合 SSE：多线程 WSGI 环境使用 SSE，旧 Compose/面板仍使用单同步 worker 命令时自动降级短轮询；也可通过 `localStorage.iptv_enable_sse` 或构建变量 `VITE_ENABLE_SSE` 手动覆盖。
 - Docker/Gunicorn 默认使用单进程多线程模式，避免 SSE 长连接占住唯一同步 worker 后导致页面、接口和异步标签页资源请求挂起。
@@ -1162,7 +1164,7 @@ iptv-all-in-one/
     "scanner": "ok",
     "disk": "ok"
   },
-  "version": "1.7.5",
+  "version": "1.7.7",
   "uptime": 123.45,
   "system": {
     "disk_percent": 38.2,

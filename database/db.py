@@ -2952,6 +2952,8 @@ def get_persistent_grouped():
                   SUM(CASE WHEN quality_status='unreachable' THEN 1 ELSE 0 END) as unreachable_count,
                   SUM(CASE WHEN quality_status='pending' THEN 1 ELSE 0 END) as pending_count,
                   MIN(first_seen_at) as first_seen,
+                  MAX(last_checked_at) as last_checked_at,
+                  MAX(last_updated_at) as last_ingested_at,
                   MAX(COALESCE(last_checked_at, last_updated_at)) as last_updated
            FROM persistent_scan_results
            WHERE deleted_at IS NULL
@@ -2985,6 +2987,8 @@ def get_persistent_grouped():
             'unreachable_count': r['unreachable_count'],
             'pending_count': r['pending_count'],
             'first_seen': r['first_seen'],
+            'last_checked_at': r['last_checked_at'],
+            'last_ingested_at': r['last_ingested_at'],
             'last_updated': r['last_updated'],
         })
 
