@@ -299,6 +299,34 @@ export function apiPersistentPriority(url, priority) {
 
 // ─── SSE 连接 ───
 
+let runtimeCapabilityPromise = null
+
+function getSseOverride() {
+  try {
+    const override = window.localStorage?.getItem('iptv_enable_sse')
+    if (override === '1') return true
+    if (override === '0') return false
+  } catch (_) {}
+  const envValue = String(import.meta.env?.VITE_ENABLE_SSE || '').toLowerCase()
+  if (envValue === '1' || envValue === 'true') return true
+  if (envValue === '0' || envValue === 'false') return false
+  return null
+}
+
+export function apiRuntimeCapabilities() {
+  if (!runtimeCapabilityPromise) {
+    runtimeCapabilityPromise = fetchJSON('/api/runtime', { timeout: 5000 }).catch(() => null)
+  }
+  return runtimeCapabilityPromise
+}
+
+export async function shouldUseSse() {
+  const override = getSseOverride()
+  if (override !== null) return override
+  const runtime = await apiRuntimeCapabilities()
+  return runtime?.sse?.enabled === true
+}
+
 export function connectTestSse(handlers = {}) {
   const es = new EventSource('/api/test/stream')
   if (handlers.status) es.addEventListener('status', handlers.status)
@@ -342,6 +370,9 @@ export function apiIpScanForceClear() {
 }
 export function apiIpScanStatus() {
   return fetchJSON('/api/ip-scan/status')
+}
+export function apiIpScanLogs(after = 0, limit = 500) {
+  return fetchJSON(`/api/ip-scan/logs?after=${after}&limit=${limit}`)
 }
 export function apiIpScanResults(params = {}) {
   const qs = new URLSearchParams(params).toString()

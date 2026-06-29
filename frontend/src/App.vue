@@ -102,7 +102,7 @@
 import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount, defineAsyncComponent, watch } from 'vue'
 import { useTheme } from './composables/useTheme.js'
 import { useDialogDrag } from './composables/useDialogDrag.js'
-import { apiGetInitial, apiGetProgress, connectTestSse } from './api.js'
+import { apiGetInitial, apiGetProgress, connectTestSse, shouldUseSse } from './api.js'
 
 const OverviewTab = defineAsyncComponent(() => import('./components/OverviewTab.vue'))
 const HistoryTab = defineAsyncComponent(() => import('./components/HistoryTab.vue'))
@@ -369,8 +369,12 @@ function applyTestState(data) {
   }
 }
 
-function connectTestStream() {
+async function connectTestStream() {
   disconnectTestSse()
+  if (!await shouldUseSse()) {
+    startPollFallback()
+    return
+  }
   try {
     testEventSource = connectTestSse({
       status: handleSseStatus,
