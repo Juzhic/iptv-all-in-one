@@ -14,6 +14,7 @@
 
 ### 运维
 - 同步 `deploy/Dockerfile` 的 Gunicorn 默认启动参数为 `gthread` 多线程模式，避免使用部署产物构建镜像时仍保留旧的单同步 worker 配置。
+- Docker Compose 部署文件显式写入应用容器的 `gthread` 启动命令，避免面板重部署时把 CMD 恢复为旧的单同步 worker 参数。
 
 ## [1.7.4] - 2026-06-29
 
