@@ -26,6 +26,7 @@ services:
   iptv-all-in-one:
     image: juzhic/iptv-all-in-one:latest
     container_name: iptv-all-in-one
+    command: ["gunicorn", "-w", "1", "--worker-class", "gthread", "--threads", "8", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]
     ports:
       - "${PORT:-58080}:58080"
     depends_on:
