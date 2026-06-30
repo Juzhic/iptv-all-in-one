@@ -291,6 +291,11 @@ async function loadInitialData() {
 let lastLogSeq = 0
 let testEventSource = null
 let pollFallbackTimer = null
+let streamConnecting = false
+
+function hasActiveTestTransport() {
+  return Boolean(testEventSource || pollFallbackTimer || streamConnecting)
+}
 
 function handleSseStatus(e) {
   try {
@@ -370,12 +375,14 @@ function applyTestState(data) {
 }
 
 async function connectTestStream() {
+  if (streamConnecting) return
+  streamConnecting = true
   disconnectTestSse()
-  if (!await shouldUseSse()) {
-    startPollFallback()
-    return
-  }
   try {
+    if (!await shouldUseSse()) {
+      startPollFallback()
+      return
+    }
     testEventSource = connectTestSse({
       status: handleSseStatus,
       progress: handleSseProgress,
@@ -385,6 +392,8 @@ async function connectTestStream() {
     })
   } catch (_) {
     startPollFallback()
+  } finally {
+    streamConnecting = false
   }
 }
 
@@ -398,26 +407,29 @@ function disconnectTestSse() {
 
 function startPollFallback() {
   stopPollFallback()
-  pollFallbackTimer = setInterval(async () => {
-    try {
-      const data = await apiGetProgress(lastLogSeq)
-      applyTestState(data)
-      if (data.lines?.length) {
-        data.lines.forEach((line) => {
-          if (line.seq > lastLogSeq) {
-            testProgress.lines.push(line)
-            if (testProgress.lines.length > 5000) {
-              testProgress.lines.splice(0, testProgress.lines.length - 5000)
-            }
-            lastLogSeq = line.seq
+  pollFallbackTimer = setInterval(pollTestProgress, 2000)
+  pollTestProgress()
+}
+
+async function pollTestProgress() {
+  try {
+    const data = await apiGetProgress(lastLogSeq)
+    applyTestState(data)
+    if (data.lines?.length) {
+      data.lines.forEach((line) => {
+        if (line.seq > lastLogSeq) {
+          testProgress.lines.push(line)
+          if (testProgress.lines.length > 5000) {
+            testProgress.lines.splice(0, testProgress.lines.length - 5000)
           }
-        })
-      }
-      if (!data.running && !schedulerRunning.value) {
-        stopPollFallback()
-      }
-    } catch (_) {}
-  }, 2000)
+          lastLogSeq = line.seq
+        }
+      })
+    }
+    if (!data.running && !schedulerRunning.value) {
+      stopPollFallback()
+    }
+  } catch (_) {}
 }
 
 function stopPollFallback() {
@@ -461,6 +473,14 @@ function markTabVisited(value) {
 }
 
 watch(activeTab, markTabVisited, { immediate: true })
+
+watch(() => testProgress.running, (isRunning) => {
+  if (!isRunning) return
+  testRunning.value = true
+  if (!hasActiveTestTransport()) {
+    connectTestStream()
+  }
+})
 
 onMounted(async () => {
   await loadInitialData()
