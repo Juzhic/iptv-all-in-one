@@ -2524,25 +2524,32 @@ def insert_detection_results(cycle_id, results_list):
     """批量插入某轮检测的每个 URL 结果明细。"""
     if not results_list:
         return
+    params = []
+    for r in results_list:
+        url = r.get('url')
+        if not url:
+            continue
+        params.append((
+            cycle_id,
+            url, r.get('name'), int(bool(r.get('check_ok'))),
+            _int_or_zero(r.get('http_status')),
+            _numeric_or_zero(r.get('response_time_ms', 0)),
+            _int_or_zero(r.get('response_size_bytes')),
+            _int_or_zero(r.get('consecutive_failures')),
+            r.get('quality_status', 'pending'),
+        ))
+    if not params:
+        return
     with _write_lock:
         conn = _get_conn()
-        conn.executemany(
-            """INSERT INTO detection_results
-               (cycle_id, url, name, check_ok, http_status,
-                response_time_ms, response_size_bytes,
-                consecutive_failures, quality_status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            [
-                (
-                    cycle_id,
-                    r['url'], r.get('name'), int(r['check_ok']),
-                    r.get('http_status', 0), _numeric_or_zero(r.get('response_time_ms', 0)),
-                    r.get('response_size_bytes', 0), r.get('consecutive_failures', 0),
-                    r.get('quality_status', 'pending'),
-                )
-                for r in results_list
-            ]
-        )
+        sql = """INSERT INTO detection_results
+                 (cycle_id, url, name, check_ok, http_status,
+                  response_time_ms, response_size_bytes,
+                  consecutive_failures, quality_status)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        chunk_size = 500
+        for i in range(0, len(params), chunk_size):
+            conn.executemany(sql, params[i:i + chunk_size])
         conn.commit()
 
 
@@ -2589,6 +2596,79 @@ def get_detection_runs(start=None, end=None, limit=100):
     return [dict(r) for r in rows]
 
 
+def _parse_db_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _detection_fallback_window(run):
+    started_at = _parse_db_datetime(run.get('started_at'))
+    finished_at = _parse_db_datetime(run.get('finished_at')) or started_at
+    if not started_at or not finished_at:
+        return None, None
+    return (
+        (started_at - timedelta(seconds=5)).strftime('%Y-%m-%d %H:%M:%S'),
+        (finished_at + timedelta(seconds=5)).strftime('%Y-%m-%d %H:%M:%S'),
+    )
+
+
+def _empty_detection_results(page=None, size=100):
+    if page is not None:
+        return {'total': 0, 'items': [], 'page': page, 'page_size': size}
+    return []
+
+
+def _get_detection_results_fallback(conn, cycle_id, page=None, size=100):
+    run = conn.execute(
+        """SELECT cycle_id, started_at, finished_at, total_checked
+           FROM detection_runs WHERE cycle_id = %s""",
+        (cycle_id,)
+    ).fetchone()
+    if not run or not _int_or_zero(run.get('total_checked')):
+        return _empty_detection_results(page, size)
+
+    start_bound, end_bound = _detection_fallback_window(dict(run))
+    if not start_bound or not end_bound:
+        return _empty_detection_results(page, size)
+
+    where_sql = "last_checked_at IS NOT NULL AND last_checked_at BETWEEN %s AND %s"
+    params = [start_bound, end_bound]
+    select_sql = """SELECT url, name,
+                           CASE WHEN quality_status IN ('good', 'poor') THEN 1 ELSE 0 END AS check_ok,
+                           CASE WHEN quality_status IN ('good', 'poor') THEN 200 ELSE 0 END AS http_status,
+                           delay AS response_time_ms,
+                           0 AS response_size_bytes,
+                           consecutive_failures,
+                           quality_status
+                    FROM persistent_scan_results
+                    WHERE """
+    order_sql = " ORDER BY last_checked_at DESC, id"
+
+    if page is not None:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM persistent_scan_results WHERE {where_sql}",
+            tuple(params)
+        ).fetchone()['cnt']
+        offset = (page - 1) * size
+        rows = conn.execute(
+            select_sql + where_sql + order_sql + " LIMIT %s OFFSET %s",
+            tuple(params + [size, offset])
+        ).fetchall()
+        return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
+
+    rows = conn.execute(select_sql + where_sql + order_sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_detection_results(cycle_id, page=None, size=100):
     """查询某轮检测的所有 URL 结果明细。page 为 None 时返回全部结果。"""
     conn = _get_conn()
@@ -2607,6 +2687,8 @@ def get_detection_results(cycle_id, page=None, size=100):
                LIMIT %s OFFSET %s""",
             (cycle_id, size, offset)
         ).fetchall()
+        if total == 0:
+            return _get_detection_results_fallback(conn, cycle_id, page=page, size=size)
         return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
     else:
         rows = conn.execute(
@@ -2616,6 +2698,8 @@ def get_detection_results(cycle_id, page=None, size=100):
                FROM detection_results WHERE cycle_id = %s ORDER BY id""",
             (cycle_id,)
         ).fetchall()
+        if not rows:
+            return _get_detection_results_fallback(conn, cycle_id)
         return [dict(r) for r in rows]
 
 
@@ -2964,6 +3048,14 @@ def get_persistent_grouped():
     platforms = {}
     for r in rows:
         plat = r['platform'] or '未知'
+        channel_count = _int_or_zero(r['channel_count'])
+        avg_stability = _numeric_or_none(r['avg_stability'])
+        avg_delay = _numeric_or_none(r['avg_delay'])
+        avg_bandwidth = _numeric_or_none(r['avg_bandwidth'])
+        good_count = _int_or_zero(r['good_count'])
+        poor_count = _int_or_zero(r['poor_count'])
+        unreachable_count = _int_or_zero(r['unreachable_count'])
+        pending_count = _int_or_zero(r['pending_count'])
         if plat not in platforms:
             platforms[plat] = {
                 'platform': plat,
@@ -2974,18 +3066,18 @@ def get_persistent_grouped():
             }
         p = platforms[plat]
         p['source_count'] += 1
-        p['channel_count'] += r['channel_count']
-        p['total_stability'] += r['avg_stability'] * r['channel_count']
+        p['channel_count'] += channel_count
+        p['total_stability'] += (avg_stability or 0) * channel_count
         p['sources'].append({
             'source_ip': r['source_ip'],
-            'channel_count': r['channel_count'],
-            'avg_stability': r['avg_stability'],
-            'avg_delay': r['avg_delay'],
-            'avg_bandwidth': r['avg_bandwidth'],
-            'good_count': r['good_count'],
-            'poor_count': r['poor_count'],
-            'unreachable_count': r['unreachable_count'],
-            'pending_count': r['pending_count'],
+            'channel_count': channel_count,
+            'avg_stability': avg_stability,
+            'avg_delay': avg_delay,
+            'avg_bandwidth': avg_bandwidth,
+            'good_count': good_count,
+            'poor_count': poor_count,
+            'unreachable_count': unreachable_count,
+            'pending_count': pending_count,
             'first_seen': r['first_seen'],
             'last_checked_at': r['last_checked_at'],
             'last_ingested_at': r['last_ingested_at'],

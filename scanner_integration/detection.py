@@ -106,6 +106,13 @@ class DetectionManager:
         except Exception:
             pass
 
+    def _broadcast_event(self, event_type, data):
+        try:
+            from . import broadcast_detection_sse
+            broadcast_detection_sse(event_type, data)
+        except Exception:
+            pass
+
     def _set_next_cycle_at(self, value):
         next_cycle_at = _format_local_dt(value)
         if self._next_cycle_at == next_cycle_at:
@@ -210,6 +217,10 @@ class DetectionManager:
         timeout_minutes = cfg.get('detection_cycle_timeout_minutes', 30)
         self._cycle_running = True
         self._broadcast_status()
+        self._broadcast_event('cycle_start', {
+            'trigger_source': trigger_source,
+            'status': self.status,
+        })
         try:
             await asyncio.wait_for(
                 self._run_detection_cycle_inner(cfg, trigger_source),
@@ -237,6 +248,11 @@ class DetectionManager:
         finally:
             self._cycle_running = False
             self._broadcast_status()
+            self._broadcast_event('cycle_end', {
+                'trigger_source': trigger_source,
+                'status': self.status,
+                'result': self._last_cycle_result,
+            })
 
     async def _run_detection_cycle_inner(self, cfg, trigger_source='auto'):
         """执行一次完整的检测周期（内部实现）。"""

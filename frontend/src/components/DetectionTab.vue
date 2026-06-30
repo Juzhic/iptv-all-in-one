@@ -218,6 +218,7 @@ import {
   connectDetectionSse,
   shouldUseSse,
 } from '../api.js'
+import { normalizeSortInfo, sortRows } from '../utils/tableSort.js'
 
 const { theme } = useTheme()
 const isDarkTheme = computed(() => theme.value === 'dark')
@@ -294,9 +295,11 @@ async function connectDetectionStream() {
       status(e) {
         try {
           const status = JSON.parse(e.data)
+          const wasRunning = Boolean(detStatus.value?.cycle_running)
           detStatus.value = status
           updateDetectionCountdown()
-          if (!status.cycle_running) loadDetRuns()
+          if (!status.cycle_running && wasRunning) loadDetRuns({ silent: true })
+          else if (!status.cycle_running) loadDetRuns({ silent: true })
         } catch (_) {}
       },
       log(e) {
@@ -312,6 +315,9 @@ async function connectDetectionStream() {
       onerror() {
         disconnectDetectionSse()
         startDetPollFallback()
+      },
+      cycle_end() {
+        refreshDetectionOverview()
       },
     })
   } catch (_) {
@@ -329,9 +335,10 @@ function disconnectDetectionSse() {
 
 function startDetPollFallback() {
   stopDetPollFallback()
-  detPollFallback = setInterval(() => {
-    loadDetectionLogs()
-    loadDetectionStatus()
+  detPollFallback = setInterval(async () => {
+    await loadDetectionLogs()
+    await loadDetectionStatus()
+    await loadDetRuns({ silent: true })
   }, 10000)
 }
 
@@ -340,6 +347,13 @@ function stopDetPollFallback() {
     clearInterval(detPollFallback)
     detPollFallback = null
   }
+}
+
+async function refreshDetectionOverview() {
+  await Promise.all([
+    loadDetectionStatus(),
+    loadDetRuns({ silent: true }),
+  ])
 }
 
 // ─── 下次检测倒计时 ───
@@ -432,13 +446,16 @@ async function loadDetectionLogs() {
 }
 
 async function loadDetectionStatus() {
+  let result = null
   try {
     const data = await apiDetectionStatus()
     if (data && typeof data === 'object') {
       detStatus.value = data
+      result = data
     }
   } catch (_) { /* ignore */ }
   updateDetectionCountdown()
+  return result
 }
 
 watch(detLogLines, () => {
@@ -480,7 +497,8 @@ function detRunStatus(row) {
   return { label: '进行中', theme: 'warning', content: '' }
 }
 
-async function loadDetRuns() {
+async function loadDetRuns(options = {}) {
+  const silent = options?.silent === true
   try {
     const start = detDateRange.value?.[0] || null
     const end = detDateRange.value?.[1] || null
@@ -503,7 +521,9 @@ async function loadDetRuns() {
     }
     updateDetectionCountdown()
   } catch (e) {
-    MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
+    if (!silent) {
+      MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
+    }
   }
 }
 
@@ -520,7 +540,7 @@ const detDetailQualityFilter = ref('')
 const detDetailSortInfo = ref({})
 
 function onDetDetailSortChange(sort) {
-  detDetailSortInfo.value = sort
+  detDetailSortInfo.value = normalizeSortInfo(sort)
 }
 
 const filteredDetDetails = computed(() => {
@@ -534,16 +554,7 @@ const filteredDetDetails = computed(() => {
   if (detDetailCheckFilter.value === 'pass') data = data.filter(r => r.check_ok)
   else if (detDetailCheckFilter.value === 'fail') data = data.filter(r => !r.check_ok)
   if (detDetailQualityFilter.value) data = data.filter(r => r.quality_status === detDetailQualityFilter.value)
-  const { sortBy, descending } = detDetailSortInfo.value
-  if (sortBy) {
-    data.sort((a, b) => {
-      const va = a[sortBy] ?? (descending ? -Infinity : Infinity)
-      const vb = b[sortBy] ?? (descending ? -Infinity : Infinity)
-      if (typeof va === 'number' && typeof vb === 'number') return descending ? vb - va : va - vb
-      return descending ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb))
-    })
-  }
-  return data
+  return sortRows(data, detDetailSortInfo.value)
 })
 
 const detDetailColumns = [
@@ -610,7 +621,12 @@ function passRateClass(row) {
   return 'det-val-fail'
 }
 
+function onPersistentDetectionFinished() {
+  refreshDetectionOverview()
+}
+
 onMounted(async () => {
+  window.addEventListener('persistent-detection-finished', onPersistentDetectionFinished)
   await loadConfig()
   connectDetectionStream()
   await Promise.all([loadDetectionStatus(), loadDetRuns()])
@@ -619,6 +635,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('persistent-detection-finished', onPersistentDetectionFinished)
   disconnectDetectionSse()
   if (countdownTimer) clearInterval(countdownTimer)
 })

@@ -283,11 +283,13 @@ import {
   apiScanResults, apiScanHistory, apiScanStats,
   apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
   apiPersistentManualCheck, apiPersistentRecheck, apiPersistentPriority,
+  apiDetectionStatus,
 } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { platformLabel } from '../utils/platform.js'
 import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import { formatDateShort } from '../utils/date.js'
+import { normalizeSortInfo, sortRows } from '../utils/tableSort.js'
 
 const { copyText: rawCopy } = useClipboard()
 async function copyText(text) {
@@ -309,18 +311,24 @@ const manualChecking = ref(false)
 const groupedSearch = ref('')
 const groupedQualityFilter = ref('')
 
+function toNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function hasQualityCount(source, status) {
+  return toNumber(source?.[`${status}_count`]) > 0
+}
+
 const filteredGroupedData = computed(() => {
-  const q = groupedSearch.value.toLowerCase()
-  const qf = groupedQualityFilter.value
+  const q = (groupedSearch.value || '').toLowerCase()
+  const qf = groupedQualityFilter.value || ''
   if (!q && !qf) return groupedData.value
   return groupedData.value.map(plat => {
     const sources = (plat.sources || []).filter(s => {
       if (q && !(s.source_ip || '').toLowerCase().includes(q)) return false
       if (qf) {
-        if (qf === 'good' && !s.good_count) return false
-        if (qf === 'poor' && !s.poor_count) return false
-        if (qf === 'unreachable' && !s.unreachable_count) return false
-        if (qf === 'pending' && !s.pending_count) return false
+        if (!hasQualityCount(s, qf)) return false
       }
       return true
     })
@@ -328,25 +336,25 @@ const filteredGroupedData = computed(() => {
   }).filter(plat => plat.sources.length > 0)
 })
 
+function syncExpandedGroupedPanels() {
+  const platforms = filteredGroupedData.value.map(plat => plat.platform)
+  if (!platforms.length) {
+    expandedPlatforms.value = []
+    return
+  }
+  const current = expandedPlatforms.value.filter(platform => platforms.includes(platform))
+  expandedPlatforms.value = current.length ? current : [platforms[0]]
+}
+
 // ─── 来源表格排序 ───
 const sourceSortInfo = ref({})
 
 function onSourceSortChange(sort) {
-  sourceSortInfo.value = sort
+  sourceSortInfo.value = normalizeSortInfo(sort)
 }
 
 function filteredSources(plat) {
-  let sources = [...(plat.sources || [])]
-  const { sortBy, descending } = sourceSortInfo.value
-  if (sortBy) {
-    sources.sort((a, b) => {
-      const va = a[sortBy] ?? (descending ? -Infinity : Infinity)
-      const vb = b[sortBy] ?? (descending ? -Infinity : Infinity)
-      if (typeof va === 'number' && typeof vb === 'number') return descending ? vb - va : va - vb
-      return descending ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb))
-    })
-  }
-  return sources
+  return sortRows(plat.sources || [], sourceSortInfo.value)
 }
 
 // ─── 详情弹窗状态 ───
@@ -378,19 +386,9 @@ function getDetailFilters() {
 
 const filteredDetailData = computed(() => {
   // 服务端已分页，allDetailData 即当前页数据
-  let data = [...allDetailData.value]
   // NOTE: Client-side sorting only affects the current page of server-paginated data.
   // This is acceptable for ad-hoc re-sorting within a page; primary ordering comes from the server.
-  const { sortBy, descending } = detailSortInfo.value
-  if (sortBy) {
-    data.sort((a, b) => {
-      const va = a[sortBy] ?? (descending ? -Infinity : Infinity)
-      const vb = b[sortBy] ?? (descending ? -Infinity : Infinity)
-      if (typeof va === 'number' && typeof vb === 'number') return descending ? vb - va : va - vb
-      return descending ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb))
-    })
-  }
-  return data
+  return sortRows(allDetailData.value, detailSortInfo.value)
 })
 
 const detailPagination = computed(() => ({
@@ -402,7 +400,7 @@ const detailPagination = computed(() => ({
 }))
 
 function onDetailSortChange(sort) {
-  detailSortInfo.value = sort
+  detailSortInfo.value = normalizeSortInfo(sort)
 }
 
 function onDetailPageChange(info) {
@@ -540,6 +538,7 @@ async function loadGrouped() {
       if (groupedData.value.length && !expandedPlatforms.value.length) {
         expandedPlatforms.value = [groupedData.value[0].platform]
       }
+      syncExpandedGroupedPanels()
     } else {
       console.error('加载分组数据失败', groupedRes.reason)
       groupedData.value = []
@@ -636,19 +635,63 @@ function exportDetailCSV() {
   MessagePlugin.success(`已导出 ${items.length} 个频道`)
 }
 
+let manualCheckPollToken = 0
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitForManualCheckCompletion(beforeStatus, token) {
+  const beforeCycleAt = beforeStatus?.last_cycle_at || ''
+  let sawRunning = false
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 30 * 60 * 1000) {
+    if (token !== manualCheckPollToken) return false
+    await sleep(2000)
+    let status = null
+    try {
+      status = await apiDetectionStatus()
+    } catch (_) {
+      continue
+    }
+    if (status?.cycle_running) {
+      sawRunning = true
+      continue
+    }
+    if (sawRunning || (status?.last_cycle_at && status.last_cycle_at !== beforeCycleAt)) {
+      await loadGrouped()
+      try {
+        window.dispatchEvent(new CustomEvent('persistent-detection-finished'))
+      } catch (_) {}
+      return true
+    }
+  }
+  return false
+}
+
 async function triggerManualCheck() {
+  const token = ++manualCheckPollToken
   manualChecking.value = true
   try {
+    const beforeStatus = await apiDetectionStatus().catch(() => null)
     const res = await apiPersistentManualCheck()
     if (res.ok) {
-      MessagePlugin.success('已触发手动检测，稍后刷新查看结果')
+      MessagePlugin.success('已触发手动检测，完成后会自动刷新')
+      const completed = await waitForManualCheckCompletion(beforeStatus, token)
+      if (completed) {
+        MessagePlugin.success('手动检测完成，结果已刷新')
+      } else if (token === manualCheckPollToken) {
+        MessagePlugin.warning('手动检测时间较长，请稍后手动刷新')
+      }
     } else {
       MessagePlugin.error(res.error || '触发失败')
     }
   } catch (_) {
     MessagePlugin.error('触发失败')
   } finally {
-    manualChecking.value = false
+    if (token === manualCheckPollToken) {
+      manualChecking.value = false
+    }
   }
 }
 
@@ -864,6 +907,7 @@ function downloadM3U(items, filename) {
 
 // ─── 生命周期 ───
 watch(searchQuery, debouncedLoad)
+watch([groupedSearch, groupedQualityFilter], syncExpandedGroupedPanels)
 watch(detailSearch, debouncedDetailFilterLoad)
 watch([detailQualityFilter, detailCategoryFilter, detailProvinceFilter], reloadDetailWithFilters)
 
@@ -881,6 +925,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  manualCheckPollToken += 1
   if (debounceTimer) clearTimeout(debounceTimer)
   if (detailFilterTimer) clearTimeout(detailFilterTimer)
 })
