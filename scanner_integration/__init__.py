@@ -1054,6 +1054,8 @@ def trigger_persistent_manual_check():
     from .detection import detection_manager
     if bridge._loop is None:
         return {'ok': False, 'error': '异步循环未启动。'}
+    if detection_manager.status.get('cycle_running'):
+        return {'ok': False, 'error': '检测正在执行中，请稍后再试'}
     asyncio.run_coroutine_threadsafe(
         detection_manager._run_detection_cycle(trigger_source='manual'), bridge._loop
     )
