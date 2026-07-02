@@ -118,10 +118,16 @@ def _ensure_scheduler_started(cfg=None):
         return False
 
     with _state._scheduler_thread_lock:
+        # 清理已死亡的调度器线程引用和残留锁
+        if _state._scheduler_thread is not None and not _state._scheduler_thread.is_alive():
+            _state.set_scheduler_thread(None)
+            _release_scheduler_lock()
         if _state._scheduler_thread is not None and _state._scheduler_thread.is_alive():
             _reload_scheduler_config()
             return True
         if not _acquire_scheduler_lock():
+            import logging
+            logging.getLogger(__name__).warning("调度器锁获取失败，无法启动调度器（可能有其他进程持有锁）")
             return False
         t = threading.Thread(target=_scheduler_loop, daemon=True, name='scheduler')
         _state.set_scheduler_thread(t)
@@ -149,6 +155,13 @@ def _scheduler_status():
     except Exception:
         state = None
     if state and state.get('running'):
+        # 内存状态显示未运行但数据库显示运行，说明调度器线程可能已死亡
+        if not scheduler_running:
+            try:
+                clear_scheduler_state()
+            except Exception:
+                pass
+            return False, next_run_str
         return True, state.get('next_run') or next_run_str
     return scheduler_running, next_run_str
 
@@ -157,14 +170,14 @@ def _scheduler_loop():
     """后台调度循环：按配置的 run_mode 定时触发测试。"""
     _state.set_scheduler_running(True)
     _write_scheduler_state(True, _state._next_scheduled_run)
-    from engine.test_engine import _next_run_datetime
-    from web.test_runner import _start_test_background, _is_run_token_active
     import logging
     logger = logging.getLogger(__name__)
 
     try:
         while True:
             try:
+                from engine.test_engine import _next_run_datetime
+                from web.test_runner import _start_test_background, _is_run_token_active
                 cfg = load_config()
                 run_mode = cfg.get('run_mode', 'once')
                 config_signature = _scheduler_config_signature(cfg)
@@ -211,10 +224,10 @@ def _scheduler_loop():
                     logger.warning("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
                     continue
 
-                if run_mode == 'interval':
-                    while _is_run_token_active(run_token):
-                        time.sleep(5)
-                    continue
+                # 等待测试完成后再计算下一个时间点
+                while _is_run_token_active(run_token):
+                    time.sleep(5)
+                continue
             except Exception as e:
                 logger.error(f"调度器循环内异常（将重试）: {e}")
                 time.sleep(30)  # Back off before retrying
@@ -239,4 +252,10 @@ def _start_scheduler_from_config():
     except Exception:
         return
     if cfg.get('run_mode', 'once') != 'once':
+        # 检查并清理可能的陈旧调度器状态（线程已死亡但数据库仍标记为运行）
+        with _state._scheduler_thread_lock:
+            if (_state._scheduler_thread is not None
+                    and not _state._scheduler_thread.is_alive()):
+                _state.set_scheduler_thread(None)
+                _release_scheduler_lock()
         _ensure_scheduler_started(cfg)
