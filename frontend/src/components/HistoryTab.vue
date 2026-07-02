@@ -69,9 +69,9 @@
             共 {{ getTotalChannels(row.run_id) }} 个频道，第 {{ detailPage[row.run_id] || 1 }}/{{ detailTotalPages(row.run_id) }} 页
           </div>
 
-          <t-collapse expand-mutex v-if="filteredChannelCount(row.run_id)">
+          <t-collapse v-model="detailExpandState[row.run_id]" v-if="filteredChannelCount(row.run_id)">
             <t-collapse-panel
-              v-for="(name, idx) in paginatedChannelNames(row.run_id)"
+              v-for="{ name, info: ch } in paginatedChannelEntries(row.run_id)"
               :key="name"
               :value="name"
             >
@@ -79,27 +79,27 @@
                 <div class="ch-header">
                   <div class="ch-name">
                     {{ name }}
-                    <t-tag v-if="hasH265(paginatedChannelInfo(row.run_id, name))" size="small" variant="light" style="margin-left:6px" class="codec-tag-h265">H.265</t-tag>
+                    <t-tag v-if="hasH265(ch)" size="small" variant="light" style="margin-left:6px" class="codec-tag-h265">H.265</t-tag>
                   </div>
                   <div class="ch-meta">
                     <t-tag
-                      v-for="src in paginatedChannelInfo(row.run_id, name).sources"
+                      v-for="src in ch.sources"
                       :key="src"
                       :theme="platformTheme(src)"
                       size="small"
                       variant="light"
                       class="source-tag"
                     >{{ src }}</t-tag>
-                    <t-tag :theme="paginatedChannelInfo(row.run_id, name).passed > 0 ? 'success' : 'danger'" size="small" variant="light">
-                      {{ paginatedChannelInfo(row.run_id, name).passed }}/{{ paginatedChannelInfo(row.run_id, name).total }} 通过
+                    <t-tag :theme="ch.passed > 0 ? 'success' : 'danger'" size="small" variant="light">
+                      {{ ch.passed }}/{{ ch.total }} 通过
                     </t-tag>
-                    <span class="ch-rate">{{ ((paginatedChannelInfo(row.run_id, name).passed / paginatedChannelInfo(row.run_id, name).total) * 100).toFixed(1) }}%</span>
+                    <span class="ch-rate">{{ ch.total > 0 ? ((ch.passed / ch.total) * 100).toFixed(1) : '0.0' }}%</span>
                   </div>
                 </div>
               </template>
               <t-table
                 :columns="urlColumns"
-                :data="paginatedChannelInfo(row.run_id, name).urls || []"
+                :data="ch.urls || []"
                 :bordered="false"
                 size="small"
                 row-key="url"
@@ -292,6 +292,8 @@ const channelCache = reactive({})     // { [runId]: { channels, total_channels, 
 const detailSearch = reactive({})
 const detailFilter = reactive({})
 const detailPage = reactive({})
+const detailExpandState = reactive({})  // { [runId]: string[] } 折叠面板展开状态
+const channelPageSeq = reactive({})     // { [runId]: number } 分页请求序列号
 const DETAIL_PAGE_SIZE = 20
 let querySeq = 0
 
@@ -392,8 +394,11 @@ async function onExpandChange(keys, extra) {
 }
 
 async function loadChannelPage(runId, page) {
+  const seq = (channelPageSeq[runId] || 0) + 1
+  channelPageSeq[runId] = seq
   try {
     const data = await apiGetRunChannels(runId, page, DETAIL_PAGE_SIZE)
+    if (channelPageSeq[runId] !== seq) return  // 过期请求丢弃
     // 服务端分页格式：{ channels: {}, total_channels, page, page_size }
     channelCache[runId] = data || {}
     detailSearch[runId] = detailSearch[runId] || ''
@@ -454,6 +459,14 @@ function paginatedChannelNames(runId) {
   return filteredChannelNames(runId)
 }
 
+function paginatedChannelEntries(runId) {
+  const src = getChannelData(runId)
+  return paginatedChannelNames(runId).map(name => ({
+    name,
+    info: src[name] || { passed: 0, total: 0, sources: [], urls: [] },
+  }))
+}
+
 function paginatedChannelInfo(runId, name) {
   const src = getChannelData(runId)
   return src[name] || { passed: 0, total: 0, sources: [], urls: [] }
@@ -461,7 +474,6 @@ function paginatedChannelInfo(runId, name) {
 
 // 切换页码时请求服务端
 async function onDetailPageChange(runId, page) {
-  detailPage[runId] = page
   await loadChannelPage(runId, page)
 }
 
