@@ -213,7 +213,7 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>融合扫描源参与测速</label>
-                <span>开启后，已验证的扫描结果会作为额外的本地订阅源，自动参与常规测速流程。仅使用质量状态为"好"的结果。</span>
+                <span>开启后，池中所有扫描结果会作为额外的本地订阅源，自动参与常规测速流程。</span>
               </div>
               <div class="field-stack field-stack--switch">
                 <div class="switch-row">

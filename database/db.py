@@ -3377,12 +3377,12 @@ def delete_persistent_by_id(row_id):
 
 
 def get_persistent_for_test():
-    """获取已验证且质量好的持久化结果，用于融合测速。
+    """获取池中所有持久化结果，用于融合测速。
     返回 [(channel_info_dict, url)] 格式，与 test_engine 的 test_list 兼容。"""
     conn = _get_conn()
     rows = conn.execute(
         """SELECT name, url FROM persistent_scan_results
-           WHERE validated = 1 AND quality_status = 'good' AND deleted_at IS NULL
+           WHERE deleted_at IS NULL
            ORDER BY stability DESC, bandwidth DESC"""
     ).fetchall()
     return [({'name': r['name']}, r['url']) for r in rows]
