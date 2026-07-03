@@ -120,3 +120,10 @@ from database.db import (  # noqa: F401
     get_ip_scan_logs,
     cleanup_old_ip_scan_logs,
 )
+
+from datetime import datetime
+
+
+def local_now():
+    """返回本地时间（无时区信息）。"""
+    return datetime.now(LOCAL_TZ).replace(tzinfo=None)

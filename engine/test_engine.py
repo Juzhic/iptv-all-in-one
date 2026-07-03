@@ -62,12 +62,7 @@ def load_config(filepath=None):
     return get_config(DEFAULT_CONFIG)
 
 
-def _local_now():
-    try:
-        from database import LOCAL_TZ
-        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
-    except Exception:
-        return datetime.now()
+from database import local_now as _local_now
 
 
 LOW_RESOLUTION_URL_PATTERNS = (

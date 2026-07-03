@@ -191,6 +191,9 @@ def api_test_stream():
 
     def generate():
         q = _state.subscribe_test_sse()
+        import time as _time
+        started = _time.time()
+        MAX_SSE_DURATION = 1800  # 30 分钟最大时长
         try:
             scheduler_running, next_run_str = _scheduler_status()
             with _state._progress_lock:
@@ -208,6 +211,9 @@ def api_test_stream():
             }
             yield f"event: status\ndata: {_json.dumps(snapshot, ensure_ascii=False)}\n\n"
             while True:
+                if _time.time() - started > MAX_SSE_DURATION:
+                    yield f"event: error\ndata: {_json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
+                    break
                 try:
                     msg = q.get(timeout=30)
                     yield msg

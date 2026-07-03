@@ -32,13 +32,7 @@ def _ensure_ip_scan_bridge():
     return scanner, None, None
 
 
-def _local_now():
-    """获取本地时间"""
-    try:
-        from database import LOCAL_TZ
-        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
-    except Exception:
-        return datetime.now()
+from database import local_now as _local_now
 
 
 def _normalize_ports(raw_ports):
@@ -175,15 +169,20 @@ def api_ip_scan_stream():
     
     def generate():
         q = scanner.subscribe_ip_scan_sse()
+        import time as _time
+        started = _time.time()
+        MAX_SSE_DURATION = 1800  # 30 分钟最大时长
         try:
             progress = scanner.get_ip_scan_status()
             yield f"event: status\ndata: {json.dumps(progress, ensure_ascii=False)}\n\n"
             while True:
+                if _time.time() - started > MAX_SSE_DURATION:
+                    yield f"event: error\ndata: {json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
+                    break
                 try:
                     msg = q.get(timeout=30)
                     yield msg
                 except Exception:
-                    # 发送心跳保活
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass

@@ -228,12 +228,7 @@ _daily_reload_event = threading.Event()
 _db_maintenance_future = None
 
 
-def _local_now():
-    try:
-        from database import LOCAL_TZ
-        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
-    except Exception:
-        return datetime.now()
+from database import local_now as _local_now
 
 
 def _acquire_background_task_lock():

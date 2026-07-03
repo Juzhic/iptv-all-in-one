@@ -20,13 +20,7 @@ from .video_check import run_deep_check
 logger = logging.getLogger('scanner.detection')
 
 
-def _local_now():
-    from datetime import datetime
-    try:
-        from database import LOCAL_TZ
-        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
-    except Exception:
-        return datetime.now()
+from database import local_now as _local_now
 
 
 def _format_local_dt(value):

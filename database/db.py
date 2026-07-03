@@ -33,9 +33,15 @@ _write_lock = threading.Lock()
 
 class MySQLConnection:
     """MySQL连接包装类，模拟SQLite连接行为"""
-    
+
     def __init__(self, config):
-        self._conn = pymysql.connect(
+        self._config = config
+        self._conn = self._create_conn()
+        self._cursor = None
+
+    def _create_conn(self):
+        config = self._config
+        return pymysql.connect(
             host=config['host'],
             port=config['port'],
             user=config['user'],
@@ -48,23 +54,47 @@ class MySQLConnection:
             read_timeout=30,
             write_timeout=30
         )
+
+    def _reconnect(self):
+        """关闭旧连接并重建。"""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
         self._cursor = None
-    
+        self._conn = self._create_conn()
+
     @property
     def _get_cursor(self):
         if self._cursor is None:
             self._cursor = self._conn.cursor()
         return self._cursor
-    
+
     def execute(self, query, args=None):
-        cursor = self._get_cursor
-        cursor.execute(query, args)
-        return cursor
-    
+        try:
+            cursor = self._get_cursor
+            cursor.execute(query, args)
+            return cursor
+        except pymysql.OperationalError as e:
+            if e.args[0] in (2006, 2013, 2014):
+                self._reconnect()
+                cursor = self._get_cursor
+                cursor.execute(query, args)
+                return cursor
+            raise
+
     def executemany(self, query, args):
-        cursor = self._get_cursor
-        cursor.executemany(query, args)
-        return cursor
+        try:
+            cursor = self._get_cursor
+            cursor.executemany(query, args)
+            return cursor
+        except pymysql.OperationalError as e:
+            if e.args[0] in (2006, 2013, 2014):
+                self._reconnect()
+                cursor = self._get_cursor
+                cursor.executemany(query, args)
+                return cursor
+            raise
     
     def commit(self):
         self._conn.commit()
