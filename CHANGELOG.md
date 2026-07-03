@@ -7,6 +7,19 @@
 
 **重要说明：每次代码修改都必须将更新内容写入本文件；只有发布级或用户可见变更才提升版本号。**
 
+## [1.7.13] - 2026-07-02
+
+### 改进
+- SSE 端点（`/api/scan/stream`、`/api/test/stream`、`/api/ip-scan/stream`）增加 30 分钟最大连接时长，防止异常客户端永久占用 Flask 工作线程。
+- MySQL 数据库连接增加自动重连机制：捕获 `OperationalError`（MySQL 2006/2013/2014）时自动重建连接并重试一次。
+- `asyncio.run()` 替换为 `scanner.bridge.run_sync()`，正确使用 AsyncBridge 处理异步积分查询。
+- 前端构建 `subprocess.run()` 增加超时（npm install 120s，npm run build 180s），防止进程挂起。
+- `_local_now()` 函数去重：4 个文件的重复定义统一到 `database.local_now()`。
+- `requirements.txt` 锁定所有依赖版本（`==`），确保构建可复现。
+
+### 运维
+- 将 `.mimocode/` 目录添加到 `.gitignore`，避免工具生成的临时文件被提交。
+
 ## [1.7.12] - 2026-07-02
 
 ### 改进

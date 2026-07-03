@@ -36,3 +36,6 @@ tests/*.png
 dist/
 frontend/node_modules/
 /deploy
+
+# 工具生成的目录
+.mimocode/

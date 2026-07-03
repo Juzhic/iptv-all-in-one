@@ -133,17 +133,22 @@ def api_scan_stream():
 
     def generate():
         q = scanner.subscribe_sse()
+        import time as _time
+        started = _time.time()
+        MAX_SSE_DURATION = 1800  # 30 分钟最大时长
         try:
             # 立即发送当前状态
             import json
             status = scanner.get_scan_status()
             yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
             while True:
+                if _time.time() - started > MAX_SSE_DURATION:
+                    yield f"event: error\ndata: {json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
+                    break
                 try:
                     msg = q.get(timeout=30)
                     yield msg
                 except Exception:
-                    # 30 秒无事件，发送心跳保活
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass
@@ -297,7 +302,7 @@ def api_scan_keys_credits():
                     check_all_fofa_credits(),
                     return_exceptions=True,
                 )
-            quake_r, hunter_r, daydaymap_r, fofa_r = asyncio.run(_fetch_all_credits())
+            quake_r, hunter_r, daydaymap_r, fofa_r = scanner.bridge.run_sync(_fetch_all_credits())
             credits_info['quake'] = quake_r if not isinstance(quake_r, Exception) else []
             credits_info['hunter'] = hunter_r if not isinstance(hunter_r, Exception) else []
             credits_info['daydaymap'] = daydaymap_r if not isinstance(daydaymap_r, Exception) else []

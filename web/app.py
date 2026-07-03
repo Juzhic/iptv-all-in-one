@@ -131,6 +131,7 @@ def _run_frontend_build():
             shell=False,
             capture_output=True,
             check=False,
+            timeout=120,
         )
         if install_result.returncode != 0:
             stderr = install_result.stderr.decode('utf-8', errors='replace')[-500:] if install_result.stderr else ''
@@ -143,6 +144,7 @@ def _run_frontend_build():
         cwd=FRONTEND_DIR,
         shell=False,
         capture_output=True,
+        timeout=180,
     )
     # 打印构建输出（过滤关键行）
     if result.stdout:
