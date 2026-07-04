@@ -41,6 +41,8 @@ _test_progress = {
     'error': None,
     'source': '',
     'last_seq': 0,
+    'sub_count': 0,
+    'scan_count': 0,
 }
 _test_log_lines = collections.deque(maxlen=200)
 _progress_lock = threading.Lock()

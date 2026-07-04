@@ -271,10 +271,10 @@ class ProgressBatcher:
         self._last_flush = _time.monotonic()
         self._dirty = False  # 是否有未写入的更新
 
-    def update(self, total, processed, passed, failed, elapsed, source=''):
+    def update(self, total, processed, passed, failed, elapsed, source='', sub_count=0, scan_count=0):
         """更新进度数据（线程安全）。"""
         with self._lock:
-            self._data = (total, processed, passed, failed, elapsed, source)
+            self._data = (total, processed, passed, failed, elapsed, source, sub_count, scan_count)
             self._dirty = True
             # 如果距上次 flush 超过间隔，立即写入
             if _time.monotonic() - self._last_flush > self._flush_interval:
@@ -289,16 +289,16 @@ class ProgressBatcher:
         """调用时必须持有 self._lock。"""
         if not self._dirty or self._data is None:
             return
-        total, processed, passed, failed, elapsed, source = self._data
+        total, processed, passed, failed, elapsed, source, sub_count, scan_count = self._data
         now = now_str()
         with _write_lock:
             conn = _get_conn()
             conn.execute(
                 """UPDATE run_progress SET
                    running=1, total=%s, processed=%s, passed=%s, failed=%s,
-                   elapsed=%s, source=%s, updated_at=%s
+                   elapsed=%s, source=%s, sub_count=%s, scan_count=%s, updated_at=%s
                    WHERE id=1""",
-                (total, processed, passed, failed, elapsed, source, now)
+                (total, processed, passed, failed, elapsed, source, sub_count, scan_count, now)
             )
             conn.commit()
         self._last_flush = _time.monotonic()
@@ -684,7 +684,9 @@ def init_db():
             failed INT DEFAULT 0,
             elapsed DOUBLE DEFAULT 0,
             source TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            sub_count INT DEFAULT 0,
+            scan_count INT DEFAULT 0
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         "INSERT IGNORE INTO run_progress (id) VALUES (1)",
 
@@ -1122,6 +1124,8 @@ def _ensure_schema_migrations(conn):
             'elapsed': 'DOUBLE DEFAULT 0',
             'source': 'TEXT',
             'updated_at': 'TEXT',
+            'sub_count': 'INT DEFAULT 0',
+            'scan_count': 'INT DEFAULT 0',
         },
         'scan_runs': {
             'finished_at': 'TEXT',
@@ -2064,9 +2068,9 @@ def clear_run_progress():
         conn.commit()
 
 
-def update_run_progress(total, processed, passed, failed, elapsed, source=''):
+def update_run_progress(total, processed, passed, failed, elapsed, source='', sub_count=0, scan_count=0):
     """更新运行进度（测试进行中由进度回调调用）。使用缓冲减少 commit 频率。"""
-    _progress_batcher.update(total, processed, passed, failed, elapsed, source)
+    _progress_batcher.update(total, processed, passed, failed, elapsed, source, sub_count, scan_count)
 
 
 def get_run_progress():
@@ -2084,6 +2088,8 @@ def get_run_progress():
         'failed': row['failed'],
         'elapsed': row['elapsed'],
         'source': row['source'],
+        'sub_count': row['sub_count'] if 'sub_count' in row.keys() else 0,
+        'scan_count': row['scan_count'] if 'scan_count' in row.keys() else 0,
     }
 
 
