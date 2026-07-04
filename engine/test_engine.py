@@ -310,27 +310,23 @@ _db_handler = _DBLogHandler()
 def setup_logging(run_id=''):
     """配置日志系统：控制台输出 + 数据库写入。线程安全。"""
     with _logging_setup_lock:
-        root_logger = logging.getLogger()
-        if root_logger.handlers:
-            for handler in root_logger.handlers[:]:
-                handler.close()
-                root_logger.removeHandler(handler)
+        test_logger = logging.getLogger('iptv_test_engine')
+        test_logger.setLevel(logging.INFO)
+        test_logger.propagate = False  # 不传播到 root logger，避免污染其他模块日志
 
         _db_handler.run_id = run_id
         _db_handler.setFormatter(logging.Formatter('%(message)s'))
 
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                _db_handler,
-                logging.StreamHandler()
-            ]
-        )
+        # 清理旧 handler
+        for handler in test_logger.handlers[:]:
+            handler.close()
+            test_logger.removeHandler(handler)
 
-    logger = logging.getLogger(__name__)
-    logger.info(f"日志系统已启动（数据库 + 控制台）")
-    return logger
+        test_logger.addHandler(_db_handler)
+        test_logger.addHandler(logging.StreamHandler())
+
+    test_logger.info("日志系统已启动（数据库 + 控制台）")
+    return test_logger
 
 def fetch_m3u_playlist(url):
     """从指定 URL 获取订阅源内容。"""
@@ -1135,8 +1131,13 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     except (TypeError, ValueError):
         MAX_URLS_PER_CHANNEL = 0
 
+    # 来源统计
+    sub_count = 0
+    scan_count = 0
+
     # 如果外部传入了 test_list（来自扫描结果），跳过 M3U 获取和匹配
     if test_list:
+        sub_count = len(test_list)
         _log(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
         print(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
         # 扫描模式下也需要 demo_structure 用于输出文件生成
@@ -1192,22 +1193,24 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
                 test_list.append(({'name': canonical_name, 'source_url': src}, url))
 
         # 融合扫描源：将已验证的持久化扫描结果作为额外订阅源
+        scan_count = 0
         if cfg.get('include_scan_results_in_test', False):
             try:
                 from database import get_persistent_for_test
                 scan_items = get_persistent_for_test()
                 if scan_items:
                     existing_urls = {url for _, url in test_list}
-                    added = 0
                     for ci, url in scan_items:
                         if url not in existing_urls:
                             test_list.append((ci, url))
                             existing_urls.add(url)
-                            added += 1
-                    _log(f"融合扫描源：新增 {added} 个地址（总计 {len(test_list)}）")
-                    print(f"融合扫描源：新增 {added} 个地址（总计 {len(test_list)}）")
+                            scan_count += 1
             except Exception as e:
                 _log(f"融合扫描源失败: {e}")
+
+        sub_count = len(test_list) - scan_count
+        _log(f"数据源统计：订阅源 {sub_count} 个，扫描源 {scan_count} 个，总计 {len(test_list)} 个")
+        print(f"数据源统计：订阅源 {sub_count} 个，扫描源 {scan_count} 个，总计 {len(test_list)} 个")
 
     print(f"待测频道数：{len(test_list)}\n")
     _log(f"开始测速，共 {len(test_list)} 个频道地址")
@@ -1253,12 +1256,16 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
             failed=info.get('failed', 0),
             elapsed=round(time.time() - run_start_time, 1),
             source=progress_source or ('web' if progress_callback else 'scheduler'),
+            sub_count=sub_count,
+            scan_count=scan_count,
         )
 
     def _combined_progress(info):
         _db_progress(info)
         if progress_callback:
             try:
+                info['sub_count'] = sub_count
+                info['scan_count'] = scan_count
                 progress_callback(info)
             except Exception:
                 pass

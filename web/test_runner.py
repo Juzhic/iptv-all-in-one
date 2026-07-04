@@ -39,6 +39,8 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             'elapsed': 0, 'finished_at': None, 'error': None,
             'source': trigger_source,
             'last_seq': 0,
+            'sub_count': 0,
+            'scan_count': 0,
         })
     with _state._progress_lock:
         _state._test_log_lines.clear()
@@ -55,6 +57,8 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 'failed': info.get('failed', 0),
                 'elapsed': round(time.time() - _start_time, 1),
                 'last_seq': _state._test_log_seq,
+                'sub_count': info.get('sub_count', 0),
+                'scan_count': info.get('scan_count', 0),
             })
         try:
             _state._broadcast_test_sse('progress', {
@@ -63,6 +67,8 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 'passed': info.get('success', 0),
                 'failed': info.get('failed', 0),
                 'elapsed': round(time.time() - _start_time, 1),
+                'sub_count': info.get('sub_count', 0),
+                'scan_count': info.get('scan_count', 0),
             })
         except Exception:
             pass

@@ -43,6 +43,8 @@ def api_status():
             total = _state._test_progress['total']
             elapsed = _state._test_progress['elapsed']
             source = _state._test_progress.get('source', 'web')
+            sub_count = _state._test_progress.get('sub_count', 0)
+            scan_count = _state._test_progress.get('scan_count', 0)
     if running:
         return jsonify({'ok': True, 'data': {
             'running': True,
@@ -50,6 +52,8 @@ def api_status():
             'total': total,
             'elapsed': elapsed,
             'source': source,
+            'sub_count': sub_count,
+            'scan_count': scan_count,
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
         }})
@@ -62,6 +66,8 @@ def api_status():
             'total': db_progress.get('total', 0),
             'elapsed': db_progress.get('elapsed', 0),
             'source': db_progress.get('source', 'scheduler'),
+            'sub_count': db_progress.get('sub_count', 0),
+            'scan_count': db_progress.get('scan_count', 0),
             'next_scheduled_run': next_run_str,
             'scheduler_running': scheduler_running,
         }})
@@ -71,6 +77,8 @@ def api_status():
         'total': 0,
         'elapsed': 0,
         'source': '',
+        'sub_count': 0,
+        'scan_count': 0,
         'next_scheduled_run': next_run_str,
         'scheduler_running': scheduler_running,
     }})
@@ -98,6 +106,8 @@ def api_progress():
             prog_finished_at = _state._test_progress['finished_at']
             prog_error = _state._test_progress['error']
             prog_source = _state._test_progress.get('source', 'web')
+            prog_sub_count = _state._test_progress.get('sub_count', 0)
+            prog_scan_count = _state._test_progress.get('scan_count', 0)
             new_lines = [l for l in _state._test_log_lines if l['seq'] > after]
             prog_last_seq = _state._test_log_seq
     if prog_running:
@@ -114,6 +124,8 @@ def api_progress():
             'lines': new_lines,
             'last_seq': prog_last_seq,
             'source': prog_source,
+            'sub_count': prog_sub_count,
+            'scan_count': prog_scan_count,
             **sched_info,
         }})
 

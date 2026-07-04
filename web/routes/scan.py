@@ -262,7 +262,7 @@ def api_scan_keys_list():
                 suffix = f"...{key[-6:]}"
                 result.append({
                     'platform': platform,
-                    'key': suffix,
+                    'key': key,
                     'key_suffix': suffix,
                     'credit': None,
                     'role': '',
@@ -325,7 +325,7 @@ def api_scan_keys_credits():
                 ci = credit_map.get(suffix, {})
                 result.append({
                     'platform': platform,
-                    'key': suffix,
+                    'key': key,
                     'key_suffix': suffix,
                     'credit': _finite_number_or_none(ci.get('credit')),
                     'role': ci.get('role', ''),
