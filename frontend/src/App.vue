@@ -348,11 +348,14 @@ function handleSseTestComplete(e) {
   }
   disconnectTestSse()
   loadInitialData()
+  if (schedulerRunning.value) {
+    setTimeout(connectTestStream, 3000)
+  }
 }
 
 function handleSseError() {
   disconnectTestSse()
-  if (testRunning.value || schedulerRunning.value) {
+  if (testRunning.value) {
     startPollFallback()
   }
 }
@@ -426,7 +429,7 @@ async function pollTestProgress() {
         }
       })
     }
-    if (!data.running && !schedulerRunning.value) {
+    if (!data.running) {
       stopPollFallback()
     }
   } catch (_) {}
