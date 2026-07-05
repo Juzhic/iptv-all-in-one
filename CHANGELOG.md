@@ -12,6 +12,7 @@
 ### 修复
 - API Key 管理接口（`GET /api/scan/keys`、`GET /api/scan/keys/credits`）返回完整 key 值（而非仅后缀），修复编辑 Key 时因后缀匹配失败导致"原 Key 不存在"错误、无法保存的问题。
 - 修复测试日志中混入其他模块（scheduler、database 等）日志的问题。`_DBLogHandler` 不再挂载到 root logger，改为使用专用的 `iptv_test_engine` logger，避免全局日志污染。
+- 修复测试结束后前端持续轮询 `/progress` 接口、UI 假显示"运行中"的问题。测试完成后立即停止进度轮询；SSE 断线时仅在测试实际运行中才启动 HTTP 降级轮询；测试完成且调度器运行时自动重连 SSE 以等待下次调度。
 
 ### 改进
 - 测试进度中增加数据源来源统计（订阅源数量、扫描源数量），日志输出 `数据源统计：订阅源 X 个，扫描源 Y 个，总计 Z 个`，API 返回 `sub_count` 和 `scan_count` 字段。
