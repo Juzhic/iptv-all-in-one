@@ -1468,7 +1468,7 @@ def auto_vacuum_if_needed():
 def get_latest_run():
     """获取最近一轮测试的完整信息（含结果）。"""
     conn = _get_conn()
-    run = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    run = conn.execute("SELECT * FROM runs ORDER BY finished_at DESC, id DESC LIMIT 1").fetchone()
     if not run:
         return None
 
@@ -1497,7 +1497,7 @@ def get_latest_run():
 def get_latest_passed_results():
     """获取最近一轮通过的频道列表（用于生成 result.txt/m3u）。"""
     conn = _get_conn()
-    run = conn.execute("SELECT run_id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    run = conn.execute("SELECT run_id FROM runs ORDER BY finished_at DESC, id DESC LIMIT 1").fetchone()
     if not run:
         return []
     results = conn.execute(
@@ -1533,7 +1533,7 @@ def get_run_history(limit=50, start_date=None, end_date=None):
             pass
     params.append(limit)
     rows = conn.execute(
-        f"SELECT * FROM runs WHERE 1=1{where} ORDER BY id DESC LIMIT %s",
+        f"SELECT * FROM runs WHERE 1=1{where} ORDER BY finished_at DESC, id DESC LIMIT %s",
         params
     ).fetchall()
     runs = []
