@@ -129,6 +129,7 @@ const activeTab = ref('overview')
 // 已访问的标签保持挂载（destroy-on-hide=false），切回时不重新请求。
 const visitedTabs = reactive(new Set(['overview']))
 const latestRun = ref(null)
+const latestCompletedRun = ref(null)
 const latestScan = ref(null)
 const runs = ref([])
 const channelSummary = ref({})
@@ -244,14 +245,15 @@ const topSummaryCards = computed(() => {
 
 const headerFacts = computed(() => {
   const facts = []
+  const statusRun = latestCompletedRun.value || latestRun.value
   if (schedulerRunning.value && nextScheduledRun.value) {
     facts.push({ label: '下次执行', value: nextScheduledRun.value })
   }
-  if (latestRun.value?.finished_at) {
-    facts.push({ label: '最近更新', value: latestRun.value.finished_at })
+  if (statusRun?.finished_at) {
+    facts.push({ label: '最近更新', value: statusRun.finished_at })
   }
-  if (latestRun.value?.duration_seconds) {
-    facts.push({ label: '耗时', value: `${Math.round(latestRun.value.duration_seconds / 60)} 分钟` })
+  if (statusRun?.duration_seconds) {
+    facts.push({ label: '耗时', value: `${Math.round(statusRun.duration_seconds / 60)} 分钟` })
   }
   return facts
 })
@@ -275,6 +277,7 @@ async function loadInitialData() {
   try {
     const data = await apiGetInitial()
     latestRun.value = data.latest
+    latestCompletedRun.value = data.latest
     latestScan.value = data.latest_scan || null
     runs.value = data.runs || []
     channelSummary.value = data.channel_summary || {}
@@ -456,10 +459,35 @@ function onTestFinished() {
 
 function refreshOverview(runsData) {
   runs.value = runsData
-  if (runsData.length) {
-    latestRun.value = runsData[0]
+  const newestRun = pickNewestRun(runsData)
+  if (newestRun) {
+    latestRun.value = newestRun
+    if (!latestCompletedRun.value || compareRunRecency(newestRun, latestCompletedRun.value) > 0) {
+      latestCompletedRun.value = newestRun
+    }
   }
   nextTick(() => overviewRef.value?.refreshCharts?.())
+}
+
+function runRecencyValue(run) {
+  return run?.finished_at || run?.started_at || ''
+}
+
+function compareRunRecency(a, b) {
+  const aTime = runRecencyValue(a)
+  const bTime = runRecencyValue(b)
+  if (aTime !== bTime) return aTime > bTime ? 1 : -1
+  const aId = String(a?.run_id || '')
+  const bId = String(b?.run_id || '')
+  if (aId === bId) return 0
+  return aId > bId ? 1 : -1
+}
+
+function pickNewestRun(runList) {
+  if (!Array.isArray(runList) || !runList.length) return null
+  return runList.reduce((newest, run) => (
+    !newest || compareRunRecency(run, newest) > 0 ? run : newest
+  ), null)
 }
 
 function onTabChange(value) {
