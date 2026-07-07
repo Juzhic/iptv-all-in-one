@@ -279,6 +279,9 @@ def api_scan_keys_list():
 def api_scan_keys_credits():
     """查询所有平台的 API Key 积分（慢，调用各平台 API）。"""
     try:
+        scanner, err, code = _ensure_scan_bridge()
+        if err:
+            return err, code
         from scanner_integration.key_manager import (
             KeyManager, init_key_manager,
             check_all_quake_credits,
