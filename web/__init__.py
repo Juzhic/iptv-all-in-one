@@ -4,6 +4,8 @@ web 包 — iptv-all-in-one 管理后台。
 
 gunicorn 入口: gunicorn web:app
 """
+import logging
+
 from web.app import create_app, _ensure_frontend
 import database as db
 
@@ -20,8 +22,14 @@ _state._scanner_module = _scanner_module
 app = create_app()
 
 # 模块级初始化（兼容 uWSGI / gunicorn 等 WSGI 服务器）
-db.init_db()
-db.migrate_from_json()
+# 数据库可能暂时不可用（Docker 启动时 MySQL 未就绪），不阻止应用启动
+try:
+    db.init_db()
+    db.migrate_from_json()
+except Exception as e:
+    logging.getLogger(__name__).error(
+        f"数据库初始化失败（MySQL 可能未就绪，将在首次请求时重试）: {e}"
+    )
 try:
     db.clear_run_progress()
 except Exception:

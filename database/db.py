@@ -39,21 +39,48 @@ class MySQLConnection:
         self._conn = self._create_conn()
         self._cursor = None
 
-    def _create_conn(self):
+    def _create_conn(self, max_retries=5, retry_delay=3):
+        """创建 MySQL 连接，连接类错误自动重试（Docker 启动时 MySQL 可能未就绪）。
+        认证类错误不重试（密码错误重试也没用）。
+        """
         config = self._config
-        return pymysql.connect(
-            host=config['host'],
-            port=config['port'],
-            user=config['user'],
-            password=config['password'],
-            database=config['database'],
-            charset=config.get('charset', 'utf8mb4'),
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=False,
-            connect_timeout=30,
-            read_timeout=30,
-            write_timeout=30
-        )
+        last_err = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return pymysql.connect(
+                    host=config['host'],
+                    port=config['port'],
+                    user=config['user'],
+                    password=config['password'],
+                    database=config['database'],
+                    charset=config.get('charset', 'utf8mb4'),
+                    cursorclass=pymysql.cursors.DictCursor,
+                    autocommit=False,
+                    connect_timeout=10,
+                    read_timeout=30,
+                    write_timeout=30
+                )
+            except pymysql.err.OperationalError as e:
+                code = e.args[0] if e.args else 0
+                last_err = e
+                # 认证错误（1045）不重试
+                if code == 1045:
+                    logger.error(f"[DB] 认证失败: {e.args[1]}（请检查 db_config.json 或 DB_PASSWORD 环境变量）")
+                    raise
+                # 数据库不存在（1049）不重试
+                if code == 1049:
+                    logger.error(f"[DB] 数据库不存在: {config['database']}")
+                    raise
+                # 连接类错误（2003/2006/2013）重试
+                if attempt < max_retries:
+                    logger.warning(
+                        f"[DB] 连接失败 (attempt {attempt}/{max_retries}, code={code}): "
+                        f"{e.args[1] if len(e.args) > 1 else e}，{retry_delay}s 后重试..."
+                    )
+                    _time.sleep(retry_delay)
+                else:
+                    logger.error(f"[DB] 连接失败，已重试 {max_retries} 次，放弃: {e}")
+        raise last_err
 
     def _reconnect(self):
         """关闭旧连接并重建。"""

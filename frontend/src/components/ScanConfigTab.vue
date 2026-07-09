@@ -929,7 +929,12 @@ async function loadKeys() {
             const credit = creditInfo.credit != null ? Number(creditInfo.credit) : null
             
             if (creditInfo.error) status = creditInfo.error
-            else if (credit === null) status = creditInfo.role || '余额未知'
+            else if (credit === null) {
+              // 各平台无余额查询能力时的友好提示
+              if (item.platform === 'fofa') status = '不支持余额查询'
+              else if (item.platform === 'daydaymap') status = creditInfo.role || 'Key有效 (余额需登录查看)'
+              else status = creditInfo.role || '余额未知'
+            }
             else if (credit < 100) status = '余额不足'
             else if (credit < 300) status = '偏低'
             
@@ -939,6 +944,12 @@ async function loadKeys() {
         })
     }).catch(err => {
       console.error('获取余额失败', err)
+      // 余额查询失败时更新所有 Key 的状态，让用户知道已失败
+      keyList.value = keyList.value.map(item => ({
+        ...item,
+        status: '余额查询失败',
+      }))
+      MessagePlugin.warning('余额查询失败：' + (err?.message || '请检查后端日志'))
     })
     
   } catch (error) {

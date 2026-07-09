@@ -305,7 +305,8 @@ def api_scan_keys_credits():
                     check_all_fofa_credits(),
                     return_exceptions=True,
                 )
-            quake_r, hunter_r, daydaymap_r, fofa_r = scanner.bridge.run_sync(_fetch_all_credits())
+            quake_r, hunter_r, daydaymap_r, fofa_r = scanner.bridge.run_sync(
+                _fetch_all_credits(), timeout=50)
             credits_info['quake'] = quake_r if not isinstance(quake_r, Exception) else []
             credits_info['hunter'] = hunter_r if not isinstance(hunter_r, Exception) else []
             credits_info['daydaymap'] = daydaymap_r if not isinstance(daydaymap_r, Exception) else []
