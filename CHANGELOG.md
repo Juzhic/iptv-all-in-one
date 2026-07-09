@@ -24,7 +24,7 @@
 - Quake API 超时从 10 秒提升到 15 秒，避免网络波动导致误报失败。
 
 ### 运维
-- GitHub Actions 构建镜像后自动同步 Docker Hub Description（使用 `peter-evans/dockerhub-description@v4`），每次推送代码到 main 分支即更新 Docker Hub 仓库页的 README 和短描述。
+- GitHub Actions 构建镜像后自动从 CHANGELOG.md 提取当前版本变更日志，创建 GitHub Release（tag 对应版本号），Docker Hub 可链接查看每个版本的更新内容。
 
 ## [1.7.17] - 2026-07-07
 
