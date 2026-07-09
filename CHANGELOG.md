@@ -23,6 +23,9 @@
 - DayDayMap 余额为 null 时前端显示"Key有效 (余额需登录查看)"而非"余额未知"。
 - Quake API 超时从 10 秒提升到 15 秒，避免网络波动导致误报失败。
 
+### 运维
+- GitHub Actions 构建镜像后自动同步 Docker Hub Description（使用 `peter-evans/dockerhub-description@v4`），每次推送代码到 main 分支即更新 Docker Hub 仓库页的 README 和短描述。
+
 ## [1.7.17] - 2026-07-07
 
 ### 修复

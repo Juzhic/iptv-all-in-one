@@ -34,3 +34,12 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/iptv-all-in-one:${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update Docker Hub Description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/iptv-all-in-one
+          readme-filepath: ./DOCKERHUB.md
+          short-description: "IPTV 频道测速 + 扫描发现一站式工具，支持多源聚合、FFmpeg 检测、定时运行和 Docker 部署"
