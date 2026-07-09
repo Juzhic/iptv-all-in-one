@@ -4,11 +4,9 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.7.17）
+## 当前版本说明（v1.7.18）
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
-
-旧版 README 中提到的 `config.json`、`subscribe.txt`、`alias.txt`、`demo.txt` 已不再作为日常配置入口。现在请通过 Web 后台的"系统配置"页面维护：
 
 | 数据 | 当前存储位置 | 说明 |
 | --- | --- | --- |
@@ -28,8 +26,6 @@
 | 持久化结果 | `persistent_scan_results` | 扫描结果持久化存储，支持自动复活机制 |
 | IP扫描记录 | `ip_scan_runs`、`ip_scan_results` | IP扫描任务和结果 |
 | IP扫描日志 | `ip_scan_logs` | IP扫描日志 |
-
-如果根目录存在旧的 `config.json`，程序首次启动且数据库里没有系统配置时，会尝试迁移到 MySQL，并把原文件重命名为 `config.json.bak`。旧的 `output/history.json` 也会迁移到 MySQL，并重命名为 `.bak`。
 
 ### 最近更新摘要
 
