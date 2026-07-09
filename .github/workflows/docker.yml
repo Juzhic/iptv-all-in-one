@@ -18,15 +18,6 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
-      - name: Extract release notes from CHANGELOG.md
-        id: notes
-        run: |
-          # 提取最新版本块（从 ## [version] 到下一个 ## 之间）
-          NOTES=$(awk '/^## \[/{flag++} flag==1{print} flag==2{exit}' CHANGELOG.md)
-          # 写入文件，避免多行字符串转义问题
-          echo "$NOTES" > release_notes.md
-          echo "Extracted notes length: $(wc -l < release_notes.md) lines"
-
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -44,12 +35,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Sync CHANGELOG to Docker Hub Description
+        uses: peter-evans/dockerhub-description@v4
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          body_path: release_notes.md
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/iptv-all-in-one
+          readme-filepath: ./CHANGELOG.md
