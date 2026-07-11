@@ -13,7 +13,7 @@ import aiohttp
 import socket
 
 from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY, QUAKE_QUERY, HUNTER_QUERY, DAYDAYMAP_QUERY, FOFA_QUERY
+from .config_bridge import API_REQUEST_DELAY, DAYDAYMAP_API_DELAY
 from .channel_utils import is_blacklisted, normalize_cctv_name, classify_channel_full
 from .network import global_sem, get_session
 from .logger_bridge import logger
@@ -1799,6 +1799,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     from .key_manager import KeyManager
     km = KeyManager.instance()
     scan_cfg = config_bridge.get_scan_config()
+    search_queries = config_bridge.build_search_queries(scan_cfg)
 
     quake_key = km.get_key('quake')
     hunter_key = km.get_key('hunter')
@@ -1898,10 +1899,10 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         for prov_idx, prov in enumerate(selected_provs, 1):
             if len(selected_provs) > 1:
                 _log(f"[采集] === 省份 ({prov_idx}/{len(selected_provs)}): {prov or '全国'} ===")
-            qq = _with_filters(QUAKE_QUERY, "quake", prov)
-            hq = _with_filters(HUNTER_QUERY, "hunter", prov)
-            ddm_q = _with_filters(DAYDAYMAP_QUERY, "daydaymap", prov)
-            fofa_q = _with_filters(FOFA_QUERY, "fofa", prov)
+            qq = _with_filters(search_queries["quake"], "quake", prov)
+            hq = _with_filters(search_queries["hunter"], "hunter", prov)
+            ddm_q = _with_filters(search_queries["daydaymap"], "daydaymap", prov)
+            fofa_q = _with_filters(search_queries["fofa"], "fofa", prov)
 
             # 并行执行 API 平台扫描（带 key 轮换），各平台读取各自的扫描数量配置
             api_tasks = []

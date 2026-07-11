@@ -49,6 +49,7 @@
         </div>
         <div class="toolbar-pills">
           <span class="toolbar-pill">{{ provinceBadgeText }}</span>
+          <span class="toolbar-pill">关键词：{{ searchKeywordCount }} 条</span>
           <span class="toolbar-pill">{{ cScanStatusLabel }}</span>
           <span class="toolbar-pill">{{ scheduleBadgeText }}</span>
           <span class="toolbar-pill toolbar-pill--accent">{{ strategyBadgeText }}</span>
@@ -244,6 +245,38 @@
           </div>
         </section>
       </div>
+    </t-card>
+
+    <t-card size="small" :bordered="false" class="config-card">
+      <div class="config-header">
+        <div>
+          <div class="section-title section-title--flush">搜索关键词</div>
+          <p class="section-desc">关键词保存在数据库扫描配置中，每次新扫描都会读取最新内容，并自动转换为 Quake、Hunter、DayDayMap 和 Fofa 各自的查询语法。</p>
+        </div>
+
+        <div class="config-header-pills">
+          <span class="config-pill">当前 {{ searchKeywordCount }} 条</span>
+          <t-button variant="outline" size="small" @click="resetSearchKeywords">恢复默认</t-button>
+        </div>
+      </div>
+
+      <section class="config-panel search-keywords-panel">
+        <div class="config-field config-field--stack">
+          <div class="config-field-meta">
+            <label>主扫描搜索规则</label>
+            <span>每行一条，默认搜索正文；用 <code>&amp;&amp;</code> 连接表示同一页面必须同时包含多个关键词，用 <code>title:</code> 前缀可改为标题搜索。空行、重复项和以 # 开头的注释会自动忽略。</span>
+          </div>
+          <t-textarea
+            v-model="scanCfg.search_keywords"
+            placeholder="/iptv/live/zh_cn.js&#10;/tsfile/live/ && key=txiptv&#10;title:Tvheadend"
+            :autosize="{ minRows: 7, maxRows: 14 }"
+            class="search-keywords-editor"
+          />
+          <div class="field-inline-hint">
+            参考项目的核心特征是 <code>/iptv/live/zh_cn.js</code>；当前默认规则还覆盖 TXIPTV、1000.json 与 ZHGXTV 接口。
+          </div>
+        </div>
+      </section>
     </t-card>
 
     <t-card size="small" :bordered="false" class="config-card">
@@ -521,12 +554,21 @@ const platformLinkMap = {
   fofa: 'https://fofa.info/',
 }
 
+const DEFAULT_SEARCH_KEYWORDS = [
+  '/tsfile/live/ && key=txiptv',
+  '/iptv/live/1000.json?key=txiptv',
+  '/iptv/live/zh_cn.js',
+  '/iptv/live/1000.json',
+  '/ZHGXTV/Public/json/live_interface.txt',
+]
+
 const scanCfg = reactive({
   selected_provinces: [],
   operator: '',
   quake_size: 200,
   hunter_size: 200,
   daydaymap_size: 200,
+  search_keywords: DEFAULT_SEARCH_KEYWORDS.join('\n'),
   cost_saver_mode: true,
   enable_c_scan: true,
   update_time: '03:00',
@@ -596,6 +638,15 @@ const provinceSummary = computed(() => {
   if (count <= 4) return `已选：${scanCfg.selected_provinces.join('、')}`
   return `已选 ${count} 个省份`
 })
+
+const normalizedSearchKeywords = computed(() => (
+  (scanCfg.search_keywords || '')
+    .split('\n')
+    .map(keyword => keyword.trim())
+    .filter(keyword => keyword && !keyword.startsWith('#'))
+))
+
+const searchKeywordCount = computed(() => new Set(normalizedSearchKeywords.value).size)
 
 const provinceBadgeText = computed(() => {
   const count = scanCfg.selected_provinces.length
@@ -683,6 +734,10 @@ function clearAllProv() {
   scanCfg.selected_provinces = []
 }
 
+function resetSearchKeywords() {
+  scanCfg.search_keywords = DEFAULT_SEARCH_KEYWORDS.join('\n')
+}
+
 function onDailyFullChange() {
   if (scanCfg.daily_full_update) {
     scanCfg.update_days = [0, 1, 2, 3, 4, 5, 6]
@@ -766,6 +821,9 @@ async function loadConfig() {
     scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 200
     scanCfg.hunter_size = typeof cfg.hunter_size === 'number' ? cfg.hunter_size : 200
     scanCfg.daydaymap_size = typeof cfg.daydaymap_size === 'number' ? cfg.daydaymap_size : 200
+    scanCfg.search_keywords = Array.isArray(cfg.search_keywords)
+      ? cfg.search_keywords.join('\n')
+      : (cfg.search_keywords || DEFAULT_SEARCH_KEYWORDS.join('\n'))
     scanCfg.cost_saver_mode = cfg.cost_saver_mode !== false
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
     scanCfg.update_time = cfg.update_time || '03:00'
@@ -800,6 +858,15 @@ function validateScanConfig() {
   const errors = []
   if (scanCfg.fofa_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(scanCfg.fofa_email)) {
     errors.push('Fofa 邮箱格式不正确')
+  }
+  if (!searchKeywordCount.value) {
+    errors.push('请至少保留一条搜索关键词')
+  }
+  if (searchKeywordCount.value > 100) {
+    errors.push('搜索关键词不能超过 100 条')
+  }
+  if (normalizedSearchKeywords.value.some(keyword => keyword.length > 256)) {
+    errors.push('单条搜索关键词不能超过 256 个字符')
   }
   if (scanCfg.quake_size > 10000) {
     errors.push('Quake 扫描数量不能超过 10000')
@@ -884,6 +951,14 @@ async function saveScanConfig() {
         .map(url => url.trim())
         .filter(url => url)
     }
+    if (typeof data.search_keywords === 'string') {
+      data.search_keywords = [...new Set(
+        data.search_keywords
+          .split('\n')
+          .map(keyword => keyword.trim())
+          .filter(keyword => keyword && !keyword.startsWith('#')),
+      )]
+    }
 
     const res = await apiSaveScanConfig(data)
     // unwrap() 返回 json.data，成功时是配置对象
@@ -893,6 +968,9 @@ async function saveScanConfig() {
       const saved = { ...res }
       if (Array.isArray(saved.community_source_urls)) {
         saved.community_source_urls = saved.community_source_urls.join('\n')
+      }
+      if (Array.isArray(saved.search_keywords)) {
+        saved.search_keywords = saved.search_keywords.join('\n')
       }
       Object.assign(scanCfg, saved)
     }
@@ -1269,6 +1347,19 @@ onBeforeUnmount(() => {
 
 .config-panel--accent {
   background: var(--surface-panel-accent);
+}
+
+.search-keywords-panel,
+.search-keywords-editor {
+  width: 100%;
+}
+
+.search-keywords-panel code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-pill-bg);
+  color: var(--surface-accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .config-panel-head {

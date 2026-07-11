@@ -22,12 +22,12 @@ STABILITY_THRESHOLD_NATIONAL = 60
 STABILITY_THRESHOLD_LOCAL = 30
 MIN_BANDWIDTH = 20
 
-_IPTV_SEARCH_TERMS = [
-    ('and_body', ('/tsfile/live/', 'key=txiptv')),
-    ('body', '/iptv/live/1000.json?key=txiptv'),
-    ('body', '/iptv/live/zh_cn.js'),
-    ('body', '/iptv/live/1000.json'),
-    ('body', '/ZHGXTV/Public/json/live_interface.txt'),
+DEFAULT_SEARCH_KEYWORDS = [
+    '/tsfile/live/ && key=txiptv',
+    '/iptv/live/1000.json?key=txiptv',
+    '/iptv/live/zh_cn.js',
+    '/iptv/live/1000.json',
+    '/ZHGXTV/Public/json/live_interface.txt',
 ]
 
 QUALITY_PROFILE_NAMES = [
@@ -60,29 +60,99 @@ SUPPORTED_QUALITY_PROFILE_NAMES = [
 SUPPORTED_SEARCH_PLATFORMS = ['quake', 'hunter', 'daydaymap', 'fofa']
 
 
-def _format_search_term(term, body_field='body', title_field='title', title_operator=':'):
-    kind, value = term
-    if kind == 'body':
-        return f'{body_field}="{value}"'
-    if kind == 'title':
-        return f'{title_field}{title_operator}"{value}"'
-    if kind == 'and_body':
-        return '(' + ' && '.join(f'{body_field}="{item}"' for item in value) + ')'
-    raise ValueError(f'Unknown search term kind: {kind}')
+def _normalize_search_keywords(value):
+    """Normalize editable search rules while keeping a safe, useful fallback."""
+    if isinstance(value, str):
+        raw_items = value.splitlines()
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = DEFAULT_SEARCH_KEYWORDS
+
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if not item or item.startswith('#'):
+            continue
+        item = item[:256]
+        if item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+        if len(normalized) >= 100:
+            break
+    return normalized or list(DEFAULT_SEARCH_KEYWORDS)
 
 
-def _join_search_terms(body_field='body', title_field='title', title_operator=':'):
-    return ' || '.join(
-        _format_search_term(term, body_field=body_field, title_field=title_field, title_operator=title_operator)
-        for term in _IPTV_SEARCH_TERMS
-    )
+def _escape_query_value(value):
+    return value.replace('\\', '\\\\').replace('"', '\\"')
 
 
-_IPTV_SEARCH_QUERY = _join_search_terms()
-QUAKE_QUERY = _IPTV_SEARCH_QUERY
-HUNTER_QUERY = _join_search_terms(body_field='web.body', title_field='web.title')
-DAYDAYMAP_QUERY = _IPTV_SEARCH_QUERY
-FOFA_QUERY = _join_search_terms(title_operator='=')
+def _format_search_keyword(keyword, body_field='body', title_field='title', title_operator=':'):
+    """Convert one editable rule into a platform-specific query expression.
+
+    Rules use a deliberately small syntax: one rule per line, ``&&`` means all
+    fragments must match, and ``title:`` switches a fragment from body to title.
+    """
+    fragments = []
+    for raw_fragment in keyword.split('&&'):
+        fragment = raw_fragment.strip()
+        if not fragment:
+            continue
+        field = body_field
+        operator = '='
+        lower = fragment.lower()
+        if lower.startswith('title:'):
+            field = title_field
+            operator = title_operator
+            fragment = fragment[6:].strip()
+        elif lower.startswith('body:'):
+            fragment = fragment[5:].strip()
+        if not fragment:
+            continue
+        fragments.append(f'{field}{operator}"{_escape_query_value(fragment)}"')
+
+    if not fragments:
+        return ''
+    if len(fragments) == 1:
+        return fragments[0]
+    return '(' + ' && '.join(fragments) + ')'
+
+
+def _join_search_keywords(keywords, body_field='body', title_field='title', title_operator=':'):
+    expressions = [
+        _format_search_keyword(
+            keyword,
+            body_field=body_field,
+            title_field=title_field,
+            title_operator=title_operator,
+        )
+        for keyword in _normalize_search_keywords(keywords)
+    ]
+    return ' || '.join(expression for expression in expressions if expression)
+
+
+def build_search_queries(scan_config=None):
+    """Build a per-platform query snapshot from database-backed scan config."""
+    if scan_config is None:
+        scan_config = get_scan_config()
+    keywords = scan_config.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
+    return {
+        'quake': _join_search_keywords(keywords),
+        'hunter': _join_search_keywords(keywords, body_field='web.body', title_field='web.title'),
+        'daydaymap': _join_search_keywords(keywords),
+        'fofa': _join_search_keywords(keywords, title_operator='='),
+    }
+
+
+_DEFAULT_SEARCH_QUERIES = build_search_queries({'search_keywords': DEFAULT_SEARCH_KEYWORDS})
+QUAKE_QUERY = _DEFAULT_SEARCH_QUERIES['quake']
+HUNTER_QUERY = _DEFAULT_SEARCH_QUERIES['hunter']
+DAYDAYMAP_QUERY = _DEFAULT_SEARCH_QUERIES['daydaymap']
+FOFA_QUERY = _DEFAULT_SEARCH_QUERIES['fofa']
 MIN_WIDTH, MIN_HEIGHT = 1280, 720
 MAX_DELAY_MS = 2000
 
@@ -98,6 +168,7 @@ DEFAULT_SCAN_CONFIG = {
     "fofa_api_key": "",
     "fofa_email": "",
     "fofa_size": 200,
+    "search_keywords": list(DEFAULT_SEARCH_KEYWORDS),
     "ddgs_enabled": False,
     "quake_size": 200,
     "hunter_size": 200,
@@ -232,6 +303,9 @@ def _normalize_scan_config(raw_cfg):
     cfg['hunter_key'] = cfg.get('hunter_api_key', '')
     cfg['daydaymap_key'] = cfg.get('daydaymap_api_key', '')
     cfg['fofa_key'] = cfg.get('fofa_api_key', '')
+    cfg['search_keywords'] = _normalize_search_keywords(
+        cfg.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
+    )
 
     cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
     cfg['quality_discovery_platforms'] = _normalize_string_list(
