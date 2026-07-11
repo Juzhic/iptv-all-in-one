@@ -337,8 +337,8 @@ async def check_daydaymap_credit(api_key, query=None):
             #    需要用真实的查询语法，不能用 dummy
             if not query:
                 from . import config_bridge
-                query = config_bridge.get_scan_config().get(
-                    'daydaymap_query', config_bridge.DAYDAYMAP_QUERY)
+                cfg = config_bridge.get_scan_config()
+                query = config_bridge.build_search_queries(cfg)['daydaymap']
             import base64
             keyword_b64 = base64.b64encode(query.encode()).decode()
             scan_headers = {"api-key": key, "Content-Type": "application/json"}
