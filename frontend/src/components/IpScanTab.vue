@@ -154,14 +154,6 @@
       <div class="section-title">扫描结果</div>
       <div class="result-actions">
         <t-button 
-          theme="primary" 
-          size="small" 
-          :disabled="!hasSelectedRows"
-          @click="sendSelectedToTest"
-        >
-          送入选中测速
-        </t-button>
-        <t-button 
           variant="outline" 
           size="small" 
           :disabled="!summary.scanId"
@@ -243,7 +235,6 @@ import {
   apiIpScanResults,
   apiIpScanLatest,
   apiIpScanStats,
-  apiIpScanToTest,
   apiIpScanExportUrl,
   connectIpScanSse,
   shouldUseSse
@@ -521,12 +512,10 @@ async function startScan() {
       timeout: timeout.value,
     })
     
-    if (result.ok) {
-      MessagePlugin.success('IP扫描已启动')
-      scanRunning.value = true
-      progressVisible.value = true
-      connectSse()
-    }
+    MessagePlugin.success('IP扫描已启动')
+    scanRunning.value = true
+    progressVisible.value = true
+    connectSse()
   } catch (e) {
     MessagePlugin.error(e.message || '启动失败')
   } finally {
@@ -753,28 +742,6 @@ function viewChannels(row) {
     channelList.value = []
   }
   channelDialogVisible.value = true
-}
-
-// 送入测速
-async function sendSelectedToTest() {
-  if (selectedRowKeys.value.length === 0) {
-    MessagePlugin.warning('请先选择要送入测速的目标')
-    return
-  }
-  
-  try {
-    const result = await apiIpScanToTest({
-      scan_id: summary.value.scanId,
-      selected: selectedRowKeys.value,
-    })
-    
-    if (result.ok) {
-      MessagePlugin.success(result.message || '已送入测速')
-      selectedRowKeys.value = []
-    }
-  } catch (e) {
-    MessagePlugin.error(e.message || '送入测速失败')
-  }
 }
 
 // 导出M3U

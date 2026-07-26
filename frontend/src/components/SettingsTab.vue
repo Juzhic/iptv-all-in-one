@@ -546,10 +546,8 @@ async function resetDemo() {
     onConfirm: async () => {
       try {
         const res = await apiResetDemo()
-        if (res.ok) {
-          MessagePlugin.success('已恢复默认模板')
-          loadFile()
-        }
+        MessagePlugin.success('已恢复默认模板')
+        loadFile()
       } catch (_) {
         MessagePlugin.error('恢复失败')
       }

@@ -164,16 +164,12 @@ async function triggerTest() {
   starting.value = true
   try {
     const res = await apiTriggerTest()
-    if (res.ok) {
-      MessagePlugin.success('测试已启动')
-      clearTestLogs()
-      testProgress.running = true
-      testFinished.value = false
-      progressVisible.value = true
-      statusText.value = '运行中...'
-    } else {
-      MessagePlugin.error(res.error || '启动失败')
-    }
+    MessagePlugin.success('测试已启动')
+    clearTestLogs()
+    testProgress.running = true
+    testFinished.value = false
+    progressVisible.value = true
+    statusText.value = '运行中...'
   } catch (e) { MessagePlugin.error('启动失败: ' + e.message) }
   finally { starting.value = false }
 }

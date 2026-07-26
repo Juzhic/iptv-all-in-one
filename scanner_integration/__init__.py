@@ -1543,11 +1543,3 @@ def get_ip_scan_status():
         progress['total_channels'] = latest.get('total_channels', 0)
     
     return progress
-
-
-def send_channels_to_test(channels):
-    """将频道送入测速流水线。"""
-    # 这里可以调用测速模块的接口
-    # 暂时只返回成功
-    logger.info(f"[IP扫描] 送入测速: {len(channels)} 个频道")
-    return {'ok': True, 'count': len(channels)}

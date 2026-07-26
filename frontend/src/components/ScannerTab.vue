@@ -382,21 +382,16 @@ async function triggerScan() {
   triggerPending = true
   try {
     const res = await apiScanTrigger()
-    if (res.ok) {
-      MessagePlugin.success('扫描已启动')
-      scanLogLines.value = []
-      lastLogSeq = 0
-      wasRunning = true
-      progressVisible.value = true
-      phaseText.value = '扫描启动中...'
-      progressLabel.value = '正在连接扫描任务...'
-      connectScanStream()
-      startPoll()
-      setTimeout(() => { triggerPending = false }, 10000)
-    } else {
-      MessagePlugin.error(res.error || '启动失败')
-      triggerPending = false
-    }
+    MessagePlugin.success('扫描已启动')
+    scanLogLines.value = []
+    lastLogSeq = 0
+    wasRunning = true
+    progressVisible.value = true
+    phaseText.value = '扫描启动中...'
+    progressLabel.value = '正在连接扫描任务...'
+    connectScanStream()
+    startPoll()
+    setTimeout(() => { triggerPending = false }, 10000)
   } catch (_) {
     MessagePlugin.error('启动失败')
     triggerPending = false
@@ -416,12 +411,8 @@ async function stopScan() {
   scanStopping.value = true
   try {
     const res = await apiScanStop()
-    if (res.ok) {
-      MessagePlugin.success(res.message || '已请求终止')
-      await refreshStatus()
-    } else {
-      MessagePlugin.error(res.error || '终止失败')
-    }
+    MessagePlugin.success(res.message || '已请求终止')
+    await refreshStatus()
   } catch (_) {
     MessagePlugin.error('终止失败')
   } finally {
@@ -440,16 +431,12 @@ async function forceClear() {
   scanClearing.value = true
   try {
     const res = await apiScanForceClear()
-    if (res.ok) {
-      MessagePlugin.success(res.message || '扫描状态已清除')
-      // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
-      triggerPending = false
-      wasRunning = false
-      stopPoll()
-      await refreshStatus()
-    } else {
-      MessagePlugin.error(res.error || '清除失败')
-    }
+    MessagePlugin.success(res.message || '扫描状态已清除')
+    // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
+    triggerPending = false
+    wasRunning = false
+    stopPoll()
+    await refreshStatus()
   } catch (_) {
     MessagePlugin.error('清除失败')
   } finally {

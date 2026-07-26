@@ -483,16 +483,3 @@ def request_stop_ip_scan():
     _ip_scan_stop_requested = True
     scanner = get_ip_scanner()
     scanner.request_stop()
-
-
-def clear_ip_scan_stop():
-    """清除IP扫描停止标志"""
-    global _ip_scan_stop_requested
-    _ip_scan_stop_requested = False
-    scanner = get_ip_scanner()
-    scanner.clear_stop()
-
-
-def is_ip_scan_stop_requested():
-    """检查是否请求了停止"""
-    return _ip_scan_stop_requested

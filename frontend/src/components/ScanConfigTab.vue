@@ -103,10 +103,11 @@
                     <span class="province-summary-sub">已选 {{ scanCfg.selected_provinces.length }} / {{ PROVINCES.length }} 个省份</span>
                   </div>
 
-                  <t-space :size="8">
-                    <t-button variant="outline" size="small" @click="selectAllProv">全选</t-button>
-                    <t-button variant="outline" size="small" @click="clearAllProv">清空</t-button>
-                  </t-space>
+                  <t-button
+                    variant="outline"
+                    size="small"
+                    @click="toggleSelectAllProv"
+                  >{{ isAllProvincesSelected ? '取消全选' : '全选' }}</t-button>
                 </div>
 
                 <t-select
@@ -734,6 +735,16 @@ function clearAllProv() {
   scanCfg.selected_provinces = []
 }
 
+const isAllProvincesSelected = computed(() => scanCfg.selected_provinces.length === PROVINCES.length)
+
+function toggleSelectAllProv() {
+  if (isAllProvincesSelected.value) {
+    scanCfg.selected_provinces = []
+  } else {
+    scanCfg.selected_provinces = [...PROVINCES]
+  }
+}
+
 function resetSearchKeywords() {
   scanCfg.search_keywords = DEFAULT_SEARCH_KEYWORDS.join('\n')
 }
@@ -1088,14 +1099,10 @@ async function submitKey() {
       res = await apiScanKeyAdd(keyForm.platform, keyForm.key, email)
     }
 
-    if (res.ok) {
-      MessagePlugin.success(keyEditMode.value ? 'Key 已更新' : 'Key 已添加')
-      if (keyForm.platform === 'fofa') scanCfg.fofa_email = email
-      keyModalVisible.value = false
-      loadKeys()
-    } else {
-      MessagePlugin.error(res.error || '操作失败')
-    }
+    MessagePlugin.success(keyEditMode.value ? 'Key 已更新' : 'Key 已添加')
+    if (keyForm.platform === 'fofa') scanCfg.fofa_email = email
+    keyModalVisible.value = false
+    loadKeys()
   } catch (error) {
     MessagePlugin.error(error.message || '操作失败')
   }
