@@ -17,7 +17,10 @@ export function usePolling(fn, interval = 2000, options = {}) {
     if (!active || paused) return
     try {
       await fn()
-    } catch (_) {}
+      reportSuccess()
+    } catch (_) {
+      reportError()
+    }
     if (active && !paused) {
       timer = setTimeout(tick, getDelay())
     }

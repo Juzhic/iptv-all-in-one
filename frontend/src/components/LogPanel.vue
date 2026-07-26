@@ -8,7 +8,7 @@
       <span v-if="showCount" class="log-count">{{ entries.length }} 条</span>
     </div>
     <div class="log-panel" ref="panelRef">
-      <div v-for="(line, index) in entries" :key="index" class="log-line">
+      <div v-for="(line, index) in entries" :key="line.ts ? `${line.ts}-${index}` : index" class="log-line">
         <span v-if="line.ts || line.time" class="log-time">[{{ line.ts || line.time }}]</span>
         <span v-if="line.level" :class="levelClass(line.level)">[{{ levelText(line.level) }}]</span>
         <span :class="msgClass(line)">{{ line.message || line.msg || '' }}</span>

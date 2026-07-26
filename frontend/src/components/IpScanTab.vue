@@ -240,6 +240,7 @@ import {
   shouldUseSse
 } from '../api.js'
 import LogPanel from './LogPanel.vue'
+import { usePolling } from '../composables/usePolling.js'
 
 // 输入数据
 const targets = ref('')
@@ -528,6 +529,13 @@ async function stopScan() {
   scanStopping.value = true
   try {
     await apiIpScanStop()
+    scanRunning.value = false
+    progressVisible.value = false
+    stopPolling()
+    if (sseSource) {
+      sseSource.close()
+      sseSource = null
+    }
     MessagePlugin.success('已请求停止')
   } catch (e) {
     MessagePlugin.error(e.message || '停止失败')
@@ -609,7 +617,7 @@ async function connectSse() {
 }
 
 // 轮询状态
-let pollTimer = null
+const { start: startPolling, stop: stopPolling } = usePolling(pollOnce, 2000)
 
 async function pollOnce() {
   const [status, logs] = await Promise.all([
@@ -620,25 +628,6 @@ async function pollOnce() {
     updateStatus(status)
   }
   appendLogEntries(logs?.lines || logs || [])
-}
-
-function startPolling() {
-  stopPolling()
-  pollOnce().catch((e) => console.error('轮询失败:', e))
-  pollTimer = setInterval(async () => {
-    try {
-      await pollOnce()
-    } catch (e) {
-      console.error('轮询失败:', e)
-    }
-  }, 2000)
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
 }
 
 function updateStatus(data) {

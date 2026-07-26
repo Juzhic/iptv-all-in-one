@@ -310,16 +310,16 @@ const compareLoading = ref(false)
 const compareData = ref(null)
 
 // 日期初始化
-const now = new Date()
 const fmt = (d) => {
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
-const daysAgo = (n) => new Date(now.getTime() - n * 86400000)
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d }
+const today = new Date()
 startDate.value = fmt(daysAgo(3))
-endDate.value = fmt(now)
+endDate.value = fmt(today)
 
 const columns = [
   { colKey: 'finished_at', title: '执行时间', width: 180 },

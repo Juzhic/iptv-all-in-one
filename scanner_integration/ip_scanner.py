@@ -319,9 +319,9 @@ class IPScanner:
                             # 确定匹配的扫描类型
                             matched_type = self._determine_scan_type(path, scan_types)
                             return channels, matched_type
-            except:
+            except Exception:
                 continue
-        
+
         # 再尝试M3U接口
         for path in IPTV_M3U_PATHS:
             if self._stop_requested:
@@ -336,9 +336,9 @@ class IPScanner:
                         if channels:
                             matched_type = self._determine_scan_type(path, scan_types)
                             return channels, matched_type
-            except:
+            except Exception:
                 continue
-        
+
         return [], ''
     
     def _determine_scan_type(self, path, scan_types):

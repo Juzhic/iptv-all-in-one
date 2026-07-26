@@ -210,12 +210,7 @@ async function connectScanStream() {
       },
       scan_complete(event) {
         try {
-          const data = JSON.parse(event.data)
-          if (data?.ok === false) {
-            refreshStatus()
-          } else {
-            refreshStatus()
-          }
+          refreshStatus()
         } catch (_) {}
         disconnectScanStream()
       },
