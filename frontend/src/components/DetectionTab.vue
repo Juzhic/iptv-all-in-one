@@ -206,6 +206,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { useTheme } from '../composables/useTheme.js'
+import { usePolling } from '../composables/usePolling.js'
 import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
@@ -282,7 +283,12 @@ const detLogLines = ref([])
 const detAutoScroll = ref(true)
 const detLogPanelRef = ref(null)
 let detEventSource = null
-let detPollFallback = null
+
+const { start: startDetPollFallback, stop: stopDetPollFallback } = usePolling(async () => {
+  await loadDetectionLogs()
+  await loadDetectionStatus()
+  await loadDetRuns({ silent: true })
+}, 10000)
 
 async function connectDetectionStream() {
   disconnectDetectionSse()
@@ -329,22 +335,6 @@ function disconnectDetectionSse() {
     detEventSource = null
   }
   stopDetPollFallback()
-}
-
-function startDetPollFallback() {
-  stopDetPollFallback()
-  detPollFallback = setInterval(async () => {
-    await loadDetectionLogs()
-    await loadDetectionStatus()
-    await loadDetRuns({ silent: true })
-  }, 10000)
-}
-
-function stopDetPollFallback() {
-  if (detPollFallback) {
-    clearInterval(detPollFallback)
-    detPollFallback = null
-  }
 }
 
 async function refreshDetectionOverview() {

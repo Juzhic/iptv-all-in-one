@@ -272,7 +272,6 @@ import CopyIcon from 'tdesign-icons-vue-next/esm/components/copy.js'
 import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { platformTheme } from '../utils/platform.js'
-import { daysAgo as daysAgoUtil } from '../utils/date.js'
 import LogPanel from './LogPanel.vue'
 
 const { copyText: rawCopy } = useClipboard()
@@ -367,13 +366,13 @@ async function queryHistory() {
 
 function reset3Days() {
   startDate.value = fmt(daysAgo(3))
-  endDate.value = fmt(now)
+  endDate.value = fmt(today)
   queryHistory()
 }
 
 function resetWeek() {
   startDate.value = fmt(daysAgo(7))
-  endDate.value = fmt(now)
+  endDate.value = fmt(today)
   queryHistory()
 }
 
