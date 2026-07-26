@@ -156,23 +156,22 @@ async def scan_community_sources(session=None, extra_urls=None):
     # 去重 URL
     urls = list(dict.fromkeys(urls))
 
-    # 应用 GitHub 反代
-    github_proxy = cfg.get('github_proxy', '')
-    if not github_proxy:
-        # 自动探测可用的反代
-        github_proxy = await _detect_github_proxy()
-    if github_proxy:
-        urls = [_apply_proxy(url, github_proxy) for url in urls]
-        logger.info(f"[Community] 已启用 GitHub 反代: {github_proxy}")
-
-    logger.info(f"[Community] 开始扫描 {len(urls)} 个社区源")
-
     own_session = session is None
     if own_session:
         from .network import get_session
         session = get_session(limit=30, timeout=60, force_close=True)
 
     try:
+        # 应用 GitHub 反代
+        github_proxy = cfg.get('github_proxy', '')
+        if not github_proxy:
+            # 自动探测可用的反代（复用已有的 session）
+            github_proxy = await _detect_github_proxy(session)
+        if github_proxy:
+            urls = [_apply_proxy(url, github_proxy) for url in urls]
+            logger.info(f"[Community] 已启用 GitHub 反代: {github_proxy}")
+
+        logger.info(f"[Community] 开始扫描 {len(urls)} 个社区源")
         tasks = [fetch_community_m3u(session, url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -211,14 +210,18 @@ def _apply_proxy(url, proxy_prefix):
     return proxy_prefix + url
 
 
-async def _detect_github_proxy():
+async def _detect_github_proxy(session=None):
     """自动探测可用的 GitHub 反代。返回第一个可用的前缀，或空字符串。"""
     test_url = "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
-    for proxy in GITHUB_PROXY_CANDIDATES:
-        proxied = _apply_proxy(test_url, proxy)
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.head(
+    own_session = session is None
+    if own_session:
+        from .network import get_session
+        session = get_session(limit=5, timeout=10)
+    try:
+        for proxy in GITHUB_PROXY_CANDIDATES:
+            proxied = _apply_proxy(test_url, proxy)
+            try:
+                async with session.head(
                     proxied,
                     timeout=aiohttp.ClientTimeout(total=8),
                     allow_redirects=True,
@@ -226,7 +229,10 @@ async def _detect_github_proxy():
                     if resp.status == 200:
                         logger.info(f"[Community] 探测到可用反代: {proxy}")
                         return proxy
-        except Exception:
-            continue
-    logger.warning("[Community] 所有反代均不可用，将直连 GitHub（可能超时）")
-    return ""
+            except Exception:
+                continue
+        logger.warning("[Community] 所有反代均不可用，将直连 GitHub（可能超时）")
+        return ""
+    finally:
+        if own_session:
+            await session.close()

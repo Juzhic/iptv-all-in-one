@@ -136,302 +136,326 @@ def init_key_manager():
     return km
 
 
-async def check_quake_credit(api_key):
+async def check_quake_credit(api_key, session=None):
     """查询单个 Quake key 的积分。返回 dict 或 None。"""
+    own_session = session is None
+    if own_session:
+        from .network import get_session
+        session = get_session(limit=5, timeout=15)
     try:
         headers = {"X-QuakeToken": api_key}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            async with s.get("https://quake.360.net/api/v3/user/info",
-                             headers=headers) as resp:
-                logger.debug(f"[Quake] user/info status={resp.status}")
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.warning(f"[Quake] user/info HTTP {resp.status}: {text[:300]}")
-                    return {'error': f'HTTP {resp.status}'}
-                data = await resp.json()
-                logger.debug(f"[Quake] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
-                # 兼容 code 为 0 或 "0" 或 "200" 或 "success"
-                code = data.get('code')
-                if str(code) not in ('0', '200', 'success'):
-                    return {'error': data.get('message', f'查询失败 (code={code})')}
-                d = data.get('data', {})
-                if not isinstance(d, dict):
-                    return {'error': f'返回 data 格式异常: {type(d)}'}
-                roles = d.get('role', [])
-                # 兼容多种字段名：month_remaining_credit / month_remaining_data / remaining_credit
-                month_remaining = _first_number(d, (
-                    'month_remaining_credit', 'month_remaining_data',
-                    'remaining_credit', 'month_remaining', 'credit',
-                ))
-                # 如果 month_remaining 没取到，退回 credit 字段
-                if month_remaining is None:
-                    month_remaining = _safe_number(d.get('credit', 0)) or 0
-                role_name = ''
-                role_limit = 0
-                if isinstance(roles, list) and roles:
-                    role_name = roles[0].get('fullname', '') if isinstance(roles[0], dict) else str(roles[0])
-                    role_limit = _safe_number(roles[0].get('credit', 0)) if isinstance(roles[0], dict) else 0
-                logger.info(f"[Quake] credit={month_remaining} role={role_name} role_limit={role_limit}")
-                return {
-                    'ok': True,
-                    'credit': _safe_number(d.get('credit', 0)) or 0,
-                    'month_remaining': month_remaining,
-                    'role': role_name,
-                    'role_limit': role_limit,
-                }
+        async with session.get("https://quake.360.net/api/v3/user/info",
+                         headers=headers) as resp:
+            logger.debug(f"[Quake] user/info status={resp.status}")
+            if resp.status != 200:
+                text = await resp.text()
+                logger.warning(f"[Quake] user/info HTTP {resp.status}: {text[:300]}")
+                return {'error': f'HTTP {resp.status}'}
+            data = await resp.json()
+            logger.debug(f"[Quake] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
+            # 兼容 code 为 0 或 "0" 或 "200" 或 "success"
+            code = data.get('code')
+            if str(code) not in ('0', '200', 'success'):
+                return {'error': data.get('message', f'查询失败 (code={code})')}
+            d = data.get('data', {})
+            if not isinstance(d, dict):
+                return {'error': f'返回 data 格式异常: {type(d)}'}
+            roles = d.get('role', [])
+            # 兼容多种字段名：month_remaining_credit / month_remaining_data / remaining_credit
+            month_remaining = _first_number(d, (
+                'month_remaining_credit', 'month_remaining_data',
+                'remaining_credit', 'month_remaining', 'credit',
+            ))
+            # 如果 month_remaining 没取到，退回 credit 字段
+            if month_remaining is None:
+                month_remaining = _safe_number(d.get('credit', 0)) or 0
+            role_name = ''
+            role_limit = 0
+            if isinstance(roles, list) and roles:
+                role_name = roles[0].get('fullname', '') if isinstance(roles[0], dict) else str(roles[0])
+                role_limit = _safe_number(roles[0].get('credit', 0)) if isinstance(roles[0], dict) else 0
+            logger.info(f"[Quake] credit={month_remaining} role={role_name} role_limit={role_limit}")
+            return {
+                'ok': True,
+                'credit': _safe_number(d.get('credit', 0)) or 0,
+                'month_remaining': month_remaining,
+                'role': role_name,
+                'role_limit': role_limit,
+            }
     except asyncio.TimeoutError:
         logger.warning("[Quake] user/info 请求超时 (15s)")
         return {'error': '请求超时'}
     except Exception as e:
         logger.warning(f"[Quake] check_quake_credit fatal: {e}")
         return {'error': str(e)}
+    finally:
+        if own_session:
+            await session.close()
 
 
-async def check_hunter_credit(api_key):
+async def check_hunter_credit(api_key, session=None):
     """Query Hunter openApi userInfo to get remaining points.
     Uses api-key parameter (openApi format).
     Response: data.rest_free_point (remaining), data.personal_info.user_name
     """
+    own_session = session is None
+    if own_session:
+        from .network import get_session
+        session = get_session(limit=5, timeout=15)
     try:
         key = api_key.strip()
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            # 1) openApi/userInfo — 直接返回剩余积分
-            try:
-                url = "https://hunter.qianxin.com/openApi/userInfo"
-                async with s.get(url, params={"api-key": key}) as resp:
-                    logger.debug(f"[Hunter] userInfo status={resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                        logger.debug(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
-                        d = data.get('data') or {}
-                        # 兼容 code 为 "0" / "200" / "2000" / 0 / 200
-                        if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
-                            points = _first_number(d, (
-                                'rest_free_point', 'rest_equity_point',
-                                'free_point', 'rest_point',
-                            ))
-                            day_limit = _first_number(d, ('day_free_point', 'daily_free_point'))
-                            personal = d.get('personal_info') or {}
-                            role = (personal.get('user_name', '')
-                                    if isinstance(personal, dict) else '')
-                            logger.info(f"[Hunter] points={points} day_limit={day_limit} role={role}")
-                            return {
-                                'ok': True,
-                                'points': points,
-                                'day_limit': day_limit,
-                                'role': role,
-                            }
-                        else:
-                            logger.warning(f"[Hunter] userInfo unexpected: code={data.get('code')} message={data.get('message', '')}")
+        # 1) openApi/userInfo — 直接返回剩余积分
+        try:
+            url = "https://hunter.qianxin.com/openApi/userInfo"
+            async with session.get(url, params={"api-key": key}) as resp:
+                logger.debug(f"[Hunter] userInfo status={resp.status}")
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    logger.debug(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
+                    d = data.get('data') or {}
+                    # 兼容 code 为 "0" / "200" / "2000" / 0 / 200
+                    if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
+                        points = _first_number(d, (
+                            'rest_free_point', 'rest_equity_point',
+                            'free_point', 'rest_point',
+                        ))
+                        day_limit = _first_number(d, ('day_free_point', 'daily_free_point'))
+                        personal = d.get('personal_info') or {}
+                        role = (personal.get('user_name', '')
+                                if isinstance(personal, dict) else '')
+                        logger.info(f"[Hunter] points={points} day_limit={day_limit} role={role}")
+                        return {
+                            'ok': True,
+                            'points': points,
+                            'day_limit': day_limit,
+                            'role': role,
+                        }
                     else:
-                        text = await resp.text()
-                        logger.warning(f"[Hunter] userInfo HTTP {resp.status}: {text[:300]}")
-            except asyncio.TimeoutError:
-                logger.debug("[Hunter] userInfo 请求超时 (15s)")
-            except Exception as e:
-                logger.debug(f"[Hunter] userInfo exception: {e}")
-
-            # 2) 回退：openApi/search 最小查询，从 rest_quota 解析
-            try:
-                import base64
-                dummy_query = base64.urlsafe_b64encode(b'test').decode().rstrip('=')
-                async with s.get("https://hunter.qianxin.com/openApi/search",
-                                 params={"api-key": key, "search": dummy_query,
-                                         "page": 1, "page_size": 1, "is_web": 1},
-                                 timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    logger.debug(f"[Hunter] search fallback status={resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                        d = data.get('data') or {}
-                        if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
-                            rq = str(d.get('rest_quota', ''))
-                            import re
-                            m = re.search(r'(\d+)', rq)
-                            points = int(m.group(1)) if m else None
-                            logger.debug(f"[Hunter] search rest_quota={rq} -> points={points}")
-                            return {'ok': True, 'points': points, 'role': ''}
-                        logger.warning(f"[Hunter] search unexpected: code={data.get('code')} message={data.get('message', '')}")
-                        return {'error': data.get('message', 'query failed')}
-                    elif resp.status == 403:
-                        return {'ok': True, 'points': 0, 'role': '',
-                                'error': '积分耗尽 (HTTP 403)'}
+                        logger.warning(f"[Hunter] userInfo unexpected: code={data.get('code')} message={data.get('message', '')}")
+                else:
                     text = await resp.text()
-                    logger.warning(f"[Hunter] search HTTP {resp.status}: {text[:300]}")
-                    return {'error': f'HTTP {resp.status}'}
-            except asyncio.TimeoutError:
-                logger.debug("[Hunter] search fallback 请求超时 (10s)")
-                return {'error': 'userInfo+search both timeout'}
-            except Exception as e:
-                logger.debug(f"[Hunter] search fallback exception: {e}")
-                return {'error': f'userInfo+search both failed: {e}'}
+                    logger.warning(f"[Hunter] userInfo HTTP {resp.status}: {text[:300]}")
+        except asyncio.TimeoutError:
+            logger.debug("[Hunter] userInfo 请求超时 (15s)")
+        except Exception as e:
+            logger.debug(f"[Hunter] userInfo exception: {e}")
+
+        # 2) 回退：openApi/search 最小查询，从 rest_quota 解析
+        try:
+            import base64
+            dummy_query = base64.urlsafe_b64encode(b'test').decode().rstrip('=')
+            async with session.get("https://hunter.qianxin.com/openApi/search",
+                             params={"api-key": key, "search": dummy_query,
+                                     "page": 1, "page_size": 1, "is_web": 1},
+                             timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                logger.debug(f"[Hunter] search fallback status={resp.status}")
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    d = data.get('data') or {}
+                    if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
+                        rq = str(d.get('rest_quota', ''))
+                        import re
+                        m = re.search(r'(\d+)', rq)
+                        points = int(m.group(1)) if m else None
+                        logger.debug(f"[Hunter] search rest_quota={rq} -> points={points}")
+                        return {'ok': True, 'points': points, 'role': ''}
+                    logger.warning(f"[Hunter] search unexpected: code={data.get('code')} message={data.get('message', '')}")
+                    return {'error': data.get('message', 'query failed')}
+                elif resp.status == 403:
+                    return {'ok': True, 'points': 0, 'role': '',
+                            'error': '积分耗尽 (HTTP 403)'}
+                text = await resp.text()
+                logger.warning(f"[Hunter] search HTTP {resp.status}: {text[:300]}")
+                return {'error': f'HTTP {resp.status}'}
+        except asyncio.TimeoutError:
+            logger.debug("[Hunter] search fallback 请求超时 (10s)")
+            return {'error': 'userInfo+search both timeout'}
+        except Exception as e:
+            logger.debug(f"[Hunter] search fallback exception: {e}")
+            return {'error': f'userInfo+search both failed: {e}'}
     except Exception as e:
         logger.warning(f"[Hunter] check_hunter_credit fatal: {e}")
         return {'error': str(e)}
+    finally:
+        if own_session:
+            await session.close()
 
 
-async def check_daydaymap_credit(api_key, query=None):
+async def check_daydaymap_credit(api_key, query=None, session=None):
     """Query DayDayMap credit / validate API key.
     The bffapi user-info endpoint requires a Bearer token (JWT from web login),
     which is different from the api-key used for scanning.
     Fallback: do a minimal search with the real query to verify key validity.
     """
+    own_session = session is None
+    if own_session:
+        from .network import get_session
+        session = get_session(limit=5, timeout=15)
     try:
         key = api_key.strip()
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            # 1) 尝试 bffapi user/info/query（需要 Bearer token，api-key 大概率不支持）
-            try:
-                auth_value = key if key.lower().startswith("bearer ") else f"Bearer {key}"
-                bff_headers = {
-                    "Authorization": auth_value,
-                    "api-key": key,
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Origin": "https://www.daydaymap.com",
-                    "Referer": "https://www.daydaymap.com/",
-                }
-                async with s.post(
-                    "https://www.daydaymap.com/bffapi/v1/user/info/query",
-                    headers=bff_headers, json={}) as resp:
-                    logger.debug(f"[DayDayMap] bffapi status={resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                        logger.debug(f"[DayDayMap] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
-                        d = data.get('data')
-                        code = data.get('code')
-                        if d and isinstance(d, dict) and str(code) in ('0', '200', '2000'):
-                            free_score = _first_number(d, (
-                                'freeUsableScore', 'free_usable_score',
-                                'dailyUsableScore', 'daily_usable_score',
-                                'freeScore', 'free_score',
-                            ))
-                            paid_score = _first_number(d, (
-                                'paidUsableScore', 'paid_usable_score',
-                                'equityUsableScore', 'equity_usable_score',
-                                'paidScore', 'paid_score',
-                            ))
-                            fallback_score = _first_number(d, (
-                                'usableScore', 'usable_score',
-                                'remainingScore', 'remaining_score',
-                                'balance', 'points', 'score', 'credit',
-                            ))
-                            if free_score is not None or paid_score is not None:
-                                credit = (free_score or 0) + (paid_score or 0)
-                            else:
-                                credit = fallback_score
-                            role = (d.get('vipLevel') or d.get('vip_level')
-                                    or d.get('username') or d.get('userName') or '')
-                            logger.info(f"[DayDayMap] credit={credit} free={free_score} paid={paid_score} role={role}")
-                            return {
-                                'ok': True, 'credit': credit,
-                                'free_score': free_score, 'paid_score': paid_score,
-                                'role': role,
-                            }
-                    else:
-                        logger.debug(f"[DayDayMap] bffapi HTTP {resp.status}")
-            except asyncio.TimeoutError:
-                logger.debug("[DayDayMap] bffapi 请求超时 (15s)")
-            except Exception:
-                pass
-
-            # 2) 回退：用 scan API 最小查询验证 key 有效性
-            #    需要用真实的查询语法，不能用 dummy
-            if not query:
-                from . import config_bridge
-                cfg = config_bridge.get_scan_config()
-                query = config_bridge.build_search_queries(cfg)['daydaymap']
-            import base64
-            keyword_b64 = base64.b64encode(query.encode()).decode()
-            scan_headers = {"api-key": key, "Content-Type": "application/json"}
-            async with s.post(
-                "https://www.daydaymap.com/api/v1/raymap/search/all",
-                headers=scan_headers,
-                json={"page": 1, "page_size": 1, "keyword": keyword_b64},
-                timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        # 1) 尝试 bffapi user/info/query（需要 Bearer token，api-key 大概率不支持）
+        try:
+            auth_value = key if key.lower().startswith("bearer ") else f"Bearer {key}"
+            bff_headers = {
+                "Authorization": auth_value,
+                "api-key": key,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://www.daydaymap.com",
+                "Referer": "https://www.daydaymap.com/",
+            }
+            async with session.post(
+                "https://www.daydaymap.com/bffapi/v1/user/info/query",
+                headers=bff_headers, json={}) as resp:
+                logger.debug(f"[DayDayMap] bffapi status={resp.status}")
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
+                    logger.debug(f"[DayDayMap] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
+                    d = data.get('data')
                     code = data.get('code')
-                    if code == 200:
-                        # Key 有效；API 不返回余额，标记为有效
-                        d = data.get('data') or {}
-                        total = _first_number(d, ('total',))
+                    if d and isinstance(d, dict) and str(code) in ('0', '200', '2000'):
+                        free_score = _first_number(d, (
+                            'freeUsableScore', 'free_usable_score',
+                            'dailyUsableScore', 'daily_usable_score',
+                            'freeScore', 'free_score',
+                        ))
+                        paid_score = _first_number(d, (
+                            'paidUsableScore', 'paid_usable_score',
+                            'equityUsableScore', 'equity_usable_score',
+                            'paidScore', 'paid_score',
+                        ))
+                        fallback_score = _first_number(d, (
+                            'usableScore', 'usable_score',
+                            'remainingScore', 'remaining_score',
+                            'balance', 'points', 'score', 'credit',
+                        ))
+                        if free_score is not None or paid_score is not None:
+                            credit = (free_score or 0) + (paid_score or 0)
+                        else:
+                            credit = fallback_score
+                        role = (d.get('vipLevel') or d.get('vip_level')
+                                or d.get('username') or d.get('userName') or '')
+                        logger.info(f"[DayDayMap] credit={credit} free={free_score} paid={paid_score} role={role}")
                         return {
-                            'ok': True,
-                            'credit': None,  # 无法通过 API key 查询具体余额
-                            'free_score': None,
-                            'paid_score': None,
-                            'role': f'有效 (共{total}条)' if total else '有效',
+                            'ok': True, 'credit': credit,
+                            'free_score': free_score, 'paid_score': paid_score,
+                            'role': role,
                         }
-                    msg = data.get('msg') or data.get('message') or ''
-                    return {'error': msg or f'API code={code}'}
-                elif resp.status == 403:
-                    return {'ok': True, 'credit': 0, 'free_score': None,
-                            'paid_score': None, 'role': '',
-                            'error': '积分耗尽 (HTTP 403)'}
-                return {'error': f'HTTP {resp.status}'}
+                else:
+                    logger.debug(f"[DayDayMap] bffapi HTTP {resp.status}")
+        except asyncio.TimeoutError:
+            logger.debug("[DayDayMap] bffapi 请求超时 (15s)")
+        except Exception:
+            pass
+
+        # 2) 回退：用 scan API 最小查询验证 key 有效性
+        #    需要用真实的查询语法，不能用 dummy
+        if not query:
+            from . import config_bridge
+            cfg = config_bridge.get_scan_config()
+            query = config_bridge.build_search_queries(cfg)['daydaymap']
+        import base64
+        keyword_b64 = base64.b64encode(query.encode()).decode()
+        scan_headers = {"api-key": key, "Content-Type": "application/json"}
+        async with session.post(
+            "https://www.daydaymap.com/api/v1/raymap/search/all",
+            headers=scan_headers,
+            json={"page": 1, "page_size": 1, "keyword": keyword_b64},
+            timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                code = data.get('code')
+                if code == 200:
+                    # Key 有效；API 不返回余额，标记为有效
+                    d = data.get('data') or {}
+                    total = _first_number(d, ('total',))
+                    return {
+                        'ok': True,
+                        'credit': None,  # 无法通过 API key 查询具体余额
+                        'free_score': None,
+                        'paid_score': None,
+                        'role': f'有效 (共{total}条)' if total else '有效',
+                    }
+                msg = data.get('msg') or data.get('message') or ''
+                return {'error': msg or f'API code={code}'}
+            elif resp.status == 403:
+                return {'ok': True, 'credit': 0, 'free_score': None,
+                        'paid_score': None, 'role': '',
+                        'error': '积分耗尽 (HTTP 403)'}
+            return {'error': f'HTTP {resp.status}'}
     except Exception as e:
         return {'error': str(e)}
+    finally:
+        if own_session:
+            await session.close()
 
 
 async def check_all_quake_credits():
     """查询所有 Quake key 的积分。"""
+    from .network import get_session
     km = KeyManager.instance()
     keys = km.get_all_keys('quake')
     results = []
-    for key in keys:
-        info = await check_quake_credit(key)
-        credit = _safe_number(info.get('month_remaining')) if info.get('ok') else 0
-        role_limit = _safe_number(info.get('role_limit'))
-        if info.get('ok') and credit is not None:
-            km.update_credit('quake', key, credit)
-        else:
-            credit = None
-        results.append({
-            'key_suffix': f"...{key[-6:]}",
-            'credit': credit,
-            'role': info.get('role', ''),
-            'role_limit': role_limit,
-            'error': info.get('error', ''),
-        })
+    async with get_session(limit=5, timeout=15) as session:
+        for key in keys:
+            info = await check_quake_credit(key, session=session)
+            credit = _safe_number(info.get('month_remaining')) if info.get('ok') else 0
+            role_limit = _safe_number(info.get('role_limit'))
+            if info.get('ok') and credit is not None:
+                km.update_credit('quake', key, credit)
+            else:
+                credit = None
+            results.append({
+                'key_suffix': f"...{key[-6:]}",
+                'credit': credit,
+                'role': info.get('role', ''),
+                'role_limit': role_limit,
+                'error': info.get('error', ''),
+            })
     return results
 
 
 async def check_all_hunter_credits():
     """Query all Hunter key/token points."""
+    from .network import get_session
     km = KeyManager.instance()
     keys = km.get_all_keys('hunter')
     results = []
-    for key in keys:
-        info = await check_hunter_credit(key)
-        credit = _safe_number(info.get('points')) if info.get('ok') else None
-        if credit is not None:
-            km.update_credit('hunter', key, credit)
-        results.append({
-            'key_suffix': f"...{key[-6:]}",
-            'credit': credit,
-            'role': info.get('role', ''),
-            'role_limit': None,
-            'error': info.get('error', ''),
-        })
+    async with get_session(limit=5, timeout=15) as session:
+        for key in keys:
+            info = await check_hunter_credit(key, session=session)
+            credit = _safe_number(info.get('points')) if info.get('ok') else None
+            if credit is not None:
+                km.update_credit('hunter', key, credit)
+            results.append({
+                'key_suffix': f"...{key[-6:]}",
+                'credit': credit,
+                'role': info.get('role', ''),
+                'role_limit': None,
+                'error': info.get('error', ''),
+            })
     return results
 
 
 async def check_all_daydaymap_credits():
     """Query all DayDayMap key/token points."""
+    from .network import get_session
     km = KeyManager.instance()
     keys = km.get_all_keys('daydaymap')
     results = []
-    for key in keys:
-        info = await check_daydaymap_credit(key)
-        credit = _safe_number(info.get('credit')) if info.get('ok') else None
-        if credit is not None:
-            km.update_credit('daydaymap', key, credit)
-        results.append({
-            'key_suffix': f"...{key[-6:]}",
-            'credit': credit,
-            'role': info.get('role', ''),
-            'role_limit': None,
-            'error': info.get('error', ''),
-        })
+    async with get_session(limit=5, timeout=15) as session:
+        for key in keys:
+            info = await check_daydaymap_credit(key, session=session)
+            credit = _safe_number(info.get('credit')) if info.get('ok') else None
+            if credit is not None:
+                km.update_credit('daydaymap', key, credit)
+            results.append({
+                'key_suffix': f"...{key[-6:]}",
+                'credit': credit,
+                'role': info.get('role', ''),
+                'role_limit': None,
+                'error': info.get('error', ''),
+            })
     return results
 
 

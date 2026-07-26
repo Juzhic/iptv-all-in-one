@@ -33,7 +33,12 @@ function checkStatus(r) {
 function unwrap(json) {
   if (json && typeof json === 'object' && 'ok' in json) {
     if (!json.ok) throw new Error(json.error || '请求失败')
-    return json.data ?? json
+    const data = json.data ?? json
+    // 保留顶层 message 字段，供调用方展示后端提示
+    if (json.message && data && typeof data === 'object' && !('message' in data)) {
+      data.message = json.message
+    }
+    return data
   }
   return json
 }
@@ -297,7 +302,7 @@ export function apiPersistentPriority(url, priority) {
   return postJSON('/api/scan/persistent/priority', { url, priority })
 }
 
-// ─── SSE 连接 ───
+// ─── SSE 连接（带自动重连） ───
 
 let runtimeCapabilityPromise = null
 
@@ -327,35 +332,73 @@ export async function shouldUseSse() {
   return runtime?.sse?.enabled === true
 }
 
+/**
+ * 创建带自动重连的 SSE 连接。
+ * 断线后自动重试（指数退避），重试耗尽才通知 onerror。
+ * @param {string} url - SSE 端点
+ * @param {object} handlers - 事件处理器（status, log, progress 等，含 onerror）
+ * @param {object} opts - 选项
+ * @param {number} opts.maxRetries - 最大重试次数（默认 5）
+ * @param {number} opts.baseDelay - 首次重连延迟 ms（默认 2000）
+ * @returns {{ close: function }}
+ */
+export function createSseConnection(url, handlers = {}, opts = {}) {
+  const maxRetries = opts.maxRetries ?? 5
+  const baseDelay = opts.baseDelay ?? 2000
+
+  let es = null
+  let retryCount = 0
+  let retryTimer = null
+  let closed = false
+
+  function connect() {
+    if (closed) return
+    es = new EventSource(url)
+
+    // 注册命名事件（跳过特殊键）
+    for (const [name, fn] of Object.entries(handlers)) {
+      if (name === 'onerror' || name === 'onFailed' || name === 'onReconnecting') continue
+      if (typeof fn === 'function') es.addEventListener(name, fn)
+    }
+
+    es.onerror = () => {
+      if (closed) return
+      es.close()
+      es = null
+
+      if (retryCount >= maxRetries) {
+        // 重试耗尽，通知上层切换轮询
+        if (handlers.onerror) handlers.onerror()
+        return
+      }
+      retryCount++
+      const delay = Math.min(baseDelay * Math.pow(2, retryCount - 1), 30000)
+      if (handlers.onReconnecting) handlers.onReconnecting(retryCount, delay)
+      retryTimer = setTimeout(connect, delay)
+    }
+  }
+
+  connect()
+
+  return {
+    close() {
+      closed = true
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+      if (es) { es.close(); es = null }
+    },
+  }
+}
+
 export function connectTestSse(handlers = {}) {
-  const es = new EventSource('/api/test/stream')
-  if (handlers.status) es.addEventListener('status', handlers.status)
-  if (handlers.progress) es.addEventListener('progress', handlers.progress)
-  if (handlers.log) es.addEventListener('log', handlers.log)
-  if (handlers.test_complete) es.addEventListener('test_complete', handlers.test_complete)
-  if (handlers.scheduler) es.addEventListener('scheduler', handlers.scheduler)
-  if (handlers.onerror) es.onerror = handlers.onerror
-  return es
+  return createSseConnection('/api/test/stream', handlers)
 }
 
 export function connectDetectionSse(handlers = {}) {
-  const es = new EventSource('/api/detection/stream')
-  if (handlers.status) es.addEventListener('status', handlers.status)
-  if (handlers.log) es.addEventListener('log', handlers.log)
-  if (handlers.cycle_start) es.addEventListener('cycle_start', handlers.cycle_start)
-  if (handlers.cycle_end) es.addEventListener('cycle_end', handlers.cycle_end)
-  if (handlers.onerror) es.onerror = handlers.onerror
-  return es
+  return createSseConnection('/api/detection/stream', handlers)
 }
 
 export function connectScanSse(handlers = {}) {
-  const es = new EventSource('/api/scan/stream')
-  if (handlers.status) es.addEventListener('status', handlers.status)
-  if (handlers.progress) es.addEventListener('progress', handlers.progress)
-  if (handlers.log) es.addEventListener('log', handlers.log)
-  if (handlers.scan_complete) es.addEventListener('scan_complete', handlers.scan_complete)
-  if (handlers.onerror) es.onerror = handlers.onerror
-  return es
+  return createSseConnection('/api/scan/stream', handlers)
 }
 
 // ─── IP扫描 ───
@@ -388,17 +431,10 @@ export function apiIpScanStats(scanId) {
   const params = scanId ? '?scan_id=' + encodeURIComponent(scanId) : ''
   return fetchJSON('/api/ip-scan/stats' + params)
 }
-export function apiIpScanToTest(data) {
-  return postJSON('/api/ip-scan/to-test', data)
-}
 export function apiIpScanExportUrl(scanId) {
   return '/api/ip-scan/export?scan_id=' + encodeURIComponent(scanId)
 }
 
 export function connectIpScanSse(handlers = {}) {
-  const es = new EventSource('/api/ip-scan/stream')
-  if (handlers.log) es.addEventListener('log', handlers.log)
-  if (handlers.status) es.addEventListener('status', handlers.status)
-  if (handlers.onerror) es.onerror = handlers.onerror
-  return es
+  return createSseConnection('/api/ip-scan/stream', handlers)
 }

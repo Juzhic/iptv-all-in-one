@@ -78,7 +78,7 @@
             <t-option v-for="p in detailProvinces" :key="p" :value="p" :label="p" />
           </t-select>
           <div style="flex:1"></div>
-          <t-button variant="outline" size="small" @click="selectAllDetail">全选/取消</t-button>
+          <t-button variant="outline" size="small" @click="selectAllDetail">{{ isAllDetailSelected ? '取消全选' : '全选' }}</t-button>
           <t-button theme="primary" size="small" @click="exportDetailM3U">导出 M3U</t-button>
           <t-button theme="primary" size="small" variant="outline" @click="exportDetailCSV">导出 CSV</t-button>
         </div>
@@ -231,7 +231,7 @@
         <t-tag theme="primary" variant="light">{{ total }} 条结果</t-tag>
       </div>
       <div class="legacy-actions-row">
-        <t-button variant="outline" size="small" @click="selectAllLegacy">全选/取消</t-button>
+        <t-button variant="outline" size="small" @click="selectAllLegacy">{{ isAllLegacySelected ? '取消全选' : '全选' }}</t-button>
       </div>
       <t-table
         :columns="legacyColumns"
@@ -596,6 +596,10 @@ async function openSourceDetail(sourceIp) {
   }
 }
 
+const isAllDetailSelected = computed(() =>
+  filteredDetailData.value.length > 0 && selectedDetailKeys.value.length === filteredDetailData.value.length
+)
+
 function selectAllDetail() {
   if (selectedDetailKeys.value.length === filteredDetailData.value.length) {
     selectedDetailKeys.value = []
@@ -675,16 +679,12 @@ async function triggerManualCheck() {
   try {
     const beforeStatus = await apiDetectionStatus().catch(() => null)
     const res = await apiPersistentManualCheck()
-    if (res.ok) {
-      MessagePlugin.success('已触发手动检测，完成后会自动刷新')
-      const completed = await waitForManualCheckCompletion(beforeStatus, token)
-      if (completed) {
-        MessagePlugin.success('手动检测完成，结果已刷新')
-      } else if (token === manualCheckPollToken) {
-        MessagePlugin.warning('手动检测时间较长，请稍后手动刷新')
-      }
-    } else {
-      MessagePlugin.error(res.error || '触发失败')
+    MessagePlugin.success('已触发手动检测，完成后会自动刷新')
+    const completed = await waitForManualCheckCompletion(beforeStatus, token)
+    if (completed) {
+      MessagePlugin.success('手动检测完成，结果已刷新')
+    } else if (token === manualCheckPollToken) {
+      MessagePlugin.warning('手动检测时间较长，请稍后手动刷新')
     }
   } catch (_) {
     MessagePlugin.error('触发失败')
@@ -698,11 +698,7 @@ async function triggerManualCheck() {
 async function recheckChannel(url) {
   try {
     const res = await apiPersistentRecheck(url)
-    if (res.ok) {
-      MessagePlugin.success('已触发重新检测')
-    } else {
-      MessagePlugin.error(res.error || '重新检测失败')
-    }
+    MessagePlugin.success('已触发重新检测')
   } catch (_) {
     MessagePlugin.error('重新检测失败')
   }
@@ -711,11 +707,7 @@ async function recheckChannel(url) {
 async function onPriorityChange(url, priority) {
   try {
     const res = await apiPersistentPriority(url, priority)
-    if (res.ok) {
-      MessagePlugin.success('优先级已更新')
-    } else {
-      MessagePlugin.error(res.error || '更新优先级失败')
-    }
+    MessagePlugin.success('优先级已更新')
   } catch (_) {
     MessagePlugin.error('更新优先级失败')
   }
@@ -879,6 +871,10 @@ function debouncedDetailFilterLoad() {
   clearTimeout(detailFilterTimer)
   detailFilterTimer = setTimeout(reloadDetailWithFilters, 350)
 }
+
+const isAllLegacySelected = computed(() =>
+  results.value.length > 0 && selectedKeys.value.length === results.value.length
+)
 
 function selectAllLegacy() {
   if (selectedKeys.value.length === results.value.length) {

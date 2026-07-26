@@ -101,17 +101,22 @@ def parse_h264_resolution(data: bytes):
     except Exception:
         return None, None
 
-async def get_video_info_light(url):
+async def get_video_info_light(url, session=None):
+    own_session = session is None
+    if own_session:
+        session = get_session(limit=5, timeout=5)
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {'Range': 'bytes=0-65535'}
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                data = await resp.content.read(65536)
+        headers = {'Range': 'bytes=0-65535'}
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            data = await resp.content.read(65536)
         w, h = parse_h264_resolution(data)
         if w and h:
             return (f"{w}×{h}", "h264")
     except Exception:
         pass
+    finally:
+        if own_session:
+            await session.close()
     return await get_video_info(url)
 
 async def get_video_info(url):
@@ -367,7 +372,7 @@ async def deep_filter_batch(batch, sem, session):
             src['delay'] = perf['delay']
             src['bandwidth'] = perf['bandwidth']
             src['stability'] = perf['stability']
-            res, codec = await get_video_info_light(src['url'])
+            res, codec = await get_video_info_light(src['url'], session=session)
             src['resolution'] = res
             src['codec'] = codec
             return src

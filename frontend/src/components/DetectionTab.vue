@@ -409,11 +409,7 @@ function updateDetectionCountdown() {
 async function recheckChannel(url) {
   try {
     const res = await apiPersistentRecheck(url)
-    if (res.ok) {
-      MessagePlugin.success('已触发重新检测')
-    } else {
-      MessagePlugin.error(res.error || '重新检测失败')
-    }
+    MessagePlugin.success('已触发重新检测')
   } catch (_) {
     MessagePlugin.error('重新检测失败')
   }

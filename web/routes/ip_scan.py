@@ -250,35 +250,6 @@ def api_ip_scan_stats():
 
 # ─────────────── IP扫描结果操作 API ───────────────
 
-@ip_scan_bp.route('/api/ip-scan/to-test', methods=['POST'])
-def api_ip_scan_to_test():
-    """将IP扫描结果送入测速。"""
-    data = request.get_json(silent=True) or {}
-    scan_id = data.get('scan_id')
-    selected = data.get('selected', [])
-    
-    if not scan_id:
-        return jsonify({'ok': False, 'error': '缺少scan_id'}), 400
-    
-    try:
-        # 获取选中的频道
-        channels = db.get_ip_scan_channels(scan_id, selected)
-        
-        if not channels:
-            return jsonify({'ok': False, 'error': '没有找到可测速的频道'}), 400
-        
-        # 送入测速流水线
-        scanner = _get_ip_scanner()
-        if scanner:
-            result = scanner.send_channels_to_test(channels)
-            return jsonify({'ok': True, 'message': f'已送入 {len(channels)} 个频道', 'data': result})
-        else:
-            return jsonify({'ok': False, 'error': '扫描模块未初始化'}), 503
-            
-    except Exception as e:
-        logger.error(f"送入测速失败: {e}")
-        return jsonify({'ok': False, 'error': str(e)})
-
 
 @ip_scan_bp.route('/api/ip-scan/export', methods=['GET'])
 def api_ip_scan_export():
