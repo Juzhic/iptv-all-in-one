@@ -3766,7 +3766,7 @@ def get_ip_scan_channels(scan_id, targets=None):
                         'source_ip': row['ip'],
                         'source_port': row['port']
                     })
-        except:
+        except Exception:
             continue
     
     return channels

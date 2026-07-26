@@ -101,6 +101,7 @@
 <script setup>
 import { ref, computed, onMounted, provide, nextTick, reactive, onBeforeUnmount, defineAsyncComponent, watch } from 'vue'
 import { useTheme } from './composables/useTheme.js'
+import { usePolling } from './composables/usePolling.js'
 import { useDialogDrag } from './composables/useDialogDrag.js'
 import { apiGetInitial, apiGetProgress, connectTestSse, shouldUseSse } from './api.js'
 
@@ -293,11 +294,10 @@ async function loadInitialData() {
 
 let lastLogSeq = 0
 let testEventSource = null
-let pollFallbackTimer = null
 let streamConnecting = false
 
 function hasActiveTestTransport() {
-  return Boolean(testEventSource || pollFallbackTimer || streamConnecting)
+  return Boolean(testEventSource || streamConnecting)
 }
 
 function handleSseStatus(e) {
@@ -403,21 +403,8 @@ async function connectTestStream() {
   }
 }
 
-function disconnectTestSse() {
-  if (testEventSource) {
-    testEventSource.close()
-    testEventSource = null
-  }
-  stopPollFallback()
-}
-
-function startPollFallback() {
-  stopPollFallback()
-  pollFallbackTimer = setInterval(pollTestProgress, 2000)
-  pollTestProgress()
-}
-
-async function pollTestProgress() {
+const { start: startPollFallback, stop: stopPollFallback } = usePolling(async () => {
+  if (!testRunning.value) { stopPollFallback(); return }
   try {
     const data = await apiGetProgress(lastLogSeq)
     applyTestState(data)
@@ -436,13 +423,14 @@ async function pollTestProgress() {
       stopPollFallback()
     }
   } catch (_) {}
-}
+}, 2000)
 
-function stopPollFallback() {
-  if (pollFallbackTimer) {
-    clearInterval(pollFallbackTimer)
-    pollFallbackTimer = null
+function disconnectTestSse() {
+  if (testEventSource) {
+    testEventSource.close()
+    testEventSource = null
   }
+  stopPollFallback()
 }
 
 provide('testProgress', testProgress)
