@@ -295,11 +295,9 @@ async function connectDetectionStream() {
       status(e) {
         try {
           const status = JSON.parse(e.data)
-          const wasRunning = Boolean(detStatus.value?.cycle_running)
           detStatus.value = status
           updateDetectionCountdown()
-          if (!status.cycle_running && wasRunning) loadDetRuns({ silent: true })
-          else if (!status.cycle_running) loadDetRuns({ silent: true })
+          if (!status.cycle_running) loadDetRuns({ silent: true })
         } catch (_) {}
       },
       log(e) {

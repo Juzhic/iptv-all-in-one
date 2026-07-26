@@ -217,24 +217,6 @@ export function apiSaveScanConfig(data) {
   return postJSON('/api/scan/config', data)
 }
 
-// ─── 频道发现（清理候选：当前前端未消费，保留兼容后端路由）───
-export function apiDiscover() {
-  return fetchJSON('/api/discover', { timeout: 120000 })
-}
-export function apiDiscoverMerge(channels) {
-  return postJSON('/api/discover/merge', { channels })
-}
-
-// ─── 多方案管理（清理候选：当前前端未消费，保留兼容后端路由）───
-export function apiListProfiles() {
-  return fetchJSON('/api/profiles')
-}
-export function apiCreateProfile(data) {
-  return postJSON('/api/profiles', data)
-}
-export function apiDeleteProfile(name) {
-  return deleteJSON(`/api/profiles/${name}`)
-}
 export function apiScanKeys() {
   return fetchJSON('/api/scan/keys')
 }
@@ -305,6 +287,8 @@ export function apiPersistentPriority(url, priority) {
 // ─── SSE 连接（带自动重连） ───
 
 let runtimeCapabilityPromise = null
+let runtimeCapabilityExpiry = 0
+const RUNTIME_CAPABILITY_TTL = 60_000 // 1 分钟缓存
 
 function getSseOverride() {
   try {
@@ -319,7 +303,9 @@ function getSseOverride() {
 }
 
 export function apiRuntimeCapabilities() {
-  if (!runtimeCapabilityPromise) {
+  const now = Date.now()
+  if (!runtimeCapabilityPromise || now > runtimeCapabilityExpiry) {
+    runtimeCapabilityExpiry = now + RUNTIME_CAPABILITY_TTL
     runtimeCapabilityPromise = fetchJSON('/api/runtime', { timeout: 5000 }).catch(() => null)
   }
   return runtimeCapabilityPromise

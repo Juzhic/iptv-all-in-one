@@ -78,11 +78,11 @@
               <div class="insight-copy">
                 <div class="insight-name">{{ run.finished_at }}</div>
                 <div class="insight-desc">
-                  通过 {{ run.summary.total_passed }}/{{ run.summary.total_tested }}，
-                  频道覆盖 {{ getCoverage(run.summary).toFixed(1) }}%
+                  通过 {{ run.summary?.total_passed ?? '-' }}/{{ run.summary?.total_tested ?? '-' }}，
+                  频道覆盖 {{ run.summary ? getCoverage(run.summary).toFixed(1) : '-' }}%
                 </div>
               </div>
-              <div class="insight-value warn">{{ run.summary.pass_rate }}%</div>
+              <div class="insight-value warn">{{ run.summary?.pass_rate ?? '-' }}%</div>
             </div>
           </div>
         </t-card>

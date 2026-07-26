@@ -1,17 +1,3 @@
-export const qualityThemeMap = {
-  excellent: 'success',
-  good: 'primary',
-  fair: 'warning',
-  poor: 'danger',
-}
-
-export const qualityLabelMap = {
-  excellent: '优秀',
-  good: '良好',
-  fair: '一般',
-  poor: '较差',
-}
-
 export function qualityTheme(status) {
   if (status === 'good') return 'success'
   if (status === 'poor') return 'warning'

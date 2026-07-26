@@ -118,7 +118,6 @@ async def _validate_pending():
 
                 _db.update_persistent_check(
                     url, ok=True,
-                    stability=stability,
                     delay=delay,
                     bandwidth=bandwidth,
                     resolution=item.get('resolution'),

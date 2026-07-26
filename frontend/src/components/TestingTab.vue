@@ -89,6 +89,7 @@ import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import QRCode from 'qrcode'
 import { apiTriggerTest, apiStopTest, apiPreviewResult, apiDownloadUrl } from '../api.js'
 import { useTheme } from '../composables/useTheme.js'
+import { useClipboard } from '../composables/useClipboard.js'
 import LogPanel from './LogPanel.vue'
 
 const emit = defineEmits(['test-finished'])
@@ -146,18 +147,11 @@ async function generateQR() {
 watch(theme, () => { generateQR() })
 onMounted(() => { generateQR() })
 
+const { copyText } = useClipboard()
+
 async function copySubscribeUrl() {
-  try {
-    await navigator.clipboard.writeText(subscribeUrl.value)
-    MessagePlugin.success('订阅地址已复制')
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = subscribeUrl.value
-    ta.style.position = 'fixed'; ta.style.opacity = '0'
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
-    document.body.removeChild(ta)
-    MessagePlugin.success('订阅地址已复制')
-  }
+  const ok = await copyText(subscribeUrl.value)
+  if (ok) MessagePlugin.success('订阅地址已复制')
 }
 
 async function triggerTest() {
