@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 
 import aiohttp
 
-from . import config_bridge
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import KeyDepletedError, _is_stop_requested, normalize_cctv_name, classify_channel_full
 
 

@@ -5,9 +5,9 @@ import asyncio
 import socket
 from urllib.parse import urlparse
 
-from . import config_bridge
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import _is_stop_requested
 from .ip_extract import extract_channels_from_ip, smart_c_segment_scan
 
@@ -80,7 +80,9 @@ async def ddgs_scan(query=None, target_size=30, session=None):
                     success_ips.append((ip, port))
                     break
         if config_bridge.get_scan_config().get("enable_c_scan") and success_ips:
-            entries.extend(await smart_c_segment_scan(success_ips, session))
+            entries.extend(await smart_c_segment_scan(
+                success_ips, session, source_key='ddgs'
+            ))
         return entries
     except Exception as e:
         logger.warning(f"[DDGS] 搜索失败: {e}")

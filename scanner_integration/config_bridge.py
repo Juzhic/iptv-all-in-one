@@ -16,11 +16,11 @@ CONCURRENT_DEEP = 8
 GLOBAL_CONCURRENCY = 80
 API_REQUEST_DELAY = 1.5
 DAYDAYMAP_API_DELAY = 2.0
+PLATFORM_TIMEOUT = 180
 FAIL_THRESHOLD = 2
 AUTO_REFILL_QUAKE_SIZE = 10
 STABILITY_THRESHOLD_NATIONAL = 60
 STABILITY_THRESHOLD_LOCAL = 30
-MIN_BANDWIDTH = 20
 
 DEFAULT_SEARCH_KEYWORDS = [
     '/tsfile/live/ && key=txiptv',
@@ -156,6 +156,14 @@ FOFA_QUERY = _DEFAULT_SEARCH_QUERIES['fofa']
 MIN_WIDTH, MIN_HEIGHT = 1280, 720
 MAX_DELAY_MS = 2000
 
+DEFAULT_QUALITY_THRESHOLDS = {
+    "stability_high": 60,
+    "stability_low": 30,
+    "max_delay_ms": 2000,
+    # Scanner bandwidth is stored and displayed in MB/s.
+    "min_bandwidth_MBps": 0.3,
+}
+
 # ==================== 默认扫描配置 ====================
 DEFAULT_SCAN_CONFIG = {
     "quake_api_keys": [],          # 多 key 列表（优先）
@@ -190,6 +198,8 @@ DEFAULT_SCAN_CONFIG = {
     "c_scan_limit": 50,
     "c_segment_max_segments": 8,
     "c_segment_max_total_ips": 200,
+    "c_segment_per_source_max_segments": 2,
+    "c_segment_per_source_max_ips": 50,
     "detection_interval_minutes": 120,
     "detection_cycle_timeout_minutes": 30,
     "deletion_threshold": 3,
@@ -219,12 +229,7 @@ DEFAULT_SCAN_CONFIG = {
         "empty_rate": 0.15,
         "delay": 0.05,
     },
-    "quality_thresholds": {
-        "stability_high": 60,
-        "stability_low": 30,
-        "max_delay_ms": 2000,
-        "min_bandwidth_kbps": 300,
-    },
+    "quality_thresholds": dict(DEFAULT_QUALITY_THRESHOLDS),
 }
 
 _CONFIG_CACHE = None
@@ -287,6 +292,69 @@ def _normalize_string_list(value, allowed=None, default=None):
     return normalized
 
 
+def _as_bounded_float(value, default, minimum, maximum):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _normalize_quality_thresholds(value):
+    """Normalize quality gates and migrate the legacy KiB/s setting to MB/s."""
+    raw = value if isinstance(value, dict) else {}
+    thresholds = dict(DEFAULT_QUALITY_THRESHOLDS)
+    thresholds.update({
+        key: raw[key]
+        for key in DEFAULT_QUALITY_THRESHOLDS
+        if key in raw
+    })
+
+    # Before v1.8.1 the scanner stored KiB/s but exposed this value as kbps.
+    # Keep existing installations semantically equivalent on their first load.
+    if 'min_bandwidth_MBps' not in raw and 'min_bandwidth_kbps' in raw:
+        thresholds['min_bandwidth_MBps'] = _as_bounded_float(
+            raw.get('min_bandwidth_kbps'),
+            DEFAULT_QUALITY_THRESHOLDS['min_bandwidth_MBps'],
+            0.001,
+            1000,
+        ) / 1024
+
+    thresholds['stability_high'] = int(_as_bounded_float(
+        thresholds.get('stability_high'),
+        DEFAULT_QUALITY_THRESHOLDS['stability_high'],
+        0,
+        100,
+    ))
+    thresholds['stability_low'] = int(_as_bounded_float(
+        thresholds.get('stability_low'),
+        DEFAULT_QUALITY_THRESHOLDS['stability_low'],
+        0,
+        100,
+    ))
+    if thresholds['stability_high'] < thresholds['stability_low']:
+        thresholds['stability_high'] = thresholds['stability_low']
+    thresholds['max_delay_ms'] = int(_as_bounded_float(
+        thresholds.get('max_delay_ms'),
+        DEFAULT_QUALITY_THRESHOLDS['max_delay_ms'],
+        1,
+        120000,
+    ))
+    thresholds['min_bandwidth_MBps'] = round(_as_bounded_float(
+        thresholds.get('min_bandwidth_MBps'),
+        DEFAULT_QUALITY_THRESHOLDS['min_bandwidth_MBps'],
+        0.001,
+        1000,
+    ), 4)
+    return thresholds
+
+
+def get_quality_thresholds(scan_config=None):
+    """Return the canonical scanner quality gates in MB/s."""
+    cfg = scan_config if isinstance(scan_config, dict) else get_scan_config()
+    return _normalize_quality_thresholds(cfg.get('quality_thresholds'))
+
+
 def _normalize_scan_config(raw_cfg):
     """Merge defaults and legacy aliases into a single canonical config."""
     cfg = dict(DEFAULT_SCAN_CONFIG)
@@ -321,6 +389,9 @@ def _normalize_scan_config(raw_cfg):
     if normalized_profiles == LEGACY_DEFAULT_QUALITY_PROFILE_NAMES:
         normalized_profiles = list(QUALITY_PROFILE_NAMES)
     cfg['quality_query_profiles'] = normalized_profiles or list(QUALITY_PROFILE_NAMES)
+    cfg['quality_thresholds'] = _normalize_quality_thresholds(
+        cfg.get('quality_thresholds')
+    )
 
     # 数值范围验证
     int_ranges = {
@@ -332,6 +403,8 @@ def _normalize_scan_config(raw_cfg):
         'c_scan_limit': (1, 5000),
         'c_segment_max_segments': (1, 50),
         'c_segment_max_total_ips': (1, 5000),
+        'c_segment_per_source_max_segments': (1, 50),
+        'c_segment_per_source_max_ips': (1, 5000),
         'detection_interval_minutes': (0, 10080),
         'detection_cycle_timeout_minutes': (1, 1440),
         'deletion_threshold': (1, 100),

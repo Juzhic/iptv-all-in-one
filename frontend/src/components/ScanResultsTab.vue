@@ -115,7 +115,7 @@
               </div>
             </template>
             <template #delay="{ row }">{{ row.delay != null ? Math.round(row.delay) + ' ms' : '-' }}</template>
-            <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
+            <template #bandwidth="{ row }">{{ formatBandwidth(row.bandwidth) }}</template>
             <template #quality_status="{ row }">
               <t-tag :theme="qualityTheme(row.quality_status)" size="small" variant="light">{{ qualityLabel(row.quality_status) }}</t-tag>
             </template>
@@ -175,7 +175,7 @@
                 </div>
               </template>
               <template #avg_delay="{ row }">{{ row.avg_delay != null ? Math.round(row.avg_delay) + ' ms' : '-' }}</template>
-              <template #avg_bandwidth="{ row }">{{ row.avg_bandwidth != null ? Math.round(row.avg_bandwidth) + ' KB/s' : '-' }}</template>
+              <template #avg_bandwidth="{ row }">{{ formatBandwidth(row.avg_bandwidth) }}</template>
               <template #quality_dist="{ row }">
                 <t-space :size="4">
                   <t-tag v-if="row.good_count" theme="success" size="small" variant="light">{{ row.good_count }}好</t-tag>
@@ -269,7 +269,7 @@
           </div>
         </template>
         <template #delay="{ row }">{{ row.delay != null ? Math.round(row.delay) + ' ms' : '-' }}</template>
-        <template #bandwidth="{ row }">{{ row.bandwidth != null ? Math.round(row.bandwidth) + ' KB/s' : '-' }}</template>
+        <template #bandwidth="{ row }">{{ formatBandwidth(row.bandwidth) }}</template>
       </t-table>
     </template>
   </div>
@@ -455,7 +455,7 @@ const sourceColumns = [
   { colKey: 'channel_count', title: '频道数', width: 80, sorter: true },
   { colKey: 'avg_stability', title: '平均稳定性', width: 130, sorter: true },
   { colKey: 'avg_delay', title: '平均延迟', width: 110, sorter: true },
-  { colKey: 'avg_bandwidth', title: '平均带宽', width: 120, sorter: true },
+  { colKey: 'avg_bandwidth', title: '平均带宽(MB/s)', width: 130, sorter: true },
   { colKey: 'quality_dist', title: '质量分布', width: 220 },
   { colKey: 'first_seen', title: '首次发现', width: 110, sorter: true },
   { colKey: 'last_checked_at', title: '最近检测', width: 110, sorter: true },
@@ -471,7 +471,7 @@ const detailColumns = [
   { colKey: 'resolution', title: '分辨率', width: 110 },
   { colKey: 'stability', title: '稳定性', width: 120, sorter: true },
   { colKey: 'delay', title: '延迟(ms)', width: 100, sorter: true },
-  { colKey: 'bandwidth', title: '带宽(KB/s)', width: 120, sorter: true },
+  { colKey: 'bandwidth', title: '带宽(MB/s)', width: 120, sorter: true },
   { colKey: 'quality_status', title: '质量', width: 90, sorter: true },
   { colKey: 'priority', title: '优先级', width: 120 },
   { colKey: 'op', title: '操作', width: 100 },
@@ -487,7 +487,7 @@ const legacyColumns = [
   { colKey: 'resolution', title: '分辨率', width: 110 },
   { colKey: 'stability', title: '稳定性', width: 120, sorter: true },
   { colKey: 'delay', title: '延迟(ms)', width: 100, sorter: true },
-  { colKey: 'bandwidth', title: '带宽(KB/s)', width: 120, sorter: true },
+  { colKey: 'bandwidth', title: '带宽(MB/s)', width: 120, sorter: true },
   { colKey: 'source_ip', title: '来源IP', width: 140 },
 ]
 
@@ -514,6 +514,12 @@ function stabilityClass(v) {
   if (v >= 70) return 'stability-good'
   if (v >= 40) return 'stability-mid'
   return 'stability-bad'
+}
+
+function formatBandwidth(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  return `${numeric.toFixed(numeric < 1 ? 3 : 2)} MB/s`
 }
 
 const formatDate = formatDateShort
@@ -796,7 +802,7 @@ async function loadResults() {
       ...r,
       stability: Math.round(r.stability || 0),
       delay: r.delay != null ? Math.round(r.delay) : null,
-      bandwidth: r.bandwidth != null ? Math.round(r.bandwidth) : null,
+      bandwidth: r.bandwidth != null ? Number(r.bandwidth) : null,
     }))
     total.value = data.total || results.value.length
   } catch (e) {

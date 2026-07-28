@@ -45,11 +45,15 @@ def _quality_from_metrics(stability, delay, bandwidth):
     except (TypeError, ValueError):
         bandwidth_value = None
 
-    if stability_value >= 60 and (delay_value is None or delay_value < 2000) and (
-        bandwidth_value is None or bandwidth_value >= 300
-    ):
+    thresholds = config_bridge.get_quality_thresholds()
+    meets_transport_gate = (
+        delay_value is not None and delay_value <= thresholds['max_delay_ms']
+        and bandwidth_value is not None
+        and bandwidth_value >= thresholds['min_bandwidth_MBps']
+    )
+    if stability_value >= thresholds['stability_high'] and meets_transport_gate:
         return 'good'
-    if stability_value >= 30:
+    if stability_value >= thresholds['stability_low'] and meets_transport_gate:
         return 'poor'
     return 'unreachable'
 

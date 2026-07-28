@@ -7,10 +7,10 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY
-from .network import global_sem, get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..config_bridge import API_REQUEST_DELAY
+from ..network import global_sem, get_session
+from ..logger_bridge import logger
 from .shared import is_valid_stream_url, _is_stop_requested, classify_channel_full
 from .ip_extract import smart_c_segment_scan
 
@@ -105,5 +105,7 @@ async def zhgx_scan(size=10, session=None):
             break
         if lst: entries.extend(lst)
     if config_bridge.get_scan_config().get("enable_c_scan") and success:
-        entries.extend(await smart_c_segment_scan(success, session))
+        entries.extend(await smart_c_segment_scan(
+            success, session, source_key='zhgx'
+        ))
     return entries

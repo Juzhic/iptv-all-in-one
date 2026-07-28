@@ -45,6 +45,11 @@ def _row_quality_score(row, min_stability):
         return 0
     bandwidth = _safe_float(row.get('bandwidth'), 0)
     delay = _safe_float(row.get('delay'), 0)
+    thresholds = config_bridge.get_quality_thresholds()
+    if bandwidth < thresholds['min_bandwidth_MBps']:
+        return 0
+    if delay and delay > thresholds['max_delay_ms']:
+        return 0
     failures = _safe_float(row.get('consecutive_failures'), 0)
     status = (row.get('quality_status') or '').lower()
 
@@ -56,7 +61,7 @@ def _row_quality_score(row, min_stability):
         'circuit_breaker_skipped': -6,
     }.get(status, 0)
     delay_bonus = max(0, 3 - delay / 700) if delay else 1
-    bandwidth_bonus = min(8, bandwidth / 400) if bandwidth else 0
+    bandwidth_bonus = min(8, bandwidth / 0.4) if bandwidth else 0
     score = stability / 10 + bandwidth_bonus + delay_bonus + status_bonus - failures * 2
     return max(0, score)
 
@@ -297,6 +302,84 @@ async def scan_hot_segments(session, limit=None):
     return discovered
 
 
+def _build_quality_hotspot_candidates(hot_segments, limit, default_ports):
+    """Build a bounded round-robin candidate list across hotspot segments."""
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        return [], 0
+    if not hot_segments:
+        return [], 0
+
+    per_segment_cap = max(1, (limit + len(hot_segments) - 1) // len(hot_segments))
+    seen = set()
+    queues = []
+    for item in hot_segments:
+        segment = item.get('segment')
+        if not segment:
+            continue
+        preferred_hosts = []
+        for host in item.get('hosts', []):
+            try:
+                last = int(host.split('.')[-1])
+            except (ValueError, IndexError):
+                continue
+            for offset in (0, -1, 1, -2, 2, -3, 3):
+                value = last + offset
+                if 1 <= value <= 254:
+                    preferred_hosts.append(f"{segment}.{value}")
+
+        random_count = min(254, max(per_segment_cap * 2, 2))
+        random_hosts = [
+            f"{segment}.{i}"
+            for i in random.sample(range(1, 255), random_count)
+        ]
+        hosts = []
+        for host in preferred_hosts + random_hosts:
+            if host not in hosts:
+                hosts.append(host)
+
+        ports = []
+        for port in list(item.get('ports') or []) + list(default_ports or []):
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                continue
+            if port not in ports:
+                ports.append(port)
+            if len(ports) >= 6:
+                break
+
+        queue = []
+        for host in hosts:
+            for port in ports:
+                key = (host, port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                queue.append((host, port, item))
+                if len(queue) >= per_segment_cap:
+                    break
+            if len(queue) >= per_segment_cap:
+                break
+        if queue:
+            queues.append(queue)
+
+    candidates = []
+    while queues and len(candidates) < limit:
+        next_round = []
+        for queue in queues:
+            if len(candidates) >= limit:
+                next_round.append(queue)
+                continue
+            candidates.append(queue.pop(0))
+            if len(queue):
+                next_round.append(queue)
+        queues = next_round
+    covered_segments = len({item['segment'] for _, _, item in candidates})
+    return candidates, covered_segments
+
+
 async def scan_quality_hotspots(session, limit=None):
     """围绕历史高质量源的网段做定向补源。"""
     from .platforms import extract_channels_from_ip
@@ -310,62 +393,15 @@ async def scan_quality_hotspots(session, limit=None):
         logger.info("[ISP] 无质量热点段，跳过质量补源")
         return []
 
-    per_segment = max(2, limit // len(hot_segments))
     default_ports = cfg.get(
         'scan_ports', [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443])
-
-    candidates = []
-    seen = set()
-    for item in hot_segments:
-        segment = item['segment']
-        preferred_hosts = []
-        for host in item.get('hosts', []):
-            try:
-                last = int(host.split('.')[-1])
-            except (ValueError, IndexError):
-                continue
-            for offset in (0, -1, 1, -2, 2, -3, 3):
-                value = last + offset
-                if 1 <= value <= 254:
-                    preferred_hosts.append(f"{segment}.{value}")
-
-        random_hosts = [f"{segment}.{i}" for i in random.sample(range(1, 255), min(254, per_segment * 2))]
-        hosts = []
-        for host in preferred_hosts + random_hosts:
-            if host in hosts:
-                continue
-            hosts.append(host)
-            if len(hosts) >= per_segment:
-                break
-
-        ports = []
-        for port in list(item.get('ports') or []) + default_ports:
-            try:
-                port = int(port)
-            except (TypeError, ValueError):
-                continue
-            if port not in ports:
-                ports.append(port)
-            if len(ports) >= 6:
-                break
-
-        for host in hosts:
-            for port in ports:
-                key = (host, port)
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append((host, port, item))
-                if len(candidates) >= limit:
-                    break
-            if len(candidates) >= limit:
-                break
-        if len(candidates) >= limit:
-            break
+    candidates, covered_segments = _build_quality_hotspot_candidates(
+        hot_segments, limit, default_ports
+    )
 
     logger.info(
-        f"[ISP] 质量补源开始：热点段 {len(hot_segments)} 个，"
-        f"候选 {len(candidates)} 个"
+        f"[ISP] 质量补源开始：热点段请求 {len(hot_segments)} 个，"
+        f"实际覆盖 {covered_segments} 个，候选 {len(candidates)} 个"
     )
 
     discovered = []
