@@ -11,9 +11,38 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
-from . import config_bridge
-from .channel_utils import classify_channel_full
-from .logger_bridge import logger
+from .. import config_bridge
+from ..channel_utils import classify_channel_full, normalize_cctv_name
+from ..logger_bridge import logger
+
+# Quality-profile queries are intentionally separate from the editable main
+# query list: they ensure each scan spends part of its budget on known IPTV
+# interface families instead of letting broad rules crowd them out.
+def _quality_query_profile(name, label, keywords):
+    return {
+        'name': name,
+        'label': label,
+        **config_bridge.build_search_queries({'search_keywords': keywords}),
+    }
+
+
+QUALITY_QUERY_PROFILES = (
+    _quality_query_profile(
+        'txiptv_live', 'TXIPTV 直播接口',
+        ['/tsfile/live/ && key=txiptv', '/iptv/live/1000.json?key=txiptv'],
+    ),
+    _quality_query_profile(
+        'live_interface', '标准直播接口',
+        ['/iptv/live/zh_cn.js', '/iptv/live/1000.json'],
+    ),
+    _quality_query_profile(
+        'zhgx', 'ZHGXTV 接口',
+        ['/ZHGXTV/Public/json/live_interface.txt'],
+    ),
+    _quality_query_profile(
+        'tvheadend', 'Tvheadend', ['title:Tvheadend'],
+    ),
+)
 
 # ==================== KeyDepletedError ====================
 
@@ -146,6 +175,10 @@ def _build_yield_stat(stat_key, scope, platform, profile, profile_label, provinc
         'probed_hosts': stats.get('probed_hosts', 0),
         'extracted_channels': stats.get('extracted_channels', result_count),
         'c_segment_channels': stats.get('c_segment_channels', 0),
+        'c_segment_segments': stats.get('c_segment_segments', 0),
+        'c_segment_ips': stats.get('c_segment_ips', 0),
+        'c_segment_cache_skipped': stats.get('c_segment_cache_skipped', 0),
+        'c_segment_budget_skipped': stats.get('c_segment_budget_skipped', 0),
     }
 
 

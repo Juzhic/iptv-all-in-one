@@ -4,10 +4,10 @@
 import asyncio
 import base64
 
-from . import config_bridge
-from .config_bridge import PLATFORM_TIMEOUT
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..config_bridge import PLATFORM_TIMEOUT
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import (
     QUALITY_QUERY_PROFILES, KeyDepletedError,
     _is_stop_requested, _stats_set, _yield_stat_key, _build_yield_stat,
@@ -15,7 +15,9 @@ from .shared import (
     clean_url, remove_duplicate_national_channels, deduplicate,
 )
 from ..channel_utils import is_blacklisted
-from .ip_extract import extract_channels_from_ip
+from .ip_extract import (
+    extract_channels_from_ip, begin_c_segment_budget, end_c_segment_budget,
+)
 from .quake import quake_scan
 from .fofa import fofa_scan
 from .hunter import hunter_scan
@@ -167,7 +169,12 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         api_items = stats.get('api_items', 0) if isinstance(stats, dict) else 0
         probed = stats.get('probed_hosts', api_items) if isinstance(stats, dict) else api_items
         c_count = stats.get('c_segment_channels', 0) if isinstance(stats, dict) else 0
-        suffix = f"，C段补充 {c_count} 条" if c_count else ""
+        c_ips = stats.get('c_segment_ips', 0) if isinstance(stats, dict) else 0
+        c_segments = stats.get('c_segment_segments', 0) if isinstance(stats, dict) else 0
+        suffix = (
+            f"，C段 {c_segments} 段/{c_ips} IP，补充 {c_count} 条"
+            if c_segments or c_ips or c_count else ""
+        )
         return f"[采集] {name} 完成：API命中 {api_items} 个，探测 {probed} 个，提取频道 {result_count} 条{suffix}"
 
     if scan_cfg.get("cost_saver_mode", True) and not explicit_platforms:
@@ -178,6 +185,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         _log("[采集] 未启用任何平台且无 Hunter Key，请检查配置")
         return [], [], []
 
+    c_segment_budget_token = begin_c_segment_budget(scan_cfg)
     all_raw = []
     yield_stats = []
     async with get_session(limit=30, force_close=True) as scan_session:
@@ -482,4 +490,5 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         stat_key = row.get('stat_key')
         row['cleaned_channels'] = clean_counts.get(stat_key, 0)
     _log(f"[采集] 全部平台扫描完成，原始 {len(all_raw)} 条，清洗后 {len(clean)} 条")
+    end_c_segment_budget(c_segment_budget_token)
     return clean, actual_platforms, yield_stats

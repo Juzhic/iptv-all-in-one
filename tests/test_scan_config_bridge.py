@@ -33,6 +33,18 @@ class SearchKeywordConfigTests(unittest.TestCase):
 
         self.assertEqual(config_bridge.DEFAULT_SEARCH_KEYWORDS, cfg['search_keywords'])
 
+    def test_legacy_bandwidth_threshold_is_converted_to_mbps(self):
+        cfg = config_bridge._normalize_scan_config({
+            'quality_thresholds': {'min_bandwidth_kbps': 300},
+        })
+
+        self.assertNotIn('min_bandwidth_kbps', cfg['quality_thresholds'])
+        self.assertAlmostEqual(
+            300 / 1024,
+            cfg['quality_thresholds']['min_bandwidth_MBps'],
+            places=4,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

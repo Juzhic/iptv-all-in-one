@@ -6,10 +6,10 @@ import base64
 
 import aiohttp
 
-from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..config_bridge import API_REQUEST_DELAY
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import KeyDepletedError, _is_stop_requested, _retry_with_backoff, _stats_add, _stats_set
 from .ip_extract import extract_channels_from_ip, smart_c_segment_scan
 
@@ -121,7 +121,7 @@ async def fofa_scan(api_key=None, query=None, target_size=None, session=None, st
             break
     logger.info(f"[Fofa] 总共提取频道: {len(collected_entries)}")
     if config_bridge.get_scan_config().get("enable_c_scan") and collected_success:
-        c_entries = await smart_c_segment_scan(collected_success, session)
+        c_entries = await smart_c_segment_scan(collected_success, session, stats=stats)
         _stats_add(stats, 'c_segment_channels', len(c_entries))
         collected_entries.extend(c_entries)
     _stats_set(stats, 'extracted_channels', len(collected_entries))

@@ -7,10 +7,10 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from . import config_bridge
-from .config_bridge import API_REQUEST_DELAY
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..config_bridge import API_REQUEST_DELAY
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import KeyDepletedError, _is_stop_requested
 
 

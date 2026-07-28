@@ -26,6 +26,8 @@ RUN_LOGS_RETENTION_DAYS = 30
 SCAN_LOGS_RETENTION_DAYS = 7
 PERSISTENT_RETENTION_DAYS = 90
 QUALITY_HISTORY_RETENTION_DAYS = 90
+SCANNER_BANDWIDTH_UNIT_MARKER = 'scanner_bandwidth_unit'
+SCANNER_BANDWIDTH_UNIT_MBPS = 'MB/s'
 
 # 全局写入锁
 _write_lock = threading.Lock()
@@ -783,6 +785,10 @@ def init_db():
             probed_hosts INT DEFAULT 0,
             extracted_channels INT DEFAULT 0,
             c_segment_channels INT DEFAULT 0,
+            c_segment_segments INT DEFAULT 0,
+            c_segment_ips INT DEFAULT 0,
+            c_segment_cache_skipped INT DEFAULT 0,
+            c_segment_budget_skipped INT DEFAULT 0,
             cleaned_channels INT DEFAULT 0,
             deduped_channels INT DEFAULT 0,
             candidate_channels INT DEFAULT 0,
@@ -1192,6 +1198,10 @@ def _ensure_schema_migrations(conn):
             'probed_hosts': 'INT DEFAULT 0',
             'extracted_channels': 'INT DEFAULT 0',
             'c_segment_channels': 'INT DEFAULT 0',
+            'c_segment_segments': 'INT DEFAULT 0',
+            'c_segment_ips': 'INT DEFAULT 0',
+            'c_segment_cache_skipped': 'INT DEFAULT 0',
+            'c_segment_budget_skipped': 'INT DEFAULT 0',
             'cleaned_channels': 'INT DEFAULT 0',
             'deduped_channels': 'INT DEFAULT 0',
             'candidate_channels': 'INT DEFAULT 0',
@@ -1316,6 +1326,102 @@ def _ensure_schema_migrations(conn):
             _execute_create_index_compat(conn, sql)
         except Exception as e:
             logger.warning(f"[DB] 迁移索引失败: {e}")
+
+    try:
+        _migrate_scanner_bandwidth_to_mbps(conn)
+    except Exception as e:
+        logger.warning(f"[DB] 扫描带宽单位迁移失败: {e}")
+    try:
+        _ensure_scan_yield_scan_id_collation(conn)
+    except Exception as e:
+        logger.warning(f"[DB] scan_yield_stats 排序规则迁移失败: {e}")
+
+
+def _migrate_scanner_bandwidth_to_mbps(conn):
+    """Convert pre-v1.8.1 scanner measurements from KiB/s to MB/s once."""
+    marker = conn.execute(
+        "SELECT content FROM config_data WHERE `key` = %s",
+        (SCANNER_BANDWIDTH_UNIT_MARKER,),
+    ).fetchone()
+    if marker and marker.get('content') == SCANNER_BANDWIDTH_UNIT_MBPS:
+        return
+
+    migrated_tables = []
+    for table_name in ('scan_results', 'persistent_scan_results', 'quality_history'):
+        if 'bandwidth' not in _describe_table_columns(conn, table_name):
+            continue
+        conn.execute(
+            f"UPDATE `{table_name}` SET bandwidth = bandwidth / 1024.0 "
+            "WHERE bandwidth IS NOT NULL"
+        )
+        migrated_tables.append(table_name)
+
+    config_row = conn.execute(
+        "SELECT content FROM config_data WHERE `key` = %s", ('scan_config',)
+    ).fetchone()
+    if config_row:
+        try:
+            scan_config = json.loads(config_row.get('content') or '{}')
+        except (TypeError, ValueError, json.JSONDecodeError):
+            scan_config = None
+        thresholds = scan_config.get('quality_thresholds') if isinstance(scan_config, dict) else None
+        if isinstance(thresholds, dict) and 'min_bandwidth_MBps' not in thresholds:
+            legacy_value = thresholds.get('min_bandwidth_kbps')
+            try:
+                thresholds['min_bandwidth_MBps'] = round(float(legacy_value) / 1024, 4)
+            except (TypeError, ValueError):
+                thresholds['min_bandwidth_MBps'] = 0.3
+            thresholds.pop('min_bandwidth_kbps', None)
+            conn.execute(
+                "UPDATE config_data SET content = %s, updated_at = %s WHERE `key` = %s",
+                (json.dumps(scan_config, ensure_ascii=False, indent=4), now_str(), 'scan_config'),
+            )
+
+    conn.execute(
+        """INSERT INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)
+           ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = VALUES(updated_at)""",
+        (SCANNER_BANDWIDTH_UNIT_MARKER, SCANNER_BANDWIDTH_UNIT_MBPS, now_str()),
+    )
+    logger.info(
+        "[DB] 扫描带宽已统一为 MB/s%s",
+        f"（已转换 {', '.join(migrated_tables)}）" if migrated_tables else '',
+    )
+
+
+def _ensure_scan_yield_scan_id_collation(conn):
+    """Match scan_yield_stats.scan_id to scan_runs.scan_id for safe joins."""
+    rows = conn.execute(
+        """SELECT table_name, column_type, character_set_name, collation_name
+           FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND column_name = 'scan_id'
+             AND table_name IN ('scan_runs', 'scan_yield_stats')"""
+    ).fetchall()
+    columns = {row['table_name']: row for row in rows}
+    parent = columns.get('scan_runs')
+    child = columns.get('scan_yield_stats')
+    if not parent or not child:
+        return
+    if (
+        parent.get('character_set_name') == child.get('character_set_name')
+        and parent.get('collation_name') == child.get('collation_name')
+        and parent.get('column_type') == child.get('column_type')
+    ):
+        return
+
+    column_type = parent.get('column_type') or 'VARCHAR(255)'
+    charset = parent.get('character_set_name')
+    collation = parent.get('collation_name')
+    if not (
+        re.fullmatch(r'[A-Za-z0-9_() ,]+', column_type)
+        and re.fullmatch(r'[A-Za-z0-9_]+', charset or '')
+        and re.fullmatch(r'[A-Za-z0-9_]+', collation or '')
+    ):
+        raise ValueError('scan_id 字符集元数据无效')
+    conn.execute(
+        "ALTER TABLE `scan_yield_stats` MODIFY COLUMN `scan_id` "
+        f"{column_type} CHARACTER SET {charset} COLLATE {collation} NOT NULL"
+    )
+    logger.info("[DB] 已将 scan_yield_stats.scan_id 排序规则对齐 scan_runs.scan_id")
 
 
 def _ensure_run_results_columns(conn):
@@ -2804,7 +2910,9 @@ def cleanup_old_detection_runs(keep=50):
 SCAN_YIELD_INSERT_COLUMNS = (
     'scan_id', 'stat_key', 'scope', 'platform', 'profile', 'profile_label',
     'province', 'target_size', 'api_items', 'probed_hosts',
-    'extracted_channels', 'c_segment_channels', 'cleaned_channels',
+    'extracted_channels', 'c_segment_channels', 'c_segment_segments',
+    'c_segment_ips', 'c_segment_cache_skipped', 'c_segment_budget_skipped',
+    'cleaned_channels',
     'deduped_channels', 'candidate_channels', 'fast_pass', 'deep_checked',
     'deep_pass', 'good_count', 'poor_count', 'unreachable_count',
     'created_at', 'updated_at',
@@ -2837,6 +2945,10 @@ def insert_scan_yield_stats(scan_id, rows):
             'probed_hosts': _int_or_zero(row.get('probed_hosts')),
             'extracted_channels': _int_or_zero(row.get('extracted_channels')),
             'c_segment_channels': _int_or_zero(row.get('c_segment_channels')),
+            'c_segment_segments': _int_or_zero(row.get('c_segment_segments')),
+            'c_segment_ips': _int_or_zero(row.get('c_segment_ips')),
+            'c_segment_cache_skipped': _int_or_zero(row.get('c_segment_cache_skipped')),
+            'c_segment_budget_skipped': _int_or_zero(row.get('c_segment_budget_skipped')),
             'cleaned_channels': _int_or_zero(row.get('cleaned_channels')),
             'deduped_channels': _int_or_zero(row.get('deduped_channels')),
             'candidate_channels': _int_or_zero(row.get('candidate_channels')),
@@ -3381,9 +3493,23 @@ def _evaluate_quality(stability, delay, bandwidth):
         bandwidth = float(bandwidth) if bandwidth not in (None, '') else None
     except (TypeError, ValueError):
         bandwidth = None
-    if stability >= 60 and (delay is None or delay < 2000) and (bandwidth is None or bandwidth >= 300):
+    try:
+        from scanner_integration.config_bridge import get_quality_thresholds
+        thresholds = get_quality_thresholds()
+    except Exception:
+        thresholds = {
+            'stability_high': 60,
+            'stability_low': 30,
+            'max_delay_ms': 2000,
+            'min_bandwidth_MBps': 0.3,
+        }
+    meets_transport_gate = (
+        delay is not None and delay <= thresholds['max_delay_ms']
+        and bandwidth is not None and bandwidth >= thresholds['min_bandwidth_MBps']
+    )
+    if stability >= thresholds['stability_high'] and meets_transport_gate:
         return 'good'
-    if stability >= 30:
+    if stability >= thresholds['stability_low'] and meets_transport_gate:
         return 'poor'
     return 'unreachable'
 

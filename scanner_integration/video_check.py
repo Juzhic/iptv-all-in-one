@@ -8,7 +8,7 @@ from datetime import datetime
 from . import config_bridge
 from .config_bridge import (
     HEAD_TIMEOUT, STREAM_CHECK_TIMEOUT, DEEP_CHECK_DURATION,
-    CONCURRENT_FAST, CONCURRENT_DEEP, MIN_BANDWIDTH, MIN_WIDTH, MIN_HEIGHT,
+    CONCURRENT_FAST, CONCURRENT_DEEP, MIN_WIDTH, MIN_HEIGHT,
     MAX_DELAY_MS, AUTO_REFILL_QUAKE_SIZE, FAIL_THRESHOLD,
     STABILITY_THRESHOLD_NATIONAL, STABILITY_THRESHOLD_LOCAL
 )
@@ -207,6 +207,36 @@ def get_deep_check_options():
     }
 
 
+def quality_gate_failure(channel, thresholds=None):
+    """Return the hard deep-check rejection reason, or ``None`` when accepted.
+
+    Stability remains useful for ranking, but it must not compensate for a
+    stream that is below the configured bandwidth floor.  All bandwidth
+    values in the scanner are MB/s.
+    """
+    thresholds = thresholds or config_bridge.get_quality_thresholds()
+    try:
+        bandwidth = float(channel.get('bandwidth'))
+    except (TypeError, ValueError):
+        bandwidth = 0.0
+    try:
+        delay = float(channel.get('delay'))
+    except (TypeError, ValueError):
+        delay = None
+    try:
+        stability = float(channel.get('stability'))
+    except (TypeError, ValueError):
+        stability = 0.0
+
+    if bandwidth < thresholds['min_bandwidth_MBps']:
+        return 'low_bandwidth'
+    if delay is not None and delay > thresholds['max_delay_ms']:
+        return 'high_delay'
+    if stability < thresholds['stability_low']:
+        return 'low_stability'
+    return None
+
+
 async def run_deep_check(session, url):
     options = get_deep_check_options()
     return await deep_check(
@@ -315,7 +345,9 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION,
                 if total_bytes == 0:
                     return None
                 delay = round(elapsed * 1000, 1)
-                bandwidth = round(total_bytes / elapsed / 1024, 2) if elapsed > 0 else 0
+                # Keep scanner measurements consistent with the main test
+                # engine and all scanner-facing UI: MB/s (MiB/s base).
+                bandwidth = round(total_bytes / elapsed / (1024 * 1024), 4) if elapsed > 0 else 0
 
                 # 计算抖动：相邻 chunk 间隔的标准差 (单位秒)
                 jitter = statistics.stdev(intervals) if len(intervals) > 1 else 0.0
@@ -327,8 +359,8 @@ async def deep_check(session, url, check_duration=DEEP_CHECK_DURATION,
                 W_EMPTY = _weights.get('empty_rate', 0.15)
                 W_DELAY = _weights.get('delay', 0.05)
 
-                _thresholds = _cfg.get('quality_thresholds', {})
-                BW_NORM_DENOM = _thresholds.get('min_bandwidth_kbps', 300)
+                _thresholds = config_bridge.get_quality_thresholds(_cfg)
+                BW_NORM_DENOM = _thresholds['min_bandwidth_MBps']
                 STUTTER_FLOOR = 0.3
                 STUTTER_SCALE = 100
                 JITTER_SCALE = 200
@@ -396,26 +428,33 @@ async def background_deep_update(initial_list, log_fn=None):
     sem = asyncio.Semaphore(deep_concurrent)
     _log(f"[深度测速] 开始，总数 {total}，并发={deep_concurrent}，批次={BATCH}")
     start_time = time.time()
-    stats = {'stable': 0, 'low_bw': 0, 'dead': 0}
+    stats = {
+        'stable': 0,
+        'low_bandwidth': 0,
+        'high_delay': 0,
+        'low_stability': 0,
+        'dead': 0,
+    }
     async with get_session(limit=deep_concurrent, timeout=12, force_close=True) as session:
         new_list = []
         for i in range(0, total, BATCH):
             batch = working[i:i+BATCH]
             updated = await deep_filter_batch(batch, sem, session)
+            stats['dead'] += len(batch) - len(updated)
             stable_upd = []
+            thresholds = config_bridge.get_quality_thresholds(_cfg)
             for ch in updated:
-                s = ch.get('stability', 0)
-                bw = ch.get('bandwidth', 0)
-                _thresholds = _cfg.get('quality_thresholds', {})
-                if s >= _thresholds.get('stability_low', 30):
+                failure = quality_gate_failure(ch, thresholds)
+                if failure is None:
                     stable_upd.append(ch)
                     stats['stable'] += 1
-                elif bw < MIN_BANDWIDTH:
-                    stats['low_bw'] += 1
                 else:
-                    stats['dead'] += 1
+                    stats[failure] += 1
             new_list.extend(stable_upd)
-            new_list = filter_hd(filter_high_delay(new_list))
+            new_list = filter_hd(filter_high_delay(
+                new_list,
+                max_delay=thresholds['max_delay_ms'],
+            ))
             # 按稳定性、带宽、延迟综合排序（供实时展示用）
             new_list.sort(key=lambda c: (
                 -_sort_number(c.get('stability'), 0),
@@ -437,7 +476,12 @@ async def background_deep_update(initial_list, log_fn=None):
             await asyncio.sleep(0)
     print()
     elapsed = time.time() - start_time
-    _log(f"[深度测速] 完成，稳定:{stats['stable']} 低带宽:{stats['low_bw']} 失效:{stats['dead']} 总有效:{len(QUICK_CHANNELS)} 耗时:{elapsed:.1f}s")
+    _log(
+        "[深度测速] 完成，"
+        f"通过:{stats['stable']} 低带宽:{stats['low_bandwidth']} "
+        f"高延迟:{stats['high_delay']} 低稳定性:{stats['low_stability']} "
+        f"失效:{stats['dead']} 总有效:{len(QUICK_CHANNELS)} 耗时:{elapsed:.1f}s"
+    )
     unknown = [
         c for c in QUICK_CHANNELS
         if c.get('province') == '未知' and c.get('category') not in (

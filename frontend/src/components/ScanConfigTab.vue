@@ -126,6 +126,46 @@
 
             <div class="config-field">
               <div class="config-field-meta">
+                <label>C 段单段 IP 上限</label>
+                <span>每个命中 /24 最多补扫的邻近 IP 数；命中的原始 IP 不会重复探测。</span>
+              </div>
+              <t-input-number v-model="scanCfg.c_scan_limit" :min="1" :max="5000" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>C 段全局网段上限</label>
+                <span>单轮所有平台共享的 /24:端口扩展次数，避免多个平台重复消耗预算。</span>
+              </div>
+              <t-input-number v-model="scanCfg.c_segment_max_segments" :min="1" :max="50" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>C 段全局 IP 上限</label>
+                <span>单轮所有扩展扫描共享的 IP 总预算。</span>
+              </div>
+              <t-input-number v-model="scanCfg.c_segment_max_total_ips" :min="1" :max="5000" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>单来源 C 段上限</label>
+                <span>每个平台或质量画像最多占用的扩展网段数，保证多个来源都有补量机会。</span>
+              </div>
+              <t-input-number v-model="scanCfg.c_segment_per_source_max_segments" :min="1" :max="50" :step="1" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>单来源 C 段 IP 上限</label>
+                <span>同一平台或质量画像最多占用的扩展 IP 数，防止早到任务抢占总预算。</span>
+              </div>
+              <t-input-number v-model="scanCfg.c_segment_per_source_max_ips" :min="1" :max="5000" :step="10" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
                 <label>运营商</label>
                 <span>只看特定网络环境时可以缩小到电信、联通、移动或广电。</span>
               </div>
@@ -360,6 +400,30 @@
 
             <div class="config-field">
               <div class="config-field-meta">
+                <label>最低带宽 (MB/s)</label>
+                <span>深度检测的硬性准入线；低于此值的频道不会进入有效扫描结果。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_thresholds.min_bandwidth_MBps" :min="0.001" :max="1000" :step="0.05" :decimal-places="3" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>最大深测延迟 (ms)</label>
+                <span>超过此延迟的频道会被深度检测硬性淘汰。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_thresholds.max_delay_ms" :min="1" :max="120000" :step="100" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
+                <label>深测最低稳定性</label>
+                <span>低于此稳定性即使带宽足够也不会作为有效源入库。</span>
+              </div>
+              <t-input-number v-model="scanCfg.quality_thresholds.stability_low" :min="0" :max="100" :step="5" class="field-control" />
+            </div>
+
+            <div class="config-field">
+              <div class="config-field-meta">
                 <label>深测时长</label>
                 <span>扫描板块统一深度检测的单源采样时长，手动重检和定时检测共用。</span>
               </div>
@@ -572,6 +636,11 @@ const scanCfg = reactive({
   search_keywords: DEFAULT_SEARCH_KEYWORDS.join('\n'),
   cost_saver_mode: true,
   enable_c_scan: true,
+  c_scan_limit: 50,
+  c_segment_max_segments: 8,
+  c_segment_max_total_ips: 200,
+  c_segment_per_source_max_segments: 2,
+  c_segment_per_source_max_ips: 50,
   update_time: '03:00',
   update_days: [0, 1, 2, 3, 4, 5, 6],
   daily_full_update: true,
@@ -582,6 +651,12 @@ const scanCfg = reactive({
   quality_hotspot_scan_limit: 120,
   quality_hotspot_min_score: 8,
   quality_source_min_stability: 45,
+  quality_thresholds: {
+    stability_high: 60,
+    stability_low: 30,
+    max_delay_ms: 2000,
+    min_bandwidth_MBps: 0.3,
+  },
   deep_check_duration: 6,
   deep_check_min_bytes: 131072,
   deep_check_request_timeout: 10,
@@ -682,7 +757,7 @@ const communityBadgeText = computed(() => (
 
 const cScanHint = computed(() => (
   scanCfg.enable_c_scan
-    ? '当前会围绕已命中的网段继续扩展探测，补量能力更强，但扫描时间也会更长。'
+    ? `当前会围绕已命中的网段继续扩展探测，全局最多 ${scanCfg.c_segment_max_segments} 段 / ${scanCfg.c_segment_max_total_ips} IP。`
     : '当前只使用主搜索结果，不做同网段扩展，速度更快，也更省额度。'
 ))
 
@@ -837,6 +912,11 @@ async function loadConfig() {
       : (cfg.search_keywords || DEFAULT_SEARCH_KEYWORDS.join('\n'))
     scanCfg.cost_saver_mode = cfg.cost_saver_mode !== false
     scanCfg.enable_c_scan = !!cfg.enable_c_scan
+    scanCfg.c_scan_limit = typeof cfg.c_scan_limit === 'number' ? cfg.c_scan_limit : 50
+    scanCfg.c_segment_max_segments = typeof cfg.c_segment_max_segments === 'number' ? cfg.c_segment_max_segments : 8
+    scanCfg.c_segment_max_total_ips = typeof cfg.c_segment_max_total_ips === 'number' ? cfg.c_segment_max_total_ips : 200
+    scanCfg.c_segment_per_source_max_segments = typeof cfg.c_segment_per_source_max_segments === 'number' ? cfg.c_segment_per_source_max_segments : 2
+    scanCfg.c_segment_per_source_max_ips = typeof cfg.c_segment_per_source_max_ips === 'number' ? cfg.c_segment_per_source_max_ips : 50
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
     scanCfg.daily_full_update = !!cfg.daily_full_update
@@ -847,6 +927,13 @@ async function loadConfig() {
     scanCfg.quality_hotspot_scan_limit = typeof cfg.quality_hotspot_scan_limit === 'number' ? cfg.quality_hotspot_scan_limit : 120
     scanCfg.quality_hotspot_min_score = typeof cfg.quality_hotspot_min_score === 'number' ? cfg.quality_hotspot_min_score : 8
     scanCfg.quality_source_min_stability = typeof cfg.quality_source_min_stability === 'number' ? cfg.quality_source_min_stability : 45
+    const thresholds = cfg.quality_thresholds || {}
+    scanCfg.quality_thresholds = {
+      stability_high: typeof thresholds.stability_high === 'number' ? thresholds.stability_high : 60,
+      stability_low: typeof thresholds.stability_low === 'number' ? thresholds.stability_low : 30,
+      max_delay_ms: typeof thresholds.max_delay_ms === 'number' ? thresholds.max_delay_ms : 2000,
+      min_bandwidth_MBps: typeof thresholds.min_bandwidth_MBps === 'number' ? thresholds.min_bandwidth_MBps : 0.3,
+    }
     scanCfg.deep_check_duration = typeof cfg.deep_check_duration === 'number' ? cfg.deep_check_duration : 6
     scanCfg.deep_check_min_bytes = typeof cfg.deep_check_min_bytes === 'number' ? cfg.deep_check_min_bytes : 131072
     scanCfg.deep_check_request_timeout = typeof cfg.deep_check_request_timeout === 'number' ? cfg.deep_check_request_timeout : 10
@@ -899,6 +986,31 @@ function validateScanConfig() {
   }
   if (scanCfg.quality_source_min_stability < 0 || scanCfg.quality_source_min_stability > 100) {
     errors.push('最低稳定性需要在 0 到 100 之间')
+  }
+  if (scanCfg.c_scan_limit < 1 || scanCfg.c_scan_limit > 5000) {
+    errors.push('C 段单段 IP 上限需要在 1 到 5000 之间')
+  }
+  if (scanCfg.c_segment_max_segments < 1 || scanCfg.c_segment_max_segments > 50) {
+    errors.push('C 段全局网段上限需要在 1 到 50 之间')
+  }
+  if (scanCfg.c_segment_max_total_ips < 1 || scanCfg.c_segment_max_total_ips > 5000) {
+    errors.push('C 段全局 IP 上限需要在 1 到 5000 之间')
+  }
+  if (scanCfg.c_segment_per_source_max_segments < 1 || scanCfg.c_segment_per_source_max_segments > 50) {
+    errors.push('单来源 C 段上限需要在 1 到 50 之间')
+  }
+  if (scanCfg.c_segment_per_source_max_ips < 1 || scanCfg.c_segment_per_source_max_ips > 5000) {
+    errors.push('单来源 C 段 IP 上限需要在 1 到 5000 之间')
+  }
+  const thresholds = scanCfg.quality_thresholds || {}
+  if (thresholds.min_bandwidth_MBps < 0.001 || thresholds.min_bandwidth_MBps > 1000) {
+    errors.push('最低带宽需要在 0.001 到 1000 MB/s 之间')
+  }
+  if (thresholds.max_delay_ms < 1 || thresholds.max_delay_ms > 120000) {
+    errors.push('最大深测延迟需要在 1 到 120000 ms 之间')
+  }
+  if (thresholds.stability_low < 0 || thresholds.stability_low > 100) {
+    errors.push('深测最低稳定性需要在 0 到 100 之间')
   }
   if (scanCfg.deep_check_duration < 1 || scanCfg.deep_check_duration > 120) {
     errors.push('深测时长需要在 1 到 120 秒之间')

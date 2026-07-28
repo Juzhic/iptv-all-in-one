@@ -6,10 +6,10 @@ import base64
 
 import aiohttp
 
-from . import config_bridge
-from .config_bridge import DAYDAYMAP_API_DELAY
-from .network import get_session
-from .logger_bridge import logger
+from .. import config_bridge
+from ..config_bridge import DAYDAYMAP_API_DELAY
+from ..network import get_session
+from ..logger_bridge import logger
 from .shared import KeyDepletedError, _is_stop_requested, _stats_add, _stats_set
 from .ip_extract import extract_channels_from_ip, smart_c_segment_scan
 
@@ -100,7 +100,7 @@ async def daydaymap_scan(api_key, query, target_size, session=None, stats=None):
         if lst:
             entries.extend(lst)
     if config_bridge.get_scan_config().get("enable_c_scan") and success:
-        c_entries = await smart_c_segment_scan(success, session)
+        c_entries = await smart_c_segment_scan(success, session, stats=stats)
         _stats_add(stats, 'c_segment_channels', len(c_entries))
         entries.extend(c_entries)
     _stats_set(stats, 'extracted_channels', len(entries))
