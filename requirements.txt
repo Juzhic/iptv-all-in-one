@@ -9,3 +9,4 @@ gunicorn==23.0.0
 # 扫描模块依赖（scanner_integration）
 aiohttp==3.11.12
 ddgs>=9.0.0
+regex==2025.11.3

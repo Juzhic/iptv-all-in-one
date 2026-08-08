@@ -7,8 +7,6 @@ import time
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
-import urllib3
-from requests.exceptions import SSLError
 
 
 # 超时 URL 注册表，供流读取循环主动退出并释放连接
@@ -49,7 +47,6 @@ DEFAULT_HEADERS = {
     'Accept': '*/*',
     'Connection': 'close',
 }
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 FFMPEG_BIN = os.environ.get('FFMPEG_BIN', 'ffmpeg')
 _DEFAULT_FFMPEG_WORKERS = int(os.environ.get('MAX_FFMPEG_WORKERS', '6') or 6)
 _ffmpeg_limit = max(1, _DEFAULT_FFMPEG_WORKERS)
@@ -177,20 +174,35 @@ def build_bandwidth_result(width, height, total_bytes, elapsed_seconds, basis='w
 
 
 def http_get(url, timeout, stream=False):
-    """统一请求入口：补浏览器请求头，并在证书异常时回退到 verify=False。"""
-    try:
-        return requests.get(url, timeout=timeout, stream=stream, headers=DEFAULT_HEADERS, allow_redirects=True)
-    except SSLError:
+    """统一请求入口；TLS 验证默认硬失败，仅允许显式主机例外。"""
+    host = (urlparse(url).hostname or '').lower().rstrip('.')
+    insecure_hosts = {
+        item.strip().lower().rstrip('.')
+        for item in os.environ.get('IPTV_INSECURE_TLS_HOSTS', '').split(',')
+        if item.strip()
+    }
+    insecure_tls = urlparse(url).scheme.lower() == 'https' and host in insecure_hosts
+    if insecure_tls:
         import logging
-        logging.getLogger(__name__).warning(f"SSL 证书验证失败，回退到 verify=False: {url[:100]}")
-        return requests.get(
-            url,
-            timeout=timeout,
-            stream=stream,
-            headers=DEFAULT_HEADERS,
-            allow_redirects=True,
-            verify=False
+        logging.getLogger(__name__).warning(
+            "管理员已为主机 %s 启用不安全 TLS 例外", host
         )
+    response = requests.get(
+        url,
+        timeout=timeout,
+        stream=stream,
+        headers=DEFAULT_HEADERS,
+        # A TLS exception is scoped to exactly one host.  Following redirects
+        # with verify=False would silently extend it to another destination.
+        allow_redirects=not insecure_tls,
+        verify=not insecure_tls,
+    )
+    if insecure_tls and response.is_redirect:
+        response.close()
+        raise requests.exceptions.SSLError(
+            '启用不安全 TLS 例外的主机不允许重定向'
+        )
+    return response
 
 
 def read_response_text_limited(response, max_bytes=2 * 1024 * 1024):

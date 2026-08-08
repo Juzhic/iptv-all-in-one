@@ -11,8 +11,6 @@
     GET    /api/sources             — api_get_sources() 订阅源质量评分
     GET    /api/channel/<name>/trend — api_channel_trend() 频道质量趋势
 """
-from collections import defaultdict
-
 from flask import Blueprint, request, jsonify
 
 from database import (
@@ -21,13 +19,19 @@ from database import (
     get_channel_summary_with_source,
     delete_run,
     get_run_logs,
-    get_latest_run,
-    get_config_data,
     compare_runs,
 )
 from web.routes.params import int_arg
+from web.dashboard_service import get_dashboard, get_sources_page
 
 history_bp = Blueprint('history', __name__)
+
+
+@history_bp.route('/api/dashboard', methods=['GET'])
+def api_dashboard():
+    """Return SQL-aggregated scan, subscription and task quality metrics."""
+    trend_limit = int_arg(request.args, 'trend_limit', 10, 1, 30)
+    return jsonify({'ok': True, 'data': get_dashboard(trend_limit=trend_limit)})
 
 
 # ─────────────── 测试历史 API ───────────────
@@ -91,91 +95,20 @@ def api_compare_runs():
 
 # ─────────────── 订阅源质量评分 API ───────────────
 
-def _count_template_channels():
-    """从 demo 模板中解析频道总数（去重）。"""
-    raw = get_config_data('demo')
-    if not raw:
-        return 0
-    channels = set()
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.endswith(',#genre#') or line.startswith('#'):
-            continue
-        channels.add(line)
-    return len(channels)
-
-
 @history_bp.route('/api/sources', methods=['GET'])
 def api_get_sources():
-    """获取最新一轮测试中各订阅源的质量评分。"""
-    run = get_latest_run()
-    if not run:
-        return jsonify({'ok': True, 'data': {'sources': [], 'last_updated': None}})
-
-    results = run.get('results', [])
-    if not results:
-        return jsonify({'ok': True, 'data': {'sources': [], 'last_updated': run.get('finished_at')}})
-
-    template_total = _count_template_channels()
-
-    # 按 source_url 分组
-    by_source = defaultdict(list)
-    for r in results:
-        url = (r.get('source_url') or '').strip()
-        if not url:
-            url = '(未知来源)'
-        by_source[url].append(r)
-
-    sources = []
-    for src_url, items in by_source.items():
-        channels = set()
-        passed_channels = set()
-        bw_list = []
-        qs_list = []
-        h265_count = 0
-
-        for r in items:
-            ch = r.get('channel', '')
-            channels.add(ch)
-            if r.get('passed'):
-                passed_channels.add(ch)
-                bw = r.get('bandwidth_MBps')
-                if bw is not None and bw > 0:
-                    bw_list.append(bw)
-                qs = r.get('quality_score')
-                if qs is not None and qs > 0:
-                    qs_list.append(qs)
-            if r.get('is_h265'):
-                h265_count += 1
-
-        ch_total = len(channels)
-        ch_passed = len(passed_channels)
-        pass_rate = ch_passed / ch_total if ch_total > 0 else 0
-        avg_bw = sum(bw_list) / len(bw_list) if bw_list else 0
-        avg_qs = sum(qs_list) / len(qs_list) if qs_list else 0
-        h265_ratio = h265_count / len(items) if items else 0
-        coverage = ch_passed / template_total if template_total > 0 else 0
-
-        score = (
-            coverage * 30
-            + pass_rate * 30
-            + min(avg_bw / 10, 1) * 20
-            + min(avg_qs / 5, 1) * 20
-        )
-
-        sources.append({
-            'source_url': src_url,
-            'channels_total': ch_total,
-            'channels_passed': ch_passed,
-            'pass_rate': round(pass_rate, 4),
-            'avg_bandwidth': round(avg_bw, 2),
-            'avg_quality': round(avg_qs, 2),
-            'h265_ratio': round(h265_ratio, 4),
-            'score': round(score, 1),
-        })
-
-    sources.sort(key=lambda s: s['score'], reverse=True)
-    return jsonify({'ok': True, 'data': {'sources': sources, 'last_updated': run.get('finished_at')}})
+    """Return server-paginated/searchable/sortable source quality scores."""
+    page = int_arg(request.args, 'page', 1, 1, None)
+    size = int_arg(request.args, 'size', 20, 1, 200)
+    data = get_sources_page(
+        page=page,
+        size=size,
+        search=request.args.get('search', ''),
+        sort_by=request.args.get('sort_by', 'score'),
+        sort_order=request.args.get('sort_order', 'desc'),
+        reveal_url=request.args.get('reveal_url', '').lower() in ('1', 'true'),
+    )
+    return jsonify({'ok': True, 'data': data})
 
 
 # ─────────────── 频道质量趋势 API ───────────────

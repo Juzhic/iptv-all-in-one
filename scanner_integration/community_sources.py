@@ -11,6 +11,7 @@ import aiohttp
 from .channel_utils import classify_channel_full
 from .logger_bridge import logger
 from .platforms import is_valid_stream_url
+from .safe_http import ResponseTooLarge, read_response_limited
 
 # GitHub 反代前缀（国内网络无法直接访问 raw.githubusercontent.com）
 # 可通过配置 github_proxy 自定义，留空则直连
@@ -38,6 +39,9 @@ _EXTINF_RE = re.compile(
 
 _GROUP_RE = re.compile(r'group-title="([^"]*)"', re.IGNORECASE)
 
+MAX_REMOTE_LIST_BYTES = 5 * 1024 * 1024
+MAX_REMOTE_LIST_LINES = 50_000
+
 
 async def fetch_community_m3u(session, url, timeout=30):
     """下载并解析单个 M3U 文件。
@@ -54,7 +58,7 @@ async def fetch_community_m3u(session, url, timeout=30):
             if resp.status != 200:
                 logger.warning(f"[Community] HTTP {resp.status} for {url}")
                 return []
-            raw = await resp.read()
+            raw = await read_response_limited(resp, MAX_REMOTE_LIST_BYTES)
 
         # 尝试多种编码
         text = None
@@ -69,6 +73,9 @@ async def fetch_community_m3u(session, url, timeout=30):
             return []
 
         lines = text.splitlines()
+        if len(lines) > MAX_REMOTE_LIST_LINES:
+            logger.warning(f"[Community] 列表超过 {MAX_REMOTE_LIST_LINES} 行，已截断: {url}")
+            lines = lines[:MAX_REMOTE_LIST_LINES]
         pending_name = None
         pending_group = None
 
@@ -81,7 +88,7 @@ async def fetch_community_m3u(session, url, timeout=30):
                 m = _EXTINF_RE.match(line)
                 if m:
                     attrs, name = m.group(1) or '', m.group(2).strip()
-                    pending_name = name
+                    pending_name = name[:256]
                     gm = _GROUP_RE.search(attrs)
                     pending_group = gm.group(1) if gm else ''
                 continue
@@ -119,11 +126,15 @@ async def fetch_community_m3u(session, url, timeout=30):
                 'city': city or '',
                 'platform': 'Community',
             })
+            if len(channels) >= MAX_REMOTE_LIST_LINES:
+                break
 
         logger.info(f"[Community] {url} 解析到 {len(channels)} 个频道")
 
     except asyncio.TimeoutError:
         logger.warning(f"[Community] 超时: {url}")
+    except ResponseTooLarge as e:
+        logger.warning(f"[Community] 响应过大 {url}: {e}")
     except aiohttp.ClientError as e:
         logger.warning(f"[Community] 网络错误 {url}: {e}")
     except Exception as e:

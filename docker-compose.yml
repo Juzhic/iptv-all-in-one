@@ -14,8 +14,10 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请先运行 python generate_env.py 生成 .env 并设置 DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run python generate_env.py first}
       MYSQL_DATABASE: ${DB_NAME:-iptv-all-in-one}
+      MYSQL_USER: ${DB_USER:-iptv_app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Run python generate_env.py first}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -27,20 +29,73 @@ services:
     image: juzhic/iptv-all-in-one:latest
     container_name: iptv-all-in-one
     command: ["gunicorn", "-w", "1", "--worker-class", "gthread", "--threads", "8", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]
+    # Security risk: the management UI is intentionally published on every
+    # host interface. Protect the host with a firewall/VPN/reverse proxy.
+    # Playlist download endpoints intentionally remain anonymous for clients
+    # without BasicAuth support, so anyone reaching this port can read them.
     ports:
       - "${PORT:-58080}:58080"
     depends_on:
       mysql:
         condition: service_healthy
     environment:
-      - DB_HOST=${DB_HOST:-mysql}
-      - DB_PORT=${DB_PORT:-3306}
-      - DB_USER=${DB_USER:-root}
-      - DB_PASSWORD=${DB_PASSWORD:?请先运行 python generate_env.py 生成 .env 并设置 DB_PASSWORD}
-      - DB_NAME=${DB_NAME:-iptv-all-in-one}
-      - DB_CHARSET=${DB_CHARSET:-utf8mb4}
-      - TZ=Asia/Shanghai
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-iptv_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Run python generate_env.py first}
+      DB_NAME: ${DB_NAME:-iptv-all-in-one}
+      DB_CHARSET: ${DB_CHARSET:-utf8mb4}
+      IPTV_AUTH_USERNAME: ${IPTV_AUTH_USERNAME:-admin}
+      IPTV_AUTH_PASSWORD: ${IPTV_AUTH_PASSWORD:?Run python generate_env.py first}
+      IPTV_AUTH_REALM: ${IPTV_AUTH_REALM:-iptv-all-in-one}
+      IPTV_SECRET_KEY: ${IPTV_SECRET_KEY:?Run python generate_env.py first}
+      IPTV_TRUSTED_ORIGINS: ${IPTV_TRUSTED_ORIGINS:-}
+      IPTV_INSECURE_TLS_HOSTS: ${IPTV_INSECURE_TLS_HOSTS:-}
+      IPTV_OUTPUT_DIR: /app/output
+      IPTV_REQUIRE_STRONG_CREDENTIALS: "1"
+      TZ: Asia/Shanghai
+    volumes:
+      - app_data:/app/data
+      - app_output:/app/output
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
     restart: unless-stopped
+
+  migrate-2-0:
+    image: juzhic/iptv-all-in-one:latest
+    profiles: ["migration"]
+    command: ["python", "/app/migrate_2_0.py"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-iptv_app}
+      DB_USER_HOST: ${DB_USER_HOST:-%}
+      DB_PASSWORD: ${DB_PASSWORD:?Run python generate_env.py --upgrade first}
+      DB_NAME: ${DB_NAME:-iptv-all-in-one}
+      DB_CHARSET: ${DB_CHARSET:-utf8mb4}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run python generate_env.py --upgrade first}
+      IPTV_AUTH_PASSWORD: ${IPTV_AUTH_PASSWORD:?Run python generate_env.py --upgrade first}
+      IPTV_SECRET_KEY: ${IPTV_SECRET_KEY:?Run python generate_env.py --upgrade first}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
+    restart: "no"
 
 volumes:
   mysql_data:
+  app_data:
+  app_output:

@@ -4,17 +4,25 @@
 提取自 web.py 的结果生成逻辑。
 """
 import collections
-import re as _re
+import html
+from urllib.parse import quote as _url_quote
 
 from engine import load_config, resolve_output_update_time
 
 
 def _sanitize_m3u_attr(value):
-    """转义 M3U EXTINF 属性中的特殊字符，防止属性注入。"""
-    if not value:
-        return value
-    # 移除双引号和换行符，避免破坏 EXTINF 属性格式
-    return _re.sub(r'["\n\r]', '', str(value))
+    """Escape one M3U EXTINF attribute and remove control characters."""
+    return html.escape(_sanitize_playlist_line(value), quote=True)
+
+
+def _sanitize_playlist_line(value):
+    """Return a value that cannot inject another playlist directive or line."""
+    if value is None:
+        return ''
+    return ''.join(
+        ch for ch in str(value)
+        if ord(ch) >= 32 and ord(ch) != 127
+    ).strip()
 
 
 def _result_sort_key(result):
@@ -83,7 +91,9 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
             genre_results = []
             for ch in ch_list:
                 for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
-                    genre_lines.append(f'{ch},{result["url"]}')
+                    genre_lines.append(
+                        f'{_sanitize_playlist_line(ch)},{_sanitize_playlist_line(result["url"])}'
+                    )
                     genre_results.append(result)
             if genre_lines:
                 body_lines.append(f'{genre},#genre#')
@@ -96,7 +106,9 @@ def _generate_result_txt(passed_results, fallback_update_time=None):
             if max_urls > 0:
                 results = results[:max_urls]
             for result in results:
-                body_lines.append(f'{ch},{result["url"]}')
+                body_lines.append(
+                    f'{_sanitize_playlist_line(ch)},{_sanitize_playlist_line(result["url"])}'
+                )
                 selected_results.append(result)
 
     update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
@@ -116,6 +128,7 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
     cfg = load_config()
     logo_base = cfg.get('logo_base_url', 'https://www.xn--rgv465a.top/tvlogo')
     epg_url = cfg.get('epg_url', '')
+    safe_logo_base = _sanitize_playlist_line(logo_base).rstrip('/')
     selected_results = []
     body_lines = []
 
@@ -127,14 +140,18 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
         for genre, ch_list in demo:
             for ch in ch_list:
                 for result in _results_for_channel(ch, channels, name_to_canonical, regex_aliases):
-                    safe_ch = _sanitize_m3u_attr(ch)
+                    display_ch = _sanitize_playlist_line(ch)
+                    safe_ch = _sanitize_m3u_attr(display_ch)
                     safe_genre = _sanitize_m3u_attr(genre)
+                    safe_logo = _sanitize_m3u_attr(
+                        f'{safe_logo_base}/{_url_quote(display_ch, safe="")}.png'
+                    )
                     body_lines.append(
                         f'#EXTINF:-1 tvg-id="{safe_ch}" tvg-name="{safe_ch}" '
-                        f'tvg-logo="{logo_base}/{safe_ch}.png" '
-                        f'group-title="{safe_genre}",{safe_ch}'
+                        f'tvg-logo="{safe_logo}" '
+                        f'group-title="{safe_genre}",{display_ch}'
                     )
-                    body_lines.append(result['url'])
+                    body_lines.append(_sanitize_playlist_line(result['url']))
                     selected_results.append(result)
     except Exception:
         max_urls = _get_max_urls_per_channel()
@@ -142,17 +159,21 @@ def _generate_result_m3u(passed_results, fallback_update_time=None):
             if max_urls > 0:
                 results = results[:max_urls]
             for result in results:
-                safe_ch = _sanitize_m3u_attr(ch)
+                display_ch = _sanitize_playlist_line(ch)
+                safe_ch = _sanitize_m3u_attr(display_ch)
+                safe_logo = _sanitize_m3u_attr(
+                    f'{safe_logo_base}/{_url_quote(display_ch, safe="")}.png'
+                )
                 body_lines.append(
                     f'#EXTINF:-1 tvg-id="{safe_ch}" tvg-name="{safe_ch}" '
-                    f'tvg-logo="{logo_base}/{safe_ch}.png" '
-                    f'group-title="默认",{safe_ch}'
+                    f'tvg-logo="{safe_logo}" '
+                    f'group-title="默认",{display_ch}'
                 )
-                body_lines.append(result['url'])
+                body_lines.append(_sanitize_playlist_line(result['url']))
                 selected_results.append(result)
 
     update_time_str = resolve_output_update_time(selected_results, fallback_update_time)
-    epg_header = f'#EXTM3U x-tvg-url="{epg_url}"' if epg_url else '#EXTM3U'
+    epg_header = f'#EXTM3U x-tvg-url="{_sanitize_m3u_attr(epg_url)}"' if epg_url else '#EXTM3U'
     lines = [epg_header]
     lines.append(
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '

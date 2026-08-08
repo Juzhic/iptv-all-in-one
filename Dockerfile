@@ -13,6 +13,9 @@ WORKDIR /app
 ENV TZ=Asia/Shanghai \
     DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    IPTV_REQUIRE_STRONG_CREDENTIALS=1 \
+    DB_USER=iptv_app \
     FFMPEG_BIN=/usr/bin/ffmpeg
 
 # Install FFmpeg only
@@ -30,12 +33,23 @@ COPY engine/ ./engine/
 COPY web/ ./web/
 COPY database/ ./database/
 COPY scanner_integration/ ./scanner_integration/
+COPY generate_env.py migrate_2_0.py ./
 
 # Copy frontend build from stage 1
 COPY --from=frontend-builder /app/dist ./dist
 
-# Create data directories
-RUN mkdir -p data output
+# Run the service without root privileges. Runtime source, dependencies and
+# frontend assets stay root-owned/read-only; only explicit data volumes are
+# writable by the application account.
+RUN groupadd --gid 10001 iptv \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin iptv \
+    && mkdir -p /app/data /app/output \
+    && chown -R iptv:iptv /app/data /app/output \
+    && chmod 0750 /app/data /app/output \
+    && chmod -R a-w /app/engine /app/web /app/database /app/scanner_integration /app/dist \
+    && chmod a-w /app/requirements.txt /app/generate_env.py /app/migrate_2_0.py
+
+USER 10001:10001
 
 EXPOSE 58080
 

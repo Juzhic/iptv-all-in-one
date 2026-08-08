@@ -18,7 +18,7 @@
           :columns="keyColumns"
           :data="keyList"
           :bordered="false"
-          row-key="key"
+          row-key="_row_key"
           size="small"
           :pagination="null"
         >
@@ -563,7 +563,12 @@
         </t-form-item>
 
         <t-form-item label="API Key">
-          <t-input v-model="keyForm.key" placeholder="粘贴 API Key" />
+          <t-input
+            v-model="keyForm.key"
+            type="password"
+            :placeholder="keyEditMode ? '输入用于替换的新 Key（原 Key 不会回显）' : '粘贴 API Key'"
+            autocomplete="new-password"
+          />
         </t-form-item>
 
         <t-form-item v-if="keyForm.platform === 'fofa'" label="Email">
@@ -581,7 +586,8 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import RefreshIcon from 'tdesign-icons-vue-next/esm/components/refresh.js'
 import SaveIcon from 'tdesign-icons-vue-next/esm/components/save.js'
 import { useTheme } from '../composables/useTheme.js'
@@ -1110,8 +1116,11 @@ async function loadKeys() {
   try {
     // 1. 快速加载 Key 列表
     const res = await apiScanKeys()
-    keyList.value = (res || []).map((item) => ({
+    const keyItems = Array.isArray(res) ? res : (res?.items || [])
+    keyList.value = keyItems.map((item) => ({
       ...item,
+      key_suffix: item.suffix || item.key_suffix || '••••',
+      _row_key: item.key_id || item.key || `${item.platform}:${item.suffix || item.key_suffix || ''}`,
       status: '加载中...',
       credit: null,
     }))
@@ -1119,12 +1128,16 @@ async function loadKeys() {
     // 2. 异步获取余额 (不阻塞列表显示)
     apiScanKeysCredits().then(creditsData => {
       const creditsMap = {}
-      ;(creditsData || []).forEach(item => {
-        creditsMap[item.key_suffix] = item
+      const creditItems = Array.isArray(creditsData) ? creditsData : (creditsData?.items || [])
+      ;creditItems.forEach(item => {
+        const suffix = item.suffix || item.key_suffix || ''
+        creditsMap[`${item.platform || ''}:${item.key_id || suffix}`] = item
+        if (suffix) creditsMap[`suffix:${suffix}`] = item
       })
         
         keyList.value = keyList.value.map(item => {
-          const creditInfo = creditsMap[item.key_suffix]
+          const creditInfo = creditsMap[`${item.platform || ''}:${item.key_id || item.key_suffix}`]
+            || creditsMap[`suffix:${item.key_suffix}`]
           if (creditInfo) {
             let status = '正常'
             const credit = creditInfo.credit != null ? Number(creditInfo.credit) : null
@@ -1175,9 +1188,9 @@ function editKey(row) {
   keyEditMode.value = true
   keyModalTitle.value = '编辑 API Key'
   keyForm.platform = row.platform
-  keyForm.key = row.key
+  keyForm.key = ''
   keyForm.email = row.platform === 'fofa' ? (row.email || scanCfg.fofa_email || '') : ''
-  oldKey.value = row.key
+  oldKey.value = row.key_id || row.key || ''
   keyModalVisible.value = true
 }
 
@@ -1201,11 +1214,6 @@ async function submitKey() {
   try {
     let res
     if (keyEditMode.value) {
-      const emailChanged = keyForm.platform === 'fofa' && email !== (scanCfg.fofa_email || '')
-      if (keyForm.key === oldKey.value && !emailChanged) {
-        keyModalVisible.value = false
-        return
-      }
       res = await apiScanKeyUpdate(keyForm.platform, oldKey.value, keyForm.key, email)
     } else {
       res = await apiScanKeyAdd(keyForm.platform, keyForm.key, email)
@@ -1228,7 +1236,7 @@ async function deleteKey(row) {
     confirmBtn: { content: '删除', theme: 'danger' },
     onConfirm: async () => {
       try {
-        await apiScanKeyDelete(row.platform, row.key)
+        await apiScanKeyDelete(row.platform, row.key_id || row.key)
         MessagePlugin.success('Key 已删除')
         loadKeys()
       } catch (_) {
@@ -1238,6 +1246,8 @@ async function deleteKey(row) {
     },
   })
 }
+
+defineExpose({ save: saveConfig })
 
 onMounted(() => {
   loadConfig()
@@ -1415,8 +1425,10 @@ onBeforeUnmount(() => {
 }
 
 .config-card {
+  min-width: 0;
+  overflow: hidden;
   color: var(--surface-text-primary);
-  border-radius: 10px;
+  border-radius: 18px;
   background: var(--surface-shell-gradient);
 }
 
@@ -1451,14 +1463,16 @@ onBeforeUnmount(() => {
 
 .config-panel-grid {
   display: grid;
+  min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
 }
 
 .config-panel {
+  min-width: 0;
   padding: 18px;
   border: 1px solid var(--surface-border-strong);
-  border-radius: 10px;
+  border-radius: 18px;
   background: var(--surface-shell-bg);
   box-shadow: var(--surface-shadow);
   backdrop-filter: blur(8px);
@@ -1610,6 +1624,7 @@ onBeforeUnmount(() => {
 
 .scan-size-item {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 4px;
 }
@@ -1743,11 +1758,24 @@ onBeforeUnmount(() => {
   }
 
   .scan-size-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scan-size-item :deep(.t-input-number) {
+    width: 100%;
   }
 
   .province-toolbar {
     align-items: stretch;
+  }
+
+  .config-card :deep(.t-card__body) {
+    padding: 16px;
+  }
+
+  .config-panel {
+    padding: 15px;
+    border-radius: 14px;
   }
 }
 </style>

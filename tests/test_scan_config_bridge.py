@@ -1,12 +1,6 @@
-import importlib.util
 import unittest
-from pathlib import Path
 
-
-MODULE_PATH = Path(__file__).resolve().parents[1] / 'scanner_integration' / 'config_bridge.py'
-SPEC = importlib.util.spec_from_file_location('scan_config_bridge_under_test', MODULE_PATH)
-config_bridge = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(config_bridge)
+from scanner_integration import config_bridge
 
 
 class SearchKeywordConfigTests(unittest.TestCase):

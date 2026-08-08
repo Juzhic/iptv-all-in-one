@@ -7,6 +7,8 @@
 import json
 import re
 
+from .secure_keys import decrypt_api_key, encrypt_api_key, is_encrypted
+
 # ==================== 静态常量（不可运行时修改） ====================
 HEAD_TIMEOUT = 2
 STREAM_CHECK_TIMEOUT = 4
@@ -234,6 +236,48 @@ DEFAULT_SCAN_CONFIG = {
 
 _CONFIG_CACHE = None
 _CONFIG_CACHE_MTIME = None
+
+_API_KEY_PLATFORMS = ('quake', 'hunter', 'daydaymap', 'fofa')
+
+
+def _decrypt_stored_keys(raw_cfg):
+    """Return a runtime config with decrypted keys and a migration flag."""
+    cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
+    has_legacy_plaintext = False
+    for platform in _API_KEY_PLATFORMS:
+        list_name = f'{platform}_api_keys'
+        single_name = f'{platform}_api_key'
+        values = cfg.get(list_name, [])
+        if isinstance(values, list):
+            decrypted = []
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                has_legacy_plaintext = has_legacy_plaintext or not is_encrypted(value)
+                decrypted.append(decrypt_api_key(value))
+            cfg[list_name] = decrypted
+        value = cfg.get(single_name, '')
+        if isinstance(value, str) and value.strip():
+            has_legacy_plaintext = has_legacy_plaintext or not is_encrypted(value)
+            cfg[single_name] = decrypt_api_key(value)
+    return cfg, has_legacy_plaintext
+
+
+def _encrypt_persisted_keys(runtime_cfg):
+    """Copy a normalized runtime config and encrypt every persisted API key."""
+    cfg = dict(runtime_cfg)
+    for platform in _API_KEY_PLATFORMS:
+        list_name = f'{platform}_api_keys'
+        single_name = f'{platform}_api_key'
+        values = cfg.get(list_name, [])
+        encrypted = [
+            encrypt_api_key(value)
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ] if isinstance(values, list) else []
+        cfg[list_name] = encrypted
+        cfg[single_name] = encrypted[0] if encrypted else ''
+    return cfg
 
 
 def _normalize_key_list(cfg, platform, *legacy_single_names):
@@ -485,7 +529,17 @@ def get_scan_config():
     else:
         loaded = {}
     
-    cfg = _normalize_scan_config(loaded)
+    decrypted, needs_migration = _decrypt_stored_keys(loaded)
+    cfg = _normalize_scan_config(decrypted)
+    if needs_migration:
+        # One REPLACE statement is atomic.  If encryption or the write fails,
+        # configuration loading fails as well and startup cannot silently
+        # continue with plaintext credentials.
+        from database import set_config_data
+        migrated = _encrypt_persisted_keys(cfg)
+        for alias in ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key'):
+            migrated.pop(alias, None)
+        set_config_data('scan_config', json.dumps(migrated, ensure_ascii=False, indent=2))
     _CONFIG_CACHE = cfg
     _CONFIG_CACHE_MTIME = current_signature
     return cfg
@@ -502,7 +556,7 @@ def save_scan_config(cfg):
     normalized = _normalize_scan_config(merged)
 
     # Do not persist runtime-only compatibility aliases back to the database.
-    persisted = dict(normalized)
+    persisted = _encrypt_persisted_keys(normalized)
     persisted.pop('quake_key', None)
     persisted.pop('hunter_key', None)
     persisted.pop('daydaymap_key', None)

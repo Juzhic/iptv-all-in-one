@@ -4,7 +4,9 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v1.8.1）
+## 当前版本说明（v2.0.0）
+
+2.0.0 是安全模型、任务生命周期和管理控制台的全面升级。现有 1.x 部署必须先备份 MySQL 与根目录 `.env`，再按照 [MIGRATING-2.0.md](MIGRATING-2.0.md) 创建专用数据库用户并迁移加密 API Key。
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 
@@ -14,7 +16,7 @@
 | 订阅源 | `config_data` 表，key 为 `subscribe` | 每行一个 M3U 地址 |
 | 频道模板 | `config_data` 表，key 为 `demo` | 决定要匹配、测速和输出哪些频道 |
 | 别名映射 | `config_data` 表，key 为 `alias` | 将不同频道名归一到模板中的主名 |
-| 扫描配置 | `config_data` 表，key 为 `scan_config` | 扫描模块的 API Key、平台、省份、动态搜索关键词等配置 |
+| 扫描配置 | `config_data` 表，key 为 `scan_config` | 扫描模块的平台、省份、动态搜索关键词等配置；API Key 使用 `IPTV_SECRET_KEY` 加密 |
 | 频道方案 | `config_data` 表，key 为 `profiles` / `profile:<name>` | 可供订阅接口按方案输出的扩展频道模板 |
 | 测速历史 | `runs`、`run_results` | 最近运行结果和每个频道 URL 的测速详情 |
 | 扫描历史 | `scan_runs`、`scan_results` | 扫描任务记录和扫描到的频道数据 |
@@ -29,6 +31,11 @@
 
 ### 最近更新摘要
 
+- 新总览通过 SQL 聚合展示扫描原始/去重/快筛/深检数量、持久池质量、订阅源覆盖率/通过率/带宽/质量分、最近 10 轮趋势及任务摘要，不再把整轮数据搬到浏览器计算。
+- 管理后台重构为桌面折叠分组侧栏和手机分组抽屉，使用 Hash 路由恢复当前页面；质量、任务、历史和配置页面统一 loading/empty/error 状态与可见页轮询。
+- 扫描平台 API Key 已加密存储，管理接口只显示不可逆 `key_id` 与后六位；修改接口增加同源 Origin、安全请求头、类型校验和请求体上限。
+- 公网复检增加 DNS 固定、实际 peer IP 与逐跳重定向校验；IP 扫描保留 RFC1918 能力但阻断回环、链路本地、组播和云元数据地址。
+- Docker 改为非 root、只读应用容器和专用 MySQL 用户，强凭据不足会拒绝启动；升级步骤与回退要求见 [MIGRATING-2.0.md](MIGRATING-2.0.md)。
 - 扫描带宽已统一为 MB/s，并作为深度检测的硬性质量门槛；扫描配置页可设置最低带宽、最大延迟和最低稳定性，低带宽源不会再被稳定性评分误放行。
 - C 段扩展扫描改为单轮共享网段/IP 预算，按网段+端口缓存并保留每个来源的额度；统计会记录实际扩展网段、IP、缓存跳过和预算跳过数量。
 - 质量热点补源改为跨网段轮询，优先覆盖更多高质量 /24；旧数据卷启动时会自动迁移带宽单位并修复扫描收益统计关联的排序规则。
@@ -41,8 +48,8 @@
 - 定期检测轮次异常中断时会写入错误状态和已完成的部分结果，检测概览不再只留下全 0 汇总。
 - 频道扫描页的失败态改为独立告警块展示，部署包同步补齐数据库入口导出，避免 deploy 包继续出现 `_evaluate_quality` 缺失报错。
 - Docker 部署补齐 `database` 包入口导出，避免频道扫描、检测复活和 IP 扫描接口因缺少数据库函数属性而报错。
-- 前端会自动判断运行时是否适合 SSE：多线程 WSGI 环境使用 SSE，旧 Compose/面板仍使用单同步 worker 命令时自动降级短轮询；也可通过 `localStorage.iptv_enable_sse` 或构建变量 `VITE_ENABLE_SSE` 手动覆盖。
-- Docker/Gunicorn 默认使用单进程多线程模式，避免 SSE 长连接占住唯一同步 worker 后导致页面、接口和异步标签页资源请求挂起。
+- 前端默认在页面可见时使用自适应轮询：运行中每 2 秒、空闲时每 10 秒，页面隐藏后暂停；旧 SSE 端点仅作兼容，进程内全局最多 2 条且单连接最长 5 分钟。
+- Docker/Gunicorn 使用单进程多线程模式，任务租约负责跨请求抢占，进程内控制器负责 Future、扫描器和停止信号的完整生命周期。
 - 生产构建切换标签页时会基于当前标签值兜底挂载已访问组件，避免页面空白且不请求接口。
 - Docker 旧 MySQL 数据卷升级新版镜像时会自动补齐新增表字段，避免检测、扫描等轮询接口持续返回 500。
 - 系统配置、配置导入、文本保存和检测配置保存已按前端 API 解包后的响应处理，避免成功操作误报失败。
@@ -93,7 +100,7 @@
 - API Key 多 Key 轮转：支持 Quake/Hunter/DayDayMap/Fofa 多 Key 轮转，避免单 Key 限流。
 - 稳定性评分：基于带宽、卡顿、抖动、空包率、延迟等多维度计算频道稳定性。
 - 平台级采集日志：展示 API 命中、实际探测、频道提取和 C 段补充数量，便于判断是 API 返回少还是提取过滤少。
-- SSE 实时推送：扫描日志和检测日志通过 SSE 实时推送到前端。
+- 兼容 SSE：保留扫描和检测事件流供旧客户端使用，并实施全局连接数与时长上限；新版控制台默认使用可见性感知轮询。
 
 ### IP 扫描模块
 
@@ -107,7 +114,8 @@
 
 - Flask Web 后台，提供完整的 RESTful API 接口。
 - Vue 3 + TDesign 前端界面，支持深色/浅色主题切换。
-- 9 个功能标签页：总览、历史明细、系统测试、系统配置、频道扫描、扫描配置、检测监控、扫描结果、IP扫描。
+- 质量运维导航：总览；扫描频道、订阅源、检测监控；系统测试、频道扫描、IP 扫描；历史记录、配置中心。
+- 桌面端使用可折叠分组侧栏，手机端使用“工作台 / 质量 / 任务 / 配置”分组抽屉，不显示页面级横向滚动导航。
 - BasicAuth 认证保护，支持环境变量和配置文件两种方式。
 - 健康检查：默认轻量检查数据库、FFmpeg 和扫描模块；设置 `IPTV_HEALTH_DETAILED=1` 后返回版本、运行时间、磁盘、内存、调度和最近测速摘要。
 - Vite 开发模式，支持前端热更新。
@@ -118,13 +126,15 @@
 - 多数管理类 API 使用统一响应格式：`{'ok': True/False, 'data': ...}`；健康检查、下载、订阅和 SSE 端点按用途返回专用格式。
 - 全局错误处理器：404/500/405 返回 JSON 而非 HTML。
 - 分页参数上限校验（最大 200 条）。
-- 前端轮询优化：指数退避和 Tab 可见性感知。
+- 前端轮询优化：任务运行 2 秒、空闲 10 秒，Tab 隐藏暂停；刷新页面后恢复当前 Hash 页面和运行中的 `task_id`。
 
 ### 数据库层
 
 - MySQL 数据库存储；Docker/Compose 使用 `.env` 中的 `DB_*` 环境变量，源码直跑未设置 `DB_HOST` 时读取 `database/db_config.json`。
 - 数据库自动迁移：首次启动自动迁移旧版 config.json 和 history.json。
-- 日志批量写入：减少 commit 次数，提高性能。
+- 默认自动提交，跨多语句操作使用显式事务；请求和后台任务退出时统一回滚未完成事务并关闭线程连接。
+- 测速、频道扫描和 IP 扫描使用原子任务租约，避免多个请求或进程重复抢占同一任务。
+- 日志批量写入：减少事务次数，提高性能。
 - 日志保留策略：测速日志 30 天、扫描日志 7 天、持久化结果 90 天、质量历史 90 天。
 - 数据库最多保留最近 50 轮历史记录。
 - 复合索引和唯一约束优化查询性能。
@@ -148,7 +158,7 @@ Docker 部署默认使用 Docker Compose 编排两个独立容器：
 **方式 A：使用默认 MySQL 容器**
 
 ```bash
-# 创建环境变量文件，并自动生成随机 DB_PASSWORD
+# 创建环境变量文件，并生成相互独立的数据库、BasicAuth 与加密主密钥
 python generate_env.py
 
 # 如果你的系统没有 python 命令，改用：
@@ -161,9 +171,9 @@ docker compose up -d
 http://localhost:58080
 ```
 
-首次启动前必须设置 `.env` 里的 `DB_PASSWORD`，它会作为默认 MySQL 容器的 root 密码。推荐运行 `python generate_env.py` 自动生成随机密码；如果手动复制 `.env.example`，也请填写强密码后再启动。默认数据库镜像固定为 `mysql:8.4`，MySQL 数据会自动保存在 Docker volume 中，重启或更新应用容器不会丢失。
+首次启动前必须准备 `.env` 中相互独立的 `MYSQL_ROOT_PASSWORD`、`DB_PASSWORD`、`IPTV_AUTH_PASSWORD` 和 `IPTV_SECRET_KEY`。推荐运行 `python generate_env.py` 原子生成；Docker 镜像在缺少强凭据、应用账号仍为 root 或数据库密码复用时会拒绝启动。默认数据库镜像固定为 `mysql:8.4`，数据保存在 Docker volume 中。
 
-已有部署如果已经初始化过 `mysql_data`，请保持 `.env` 中的 `DB_PASSWORD` 与当前 MySQL root 密码一致。MySQL 官方镜像只在首次初始化数据目录时读取 `MYSQL_ROOT_PASSWORD`，后续直接改 `.env` 不会自动修改数据库里的 root 密码；需要先进入 MySQL 修改密码，再同步更新 `.env`。
+已有 1.x 数据卷不能直接修改密码后启动。请先备份数据库和 `.env`，运行 `python generate_env.py --upgrade`，再执行一次性迁移服务创建专用账号并加密旧 API Key。详见 [MIGRATING-2.0.md](MIGRATING-2.0.md)。
 
 默认 MySQL 端口只映射到宿主机本地 `127.0.0.1:3306`，方便在服务器本机使用数据库客户端连接，不会对局域网或公网开放。如果宿主机 3306 已被占用，可在 `.env` 中修改 `MYSQL_HOST_PORT`。
 
@@ -285,8 +295,10 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: 请换成强随机密码
+      MYSQL_ROOT_PASSWORD: 请换成独立的 root 强随机密码
       MYSQL_DATABASE: iptv-all-in-one
+      MYSQL_USER: iptv_app
+      MYSQL_PASSWORD: 请换成独立的应用强随机密码
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -306,18 +318,28 @@ services:
     environment:
       - DB_HOST=mysql
       - DB_PORT=3306
-      - DB_USER=root
-      - DB_PASSWORD=请换成同一个强随机密码
+      - DB_USER=iptv_app
+      - DB_PASSWORD=请换成上面的应用强随机密码
       - DB_NAME=iptv-all-in-one
       - DB_CHARSET=utf8mb4
+      - IPTV_AUTH_USERNAME=admin
+      - IPTV_AUTH_PASSWORD=请换成独立的管理强随机密码
+      - IPTV_SECRET_KEY=请换成至少32位的稳定随机主密钥
+      - IPTV_OUTPUT_DIR=/app/output
       - TZ=Asia/Shanghai
+    volumes:
+      - app_data:/app/data
+      - app_output:/app/output
+    read_only: true
     restart: unless-stopped
 
 volumes:
   mysql_data:
+  app_data:
+  app_output:
 ```
 
-建议首次部署前把上面两处密码改成同一个强随机密码，并保持 `MYSQL_ROOT_PASSWORD` 和 `DB_PASSWORD` 一致。上面的 MySQL `command` 是低内存默认参数；如果机器内存充足或并发较高，可以按需调大 `innodb-buffer-pool-size` 和 `max-connections`。`ports` 只绑定 `127.0.0.1`，因此只有宿主机本地能连接 MySQL。
+首次部署前必须把 root、应用和管理密码改成三个不同的强随机值，并稳定保存 `IPTV_SECRET_KEY`；不得让常驻应用获得 root 密码。优先直接使用仓库内的完整 `docker-compose.yml`，其中还包含非 root、只读文件系统、受限 tmpfs、capabilities 丢弃和健康检查。上面的 MySQL `command` 是低内存默认参数；如果机器内存充足或并发较高，可以按需调大 `innodb-buffer-pool-size` 和 `max-connections`。`ports` 只绑定 `127.0.0.1`，因此只有宿主机本地能连接 MySQL。
 
 如需改访问端口，例如想用 `8080` 访问，只改端口映射左边：
 
@@ -406,7 +428,7 @@ python -m web --dev
 
 此模式下 Vite 开发服务器启动在 `http://localhost:3000`，API 请求自动代理到 Flask 后端。修改 Vue 源码后浏览器即时刷新，无需手动 `npm run build`。
 
-BasicAuth 保护 Web 后台和 API。凭据从程序目录的 `basic_auth.json` 读取：
+BasicAuth 保护 Web 后台和管理 API。源码模式可从根目录 `.env` 的 `IPTV_AUTH_*` 变量读取凭据，未设置环境变量时才兼容程序目录的 `basic_auth.json`：
 
 ```json
 {
@@ -416,11 +438,11 @@ BasicAuth 保护 Web 后台和 API。凭据从程序目录的 `basic_auth.json` 
 }
 ```
 
-如果文件缺失且未设置 `IPTV_AUTH_PASSWORD`，启动时会生成一个随机密码并打印在日志里。建议创建 `basic_auth.json` 或设置 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`，让登录凭据可持久化。
+源码非严格模式下若两处都缺少密码，会为当前进程生成临时随机密码并记录警告；Docker 严格模式会直接拒绝启动。生产部署应运行 `python generate_env.py`，不要依赖临时密码。
 
 结果订阅下载和健康检查保持公开：`/api/download/txt`、`/api/download/m3u`、`/api/subscribe.m3u` 和 `/api/health`。
 
-开发模式下，Vite 代理会优先读取 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`，否则读取同一份 `basic_auth.json` 并转发 BasicAuth 头，因此 `http://localhost:3000` 下的总览、历史、扫描等 API 页面可直接调试。
+开发模式下，Flask 与 Vite 代理读取同一份根目录 `.env`，代理会转发对应 BasicAuth 和修改请求安全头，因此 `http://localhost:3000` 下的总览、历史、扫描等 API 页面可直接调试。
 
 Web 服务默认使用 `58080` 端口。如果端口已被旧进程占用，启动会失败并提示先结束占用进程。可通过环境变量 `IPTV_PORT` 更改端口。
 
@@ -571,7 +593,7 @@ server {
 **默认模式：应用容器 + MySQL 容器**
 
 ```bash
-# 创建环境变量文件，并自动生成随机 DB_PASSWORD
+# 创建环境变量文件，并自动生成全部强凭据
 python generate_env.py
 
 # 如果你的系统没有 python 命令，改用：
@@ -631,7 +653,13 @@ docker run -d \
   -e DB_NAME=iptv-all-in-one \
   -e DB_CHARSET=utf8mb4 \
   -e IPTV_AUTH_USERNAME=myuser \
-  -e IPTV_AUTH_PASSWORD=mypassword \
+  -e IPTV_AUTH_PASSWORD=至少16位的独立强密码 \
+  -e IPTV_SECRET_KEY=至少32位的稳定随机主密钥 \
+  -e IPTV_OUTPUT_DIR=/app/output \
+  -v iptv_data:/app/data \
+  -v iptv_output:/app/output \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
   juzhic/iptv-all-in-one:latest
 ```
 
@@ -643,8 +671,10 @@ docker run -d \
 | --- | --- | --- |
 | `DB_HOST` | MySQL 地址；默认 Compose 内置 MySQL 时为 `mysql` | 未设置 |
 | `DB_PORT` | MySQL 端口 | `3306` |
-| `DB_USER` | MySQL 用户 | `root` |
-| `DB_PASSWORD` | MySQL 密码；默认部署必须设置，推荐用 `python generate_env.py` 随机生成 | 未设置 |
+| `MYSQL_ROOT_PASSWORD` | 默认 MySQL 容器的 root 密码；只传给 MySQL 和一次性迁移服务 | 未设置 |
+| `DB_USER` | 应用专用 MySQL 用户，不能使用 root | `iptv_app` |
+| `DB_USER_HOST` | 一次性迁移创建应用账号时使用的 MySQL Host 范围 | `%` |
+| `DB_PASSWORD` | 应用专用 MySQL 密码，必须与 root 密码不同 | 未设置 |
 | `DB_NAME` | MySQL 数据库名 | `iptv-all-in-one` |
 | `DB_CHARSET` | MySQL 字符集 | `utf8mb4` |
 | `MYSQL_HOST_PORT` | 默认 MySQL 容器映射到宿主机本地的端口，仅监听 `127.0.0.1` | `3306` |
@@ -659,8 +689,13 @@ docker run -d \
 | `IPTV_PORT` | `python -m web` 直接运行时的 Web 服务端口；官方 Docker 镜像内固定监听 `58080` | `58080` |
 | `PORT` | Docker Compose 暴露到宿主机的访问端口 | `58080` |
 | `IPTV_AUTH_USERNAME` | BasicAuth 用户名（覆盖配置文件） | `admin` |
-| `IPTV_AUTH_PASSWORD` | BasicAuth 密码（覆盖配置文件） | 缺省时随机生成 |
+| `IPTV_AUTH_PASSWORD` | BasicAuth 密码；Docker 严格模式下必须是至少 16 位强密码 | 未设置 |
 | `IPTV_AUTH_REALM` | BasicAuth 领域名称（覆盖配置文件） | `iptv-all-in-one` |
+| `IPTV_SECRET_KEY` | 扫描平台 API Key 的稳定加密/HMAC 主密钥，至少 32 字符 | 未设置 |
+| `IPTV_OUTPUT_DIR` | 固定结果文件所在目录；文件名不可通过 Web 修改 | 源码为 `output/`，镜像为 `/app/output` |
+| `IPTV_TRUSTED_ORIGINS` | 额外允许的完整 HTTP(S) Origin，逗号分隔 | 未设置 |
+| `IPTV_INSECURE_TLS_HOSTS` | 管理员明确允许跳过证书校验的主机名，逗号分隔；应尽量留空 | 未设置 |
+| `IPTV_REQUIRE_STRONG_CREDENTIALS` | 缺少强凭据时拒绝启动；官方镜像固定启用 | 源码未设置，镜像为 `1` |
 | `IPTV_HEALTH_DETAILED` | `/api/health` 是否返回磁盘、内存、调度等详细信息；设为 `1` 开启 | 未设置 |
 | `PYTHONUNBUFFERED` | 禁用 Python 输出缓冲 | 未设置 |
 | `MAX_FFMPEG_WORKERS` | FFmpeg 最大并发数（覆盖配置文件） | 未设置 |
@@ -669,15 +704,14 @@ docker run -d \
 
 ### 安全建议
 
-1. **固定登录凭据**：首次启动且未配置密码时会生成随机密码并打印到日志。生产环境建议创建 `basic_auth.json`，或设置 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD`。
-2. **限制访问**：通过防火墙或 Nginx 限制来源 IP
-3. **HTTPS**：生产环境务必使用 HTTPS（可通过 Nginx + Let's Encrypt 配置）
-4. **数据库备份**：定期备份 MySQL 数据库
-5. **凭证管理**：`basic_auth.json` 和 `database/db_config.json` 包含敏感信息，生产环境建议：
-   - 通过环境变量传递 BasicAuth 凭证：`IPTV_AUTH_USERNAME`、`IPTV_AUTH_PASSWORD`、`IPTV_AUTH_REALM`
-   - `basic_auth.json` 和 `database/db_config.json` 已加入 `.gitignore`，避免意外提交
-   - 如果 `basic_auth.json` 曾被提交或推送到远端，请立即轮换对应 BasicAuth 凭据，并评估是否需要清理 Git 历史
-   - 使用 Docker volumes 挂载而非复制到镜像中
+1. **生成并备份凭据**：使用 `python generate_env.py`；`.env` 不得提交到 Git，且 `IPTV_SECRET_KEY` 必须稳定保存，不能随意轮换。
+2. **限制访问**：`58080` 默认绑定所有网卡，匿名 TXT/M3U 也会暴露给所有可达客户端；使用防火墙、VPN 或反向代理限制来源。
+3. **HTTPS**：生产环境务必使用 HTTPS；`IPTV_INSECURE_TLS_HOSTS` 只用于明确的遗留主机，并会在配置中心持续显示风险警告。
+4. **最小权限数据库**：常驻应用只使用 `iptv_app` 等专用账号，绝不注入 `MYSQL_ROOT_PASSWORD`。
+5. **数据库备份**：定期备份 MySQL 与 `.env`，升级前验证备份可恢复。
+6. **只读容器**：保留 Compose 的非 root、`read_only`、capabilities 丢弃和独立 `data/output` 卷设置。
+
+2.0 明确保留三项部署取舍：TXT/M3U 订阅继续匿名、Compose 的 `58080` 默认继续发布到所有网卡、Codeup 自动同步 `main` 的流程保持不变。限流、缓存、强凭据和发布门禁只能降低风险；对公网部署仍必须配置网络访问控制。
 
 ### 目录结构要求
 
@@ -686,6 +720,7 @@ docker run -d \
 ```text
 database/           # 直接运行源码且未使用 DB_* 环境变量时，db_config.json 必须存在且可读
 output/             # 测速结果输出（运行时自动创建）
+data/               # 运行时数据目录
 dist/               # 前端构建产物（需提前 npm run build）
 ```
 
@@ -724,14 +759,14 @@ Docker 部署优先检查 `.env` 中的 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_
 | `update_time_position` | `top` | 更新时间位置，支持 `top` 或 `bottom` |
 | `min_width` | `1920` | 最低分辨率宽度 |
 | `min_height` | `1080` | 最低分辨率高度 |
-| `output_txt` | `output/result.txt` | TXT 输出路径 |
-| `output_m3u` | `output/result.m3u` | M3U 输出路径 |
 | `run_mode` | `once` | 运行模式：`once`、`times`、`interval` |
 | `run_times` | `[]` | `times` 模式下的执行时间列表，例如 `06:00,12:00,18:00` |
 | `run_interval_minutes` | `60` | `interval` 模式下的执行间隔，单位分钟 |
 | `logo_base_url` | `https://www.xn--rgv465a.top/tvlogo` | M3U 文件中频道 logo 图片的基础 URL |
 | `epg_url` | `""` | EPG 电子节目单地址 |
 | `include_scan_results_in_test` | `false` | 测速时是否包含扫描结果中的频道 |
+
+2.0 不再允许 Web 配置、配置导入或导出指定输出文件路径。运维侧只能通过 `IPTV_OUTPUT_DIR` 指定目录，文件名固定为 `result.txt`、`result.m3u` 和 `history.json`。
 
 代码中保留了 `engine/notifications.py` 通知发送工具，但当前默认系统配置、配置保存 API 和前端参数页没有开放 Webhook 字段，因此本版本不把 Webhook 列为可直接在后台启用的功能。
 
@@ -961,21 +996,21 @@ iptv-all-in-one/
 └── LICENSE                     # MIT 许可证
 ```
 
-## Web 标签页说明
+## Web 控制台页面说明
 
 前端使用 [TDesign Vue Next](https://tdesign.tencent.com/vue-next/overview) 组件库构建，支持深色/浅色主题切换。
 
-| 标签 | 说明 |
+| 分组 / 页面 | 说明 |
 | --- | --- |
-| 总览 | 通过率趋势图、统计卡片、运行摘要和值得关注 |
-| 历史明细 | 测速历史列表，日期筛选，展开查看详细结果和日志 |
-| 系统测试 | 触发/停止测速、实时进度和日志、TXT/M3U 下载和预览 |
-| 系统配置 | 编辑订阅源、频道模板、别名映射，调整系统参数 |
-| 频道扫描 | 触发/停止扫描、健康检查、实时进度和日志（SSE 推送） |
-| 扫描配置 | API Key 管理、扫描参数、定时扫描设置 |
-| 检测监控 | 定期检测配置、检测轮次、运行日志、频道检测明细和手动重检（SSE 推送） |
-| 扫描结果 | 查看扫描频道列表、按分类/省份过滤、送入测速、导出 M3U |
-| IP 扫描 | 批量 IP/域名扫描、多 IPTV 系统检测、结果查看和送入测速 |
+| 工作台 / 总览 | 最新扫描漏斗、持久池质量、订阅质量、最近 10 轮趋势和任务摘要 |
+| 质量 / 扫描频道 | 服务端筛选、复检、选择当前页、导出当前页或导出全部筛选结果 |
+| 质量 / 订阅源 | 服务端分页、搜索和排序的来源评分、覆盖率、通过率、带宽与质量 |
+| 质量 / 检测监控 | 定期检测策略、检测轮次、最近日志、频道明细和手动重检 |
+| 任务 / 系统测试 | 触发/停止测速、任务进度、最近 500 行日志、TXT/M3U 下载和预览 |
+| 任务 / 频道扫描 | 触发/停止测绘扫描、任务租约、健康状态、进度和日志 |
+| 任务 / IP 扫描 | 批量 IP/域名和端口探测、任务握手、结果查看和导出 |
+| 配置 / 历史记录 | 测速历史列表、日期筛选、展开查看详细结果和日志 |
+| 配置 / 配置中心 | 在内部“扫描配置 / 系统配置”子页维护平台 Key、质量门槛、订阅、模板和参数 |
 
 ### 快捷键
 
@@ -984,16 +1019,16 @@ iptv-all-in-one/
 | `Ctrl+S` | 保存当前配置 |
 | `Ctrl+F` | 打开搜索/过滤 |
 | `Alt+1` | 切换到"总览"标签页 |
-| `Alt+2` | 切换到"历史明细"标签页 |
-| `Alt+3` | 切换到"系统测试"标签页 |
-| `Alt+4` | 切换到"系统配置"标签页 |
-| `Alt+5` | 切换到"频道扫描"标签页 |
-| `Alt+6` | 切换到"扫描配置"标签页 |
-| `Alt+7` | 切换到"检测监控"标签页 |
-| `Alt+8` | 切换到"扫描结果"标签页 |
-| `Alt+9` | 切换到"IP 扫描"标签页 |
+| `Alt+2` | 切换到"扫描频道"标签页 |
+| `Alt+3` | 切换到"订阅源"标签页 |
+| `Alt+4` | 切换到"检测监控"标签页 |
+| `Alt+5` | 切换到"系统测试"标签页 |
+| `Alt+6` | 切换到"频道扫描"标签页 |
+| `Alt+7` | 切换到"IP 扫描"标签页 |
+| `Alt+8` | 切换到"历史记录"标签页 |
+| `Alt+9` | 切换到"配置中心"标签页 |
 
-快捷键在输入框获得焦点时不会触发，避免干扰正常输入。
+快捷键仅在当前可见页面存在对应操作、且焦点不在输入控件中时才会拦截，避免干扰浏览器和表单默认行为。
 
 ## API 响应格式
 
@@ -1031,13 +1066,29 @@ iptv-all-in-one/
 
 注意：分页参数 `page_size` 最大值为 200，超过限制会被自动截断。
 
-例外：`/api/initial` 返回前端首屏数据对象；`/api/health` 返回监控友好的轻量健康检查对象；`/api/download/*`、`/api/subscribe.m3u`、`/api/ip-scan/export` 返回文件内容；`/api/*/stream` 为 SSE 事件流。
+例外：`/api/initial` 返回兼容首屏数据对象；`/api/health` 返回监控友好的轻量健康检查对象；`/api/download/*`、`/api/subscribe.m3u`、扫描/IP 导出返回文件内容；`/api/*/stream` 为兼容 SSE 事件流。
+
+### 2.0 重要 API 变化
+
+| 接口 | 行为 |
+| --- | --- |
+| `GET /api/dashboard?trend_limit=10` | 返回扫描质量、订阅质量、趋势和任务摘要 |
+| `GET /api/tasks` | 固定返回测速、频道扫描、IP 扫描和检测任务的 `task_id/state/progress/started_at/error` |
+| 各 trigger / stop 接口 | 返回 HTTP `202`，顶层包含稳定的 `task_id/state` |
+| `GET /api/sources` | 服务端分页、搜索、排序，URL 默认脱敏 |
+| `POST /api/discover` | 频道发现由 GET 改为修改语义明确的 POST |
+| `/api/scan/keys` | 仅使用 `key_id` 与后六位元数据，不返回完整 Key |
+| 配置导入导出 | 使用 `schema_version: 2`；验证失败返回 `422` 且整体回滚 |
+
+所有 POST/PUT/PATCH/DELETE 管理请求必须携带同源 `Origin`、`X-IPTV-Request: 1` 和预期 JSON 或 multipart Content-Type。前端请求封装会自动添加这些信息。
 
 ## 扫描模块参数
 
 在"频道扫描"标签页的配置区域可设置以下参数：
 
 ### API Key 配置
+
+下列名称是服务端运行时兼容字段。Key 写库前会使用 `IPTV_SECRET_KEY` 加密；列表、配置导出和管理 API 都不会返回完整明文，更新和删除必须使用 HMAC 派生的 `key_id`。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |

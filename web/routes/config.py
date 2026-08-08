@@ -8,11 +8,17 @@
     POST /api/text/<key>    — api_save_text() 保存数据文件内容
     POST /api/reset-demo    — api_reset_demo() 恢复 demo 模板
 """
+import json
+import ipaddress
+import math
+import os
 import re
+from urllib.parse import urlsplit
 
 from flask import Blueprint, request, jsonify
 
 from engine import load_config, DEFAULT_CONFIG
+from engine.test_engine import CONFIG_SCHEMA_VERSION
 from database import (
     get_config_data,
     set_config_data,
@@ -21,13 +27,183 @@ from database import (
     save_config as db_save_config,
     clear_scheduler_state,
 )
+import database.db as _database_db
 from web.state import is_allowed_data_key
 from web.scheduler import _ensure_scheduler_started, _reload_scheduler_config
-from web.routes.params import bounded_int
 
 config_bp = Blueprint('config', __name__)
 
 _RESERVED_PROFILE_NAMES = {'config', 'scan_config', 'subscribe', 'demo', 'alias', 'profiles', 'profile'}
+MAX_IMPORT_BYTES = 1024 * 1024
+MAX_CONFIG_URL_LENGTH = 2048
+
+_INT_RANGES = {
+    'test_duration': (1, 3600),
+    'max_workers': (1, 100),
+    'max_ffmpeg_workers': (1, 64),
+    'max_urls_per_channel': (0, 1000),
+    'min_width': (0, 7680),
+    'min_height': (0, 4320),
+    'run_interval_minutes': (1, 10080),
+}
+_FLOAT_RANGES = {
+    'system_bandwidth_limit_MBps': (0, 100000),
+    'system_memory_limit_percent': (0, 100),
+    'min_bandwidth_MBps': (0, 100000),
+    'bandwidth_compensation_MBps': (0, 100000),
+    'h265_bandwidth_ratio': (0, 1),
+}
+_BOOL_KEYS = {'show_update_time', 'include_scan_results_in_test'}
+_ENUM_VALUES = {
+    'run_mode': {'once', 'times', 'interval'},
+    'update_time_position': {'top', 'bottom'},
+}
+_CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+
+
+class ConfigValidationError(ValueError):
+    """Raised when a configuration payload must not be persisted."""
+
+
+def _validate_http_url(key, value, *, allow_empty=False):
+    if not isinstance(value, str):
+        raise ConfigValidationError(f'{key} 必须是字符串')
+    if not value and allow_empty:
+        return ''
+    if not value:
+        raise ConfigValidationError(f'{key} 不能为空')
+    if value != value.strip():
+        raise ConfigValidationError(f'{key} 不能包含首尾空白')
+    if len(value) > MAX_CONFIG_URL_LENGTH:
+        raise ConfigValidationError(f'{key} 最长为 {MAX_CONFIG_URL_LENGTH} 个字符')
+    if _CONTROL_CHARS.search(value):
+        raise ConfigValidationError(f'{key} 不能包含控制字符')
+    try:
+        parsed = urlsplit(value)
+        # Accessing port also validates malformed values such as ":abc".
+        parsed.port
+    except ValueError as exc:
+        raise ConfigValidationError(f'{key} 不是有效 URL') from exc
+    if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+        raise ConfigValidationError(f'{key} 仅支持包含主机名的 HTTP(S) URL')
+    if key == 'logo_base_url':
+        return value.rstrip('/')
+    return value
+
+
+def _normalize_run_times_strict(value):
+    if isinstance(value, str):
+        values = [item.strip() for item in re.split(r'[,;，]', value) if item.strip()]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise ConfigValidationError('run_times 必须是时间列表或逗号分隔字符串')
+
+    normalized = []
+    for item in values:
+        if not isinstance(item, str):
+            raise ConfigValidationError('run_times 中的每一项都必须是字符串')
+        match = re.fullmatch(r'(\d{1,2}):(\d{1,2})', item.strip())
+        if not match:
+            raise ConfigValidationError(f'无效的执行时间: {item!r}')
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ConfigValidationError(f'无效的执行时间: {item!r}')
+        normalized.append(f'{hour:02d}:{minute:02d}')
+    return sorted(set(normalized))
+
+
+def _validate_config_value(key, value):
+    if key == 'schema_version':
+        if isinstance(value, bool) or value != CONFIG_SCHEMA_VERSION:
+            raise ConfigValidationError(
+                f'schema_version 必须为 {CONFIG_SCHEMA_VERSION}'
+            )
+        return CONFIG_SCHEMA_VERSION
+
+    if key in _INT_RANGES:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigValidationError(f'{key} 必须是整数')
+        lo, hi = _INT_RANGES[key]
+        if not lo <= value <= hi:
+            raise ConfigValidationError(f'{key} 必须在 {lo} 到 {hi} 之间')
+        return value
+
+    if key in _FLOAT_RANGES:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigValidationError(f'{key} 必须是数值')
+        value = float(value)
+        lo, hi = _FLOAT_RANGES[key]
+        if not math.isfinite(value) or not lo <= value <= hi:
+            raise ConfigValidationError(f'{key} 必须在 {lo} 到 {hi} 之间')
+        return value
+
+    if key in _BOOL_KEYS:
+        if not isinstance(value, bool):
+            raise ConfigValidationError(f'{key} 必须是布尔值')
+        return value
+
+    if key in _ENUM_VALUES:
+        if value not in _ENUM_VALUES[key]:
+            choices = ', '.join(sorted(_ENUM_VALUES[key]))
+            raise ConfigValidationError(f'{key} 只能是: {choices}')
+        return value
+
+    if key == 'run_times':
+        return _normalize_run_times_strict(value)
+    if key == 'logo_base_url':
+        return _validate_http_url(key, value)
+    if key == 'epg_url':
+        return _validate_http_url(key, value, allow_empty=True)
+
+    raise ConfigValidationError(f'不支持的配置项: {key}')
+
+
+def _normalize_config_payload(payload, *, base=None, allow_empty=False):
+    if not isinstance(payload, dict):
+        raise ConfigValidationError('配置必须是 JSON 对象')
+    if not payload and not allow_empty:
+        raise ConfigValidationError('配置不能为空')
+
+    unknown = sorted(set(payload) - set(DEFAULT_CONFIG))
+    if unknown:
+        raise ConfigValidationError(f'包含未知配置项: {", ".join(unknown)}')
+
+    normalized = {}
+    errors = []
+    for key, value in payload.items():
+        try:
+            normalized[key] = _validate_config_value(key, value)
+        except ConfigValidationError as exc:
+            errors.append(str(exc))
+    if errors:
+        raise ConfigValidationError('; '.join(errors))
+
+    result = dict(base or {})
+    result.update(normalized)
+    result['schema_version'] = CONFIG_SCHEMA_VERSION
+    return result
+
+
+def _safe_current_config(source=None):
+    """Return stored config filtered through the current schema and defaults."""
+    source = source if isinstance(source, dict) else get_config(DEFAULT_CONFIG)
+    cleaned = dict(DEFAULT_CONFIG)
+    for key in DEFAULT_CONFIG:
+        if key == 'schema_version' or key not in source:
+            continue
+        try:
+            cleaned[key] = _validate_config_value(key, source[key])
+        except ConfigValidationError:
+            # Legacy or corrupt values are never reflected back into exports or
+            # future writes; the safe current default wins instead.
+            pass
+    cleaned['schema_version'] = CONFIG_SCHEMA_VERSION
+    return cleaned
+
+
+def _validation_response(exc):
+    return jsonify({'ok': False, 'error': str(exc)}), 422
 
 
 def _sanitize_profile_name(name):
@@ -47,75 +223,55 @@ def _sanitize_profile_name(name):
 @config_bp.route('/api/config', methods=['GET'])
 def api_get_config():
     """读取当前配置（从数据库，合并默认值）。"""
-    cfg = load_config()
+    cfg = _safe_current_config(load_config())
     return jsonify({'ok': True, 'data': cfg})
+
+
+@config_bp.route('/api/config/security-status', methods=['GET'])
+def api_config_security_status():
+    """Expose only non-secret deployment warnings needed by the settings UI."""
+    hosts = []
+    for item in os.environ.get('IPTV_INSECURE_TLS_HOSTS', '').split(','):
+        host = item.strip().lower()
+        if not host or len(host) > 253 or _CONTROL_CHARS.search(host):
+            continue
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            try:
+                ascii_host = host.encode('idna').decode('ascii')
+            except UnicodeError:
+                continue
+            labels = ascii_host.rstrip('.').split('.')
+            if not labels or any(
+                not label
+                or len(label) > 63
+                or label.startswith('-')
+                or label.endswith('-')
+                or re.fullmatch(r'[a-z0-9-]+', label) is None
+                for label in labels
+            ):
+                continue
+        hosts.append(host)
+    hosts = sorted(set(hosts))
+    return jsonify({
+        'ok': True,
+        'data': {
+            'insecure_tls_hosts_enabled': bool(hosts),
+            'insecure_tls_hosts': hosts,
+        },
+    })
 
 
 @config_bp.route('/api/config', methods=['POST'])
 def api_save_config():
     """保存配置到数据库。"""
     data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'ok': False, 'error': '无效的请求数据'}), 400
-
-    # 合法配置项白名单
-    valid_keys = set(DEFAULT_CONFIG.keys())
-
-    # 读取当前配置，只更新合法 key
-    cfg = get_config(DEFAULT_CONFIG)
-    updated_keys = []
-    int_keys = {'test_duration', 'max_workers', 'max_ffmpeg_workers', 'max_urls_per_channel',
-                'min_width', 'min_height', 'run_interval_minutes', 'ffmpeg_timeout'}
-    float_keys = {'system_bandwidth_limit_MBps', 'system_memory_limit_percent',
-                  'webhook_min_pass_rate', 'min_bandwidth_MBps',
-                  'bandwidth_compensation_MBps', 'h265_bandwidth_ratio'}
-    int_ranges = {
-        'test_duration': (1, 3600),
-        'max_workers': (1, 100),
-        'max_ffmpeg_workers': (1, 64),
-        'max_urls_per_channel': (0, 1000),
-        'min_width': (0, 7680),
-        'min_height': (0, 4320),
-        'run_interval_minutes': (1, 10080),
-        'ffmpeg_timeout': (1, 3600),
-    }
-    float_ranges = {
-        'system_bandwidth_limit_MBps': (0, 100000),
-        'system_memory_limit_percent': (0, 100),
-        'webhook_min_pass_rate': (0, 100),
-        'min_bandwidth_MBps': (0, 100000),
-        'bandwidth_compensation_MBps': (0, 100000),
-        'h265_bandwidth_ratio': (0, 1),
-    }
-    for key, value in data.items():
-        if key in valid_keys:
-            if key in int_keys:
-                try:
-                    cfg[key] = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if key in int_ranges:
-                    lo, hi = int_ranges[key]
-                    cfg[key] = bounded_int(cfg[key], DEFAULT_CONFIG.get(key, lo), lo, hi)
-            elif key in float_keys:
-                try:
-                    cfg[key] = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if key in float_ranges:
-                    lo, hi = float_ranges[key]
-                    cfg[key] = max(lo, min(hi, cfg[key]))
-            elif key == 'run_mode':
-                if value not in ('once', 'times', 'interval'):
-                    continue
-                cfg[key] = value
-            else:
-                cfg[key] = value
-            updated_keys.append(key)
-
-    # 规范化 run_times
-    if 'run_times' in updated_keys:
-        cfg['run_times'] = _normalize_run_times(cfg['run_times'])
+    try:
+        current = _safe_current_config(get_config(DEFAULT_CONFIG))
+        cfg = _normalize_config_payload(data, base=current)
+    except ConfigValidationError as exc:
+        return _validation_response(exc)
 
     db_save_config(cfg)
     if cfg.get('run_mode', 'once') == 'once':
@@ -126,31 +282,8 @@ def api_save_config():
             pass
     else:
         _ensure_scheduler_started(cfg)
+    updated_keys = [key for key in data if key != 'schema_version']
     return jsonify({'ok': True, 'data': {'updated': updated_keys, 'config': cfg}})
-
-
-def _normalize_run_times(times):
-    """规范化时间列表输入：补零、去重、排序、校验范围。"""
-    if isinstance(times, str):
-        times = [t.strip() for t in times.replace(';', ',').replace('，', ',').split(',') if t.strip()]
-    if not isinstance(times, list):
-        return []
-    result = []
-    for t in times:
-        t = str(t).strip()
-        if not t:
-            continue
-        parts = t.split(':')
-        if len(parts) != 2:
-            continue
-        try:
-            h, m = int(parts[0]), int(parts[1])
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                result.append(f'{h:02d}:{m:02d}')
-        except ValueError:
-            continue
-    # 去重排序
-    return sorted(set(result))
 
 
 # ─────────────── 数据文件 API ───────────────
@@ -185,16 +318,178 @@ def api_reset_demo():
 
 # ─────────────── 配置导入导出 API ───────────────
 
+_IMPORT_DATA_KEYS = ('config', 'subscribe', 'demo', 'alias', 'scan_config')
+
+
+def _prepare_import_entries(data):
+    if not isinstance(data, dict):
+        raise ConfigValidationError('配置文件必须是 JSON 对象')
+
+    version = data.get('schema_version')
+    if isinstance(version, bool) or version != CONFIG_SCHEMA_VERSION:
+        raise ConfigValidationError(
+            f'配置文件 schema_version 必须为 {CONFIG_SCHEMA_VERSION}'
+        )
+
+    allowed = {'schema_version', *_IMPORT_DATA_KEYS}
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ConfigValidationError(f'配置文件包含未知项目: {", ".join(unknown)}')
+
+    entries = []
+    for key in _IMPORT_DATA_KEYS:
+        if key not in data:
+            continue
+        value = data[key]
+        if key == 'config':
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ConfigValidationError('config 不是有效 JSON 对象') from exc
+            normalized = _normalize_config_payload(
+                value, base=DEFAULT_CONFIG, allow_empty=True
+            )
+            content = json.dumps(normalized, ensure_ascii=False, indent=2)
+        elif key == 'scan_config':
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ConfigValidationError('scan_config 不是有效 JSON 对象') from exc
+            else:
+                parsed = value
+            if not isinstance(parsed, dict):
+                raise ConfigValidationError('scan_config 必须是 JSON 对象')
+            content = _prepare_scan_config_for_storage(parsed)
+        else:
+            if not isinstance(value, str):
+                raise ConfigValidationError(f'{key} 必须是字符串')
+            if '\x00' in value:
+                raise ConfigValidationError(f'{key} 不能包含 NUL 字符')
+            content = value
+        entries.append((key, content))
+
+    if not entries:
+        raise ConfigValidationError('配置文件没有可导入的项目')
+    return entries
+
+
+def _prepare_scan_config_for_storage(imported):
+    """Normalize and encrypt imported scanner API keys before any DB write."""
+    from scanner_integration.config_bridge import (
+        DEFAULT_SCAN_CONFIG,
+        _API_KEY_PLATFORMS,
+        _decrypt_stored_keys,
+        _encrypt_persisted_keys,
+        _normalize_scan_config,
+        get_scan_config,
+    )
+    from scanner_integration.secure_keys import SecretConfigurationError
+
+    imported = dict(imported)
+    imported.pop('api_key_metadata', None)
+    legacy_aliases = {
+        f'{platform}_key' for platform in _API_KEY_PLATFORMS
+    }
+    allowed = set(DEFAULT_SCAN_CONFIG) | legacy_aliases
+    unknown = sorted(set(imported) - allowed)
+    if unknown:
+        raise ConfigValidationError(
+            f'scan_config 包含未知配置项: {", ".join(unknown)}'
+        )
+
+    # Validate existing ciphertext and incoming ciphertext/plaintext before the
+    # transaction. get_scan_config returns runtime plaintext and performs any
+    # independent legacy migration required by the installed deployment.
+    current = dict(get_scan_config())
+    try:
+        incoming, _ = _decrypt_stored_keys(imported)
+    except (SecretConfigurationError, ValueError) as exc:
+        raise ConfigValidationError('scan_config 中的 API Key 无法安全解密') from exc
+    merged = dict(current)
+    for platform in _API_KEY_PLATFORMS:
+        key_fields = {
+            f'{platform}_api_keys',
+            f'{platform}_api_key',
+            f'{platform}_key',
+        }
+        if key_fields & set(imported):
+            # An explicit key field (including an empty list) replaces the
+            # platform's prior credentials instead of being repopulated by a
+            # compatibility alias from the current runtime config.
+            merged[f'{platform}_api_keys'] = []
+            merged[f'{platform}_api_key'] = ''
+            merged[f'{platform}_key'] = ''
+    merged.update(incoming)
+
+    normalized = _normalize_scan_config(merged)
+    try:
+        persisted = _encrypt_persisted_keys(normalized)
+    except (SecretConfigurationError, ValueError) as exc:
+        raise ConfigValidationError('scan_config 中的 API Key 无法安全加密') from exc
+    for alias in legacy_aliases:
+        persisted.pop(alias, None)
+    return json.dumps(persisted, ensure_ascii=False, indent=2)
+
+
+def _export_scan_config_without_keys():
+    """Return scanner settings plus key counts, never key material."""
+    from scanner_integration.config_bridge import (
+        _API_KEY_PLATFORMS,
+        DEFAULT_SCAN_CONFIG,
+        get_scan_config,
+    )
+
+    runtime = dict(get_scan_config())
+    counts = {}
+    for platform in _API_KEY_PLATFORMS:
+        values = runtime.get(f'{platform}_api_keys', [])
+        counts[platform] = len(values) if isinstance(values, list) else 0
+
+    sensitive_names = set()
+    for platform in _API_KEY_PLATFORMS:
+        sensitive_names.update({
+            f'{platform}_api_keys',
+            f'{platform}_api_key',
+            f'{platform}_key',
+        })
+    exported = {
+        key: value for key, value in runtime.items()
+        if key in DEFAULT_SCAN_CONFIG and key not in sensitive_names
+    }
+    exported['api_key_metadata'] = {'counts': counts}
+    return exported
+
+
+def _write_import_entries_atomically(entries):
+    """Persist every validated config_data row in one DB transaction."""
+    with _database_db._write_lock:
+        conn = _database_db._get_conn()
+        updated_at = _database_db.now_str()
+        with conn.transaction():
+            for key, content in entries:
+                conn.execute(
+                    "REPLACE INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)",
+                    (key, content, updated_at),
+                )
+
+
+def _import_too_large_response():
+    return jsonify({'ok': False, 'error': '配置导入最大支持 1 MiB'}), 413
+
 @config_bp.route('/api/config/export', methods=['GET'])
 def api_config_export():
     """Export all configuration as a JSON file for backup."""
-    import json
     from io import BytesIO
     from flask import send_file
 
-    keys = ['config', 'subscribe', 'demo', 'alias', 'scan_config']
-    export_data = {}
-    for key in keys:
+    export_data = {
+        'schema_version': CONFIG_SCHEMA_VERSION,
+        'config': _safe_current_config(load_config()),
+        'scan_config': _export_scan_config_without_keys(),
+    }
+    for key in ('subscribe', 'demo', 'alias'):
         try:
             content = get_config_data(key)
             if content:
@@ -212,45 +507,41 @@ def api_config_export():
 @config_bp.route('/api/config/import', methods=['POST'])
 def api_config_import():
     """Import configuration from a JSON file."""
-    import json
+    if request.content_length is not None and request.content_length > MAX_IMPORT_BYTES:
+        return _import_too_large_response()
 
     if request.is_json:
+        if len(request.get_data(cache=True)) > MAX_IMPORT_BYTES:
+            return _import_too_large_response()
         data = request.get_json(silent=True)
     else:
         if not request.files:
-            return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
+            return _validation_response(ConfigValidationError('请上传配置文件'))
 
         file = request.files.get('file')
         if not file:
-            return jsonify({'ok': False, 'error': '请上传配置文件'}), 400
-
-        # Check file size (max 1MB)
-        file.seek(0, 2)  # Seek to end
-        file_size = file.tell()
-        file.seek(0)  # Reset to beginning
-        if file_size > 1 * 1024 * 1024:
-            return jsonify({'ok': False, 'error': '配置文件过大，最大支持 1MB'}), 400
+            return _validation_response(ConfigValidationError('请上传配置文件'))
 
         try:
-            content = file.read().decode('utf-8')
+            raw = file.read(MAX_IMPORT_BYTES + 1)
+            if len(raw) > MAX_IMPORT_BYTES:
+                return _import_too_large_response()
+            content = raw.decode('utf-8')
             data = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            return jsonify({'ok': False, 'error': f'文件格式错误: {e}'}), 400
+            return _validation_response(ConfigValidationError(f'文件格式错误: {e}'))
 
-    if not isinstance(data, dict):
-        return jsonify({'ok': False, 'error': '配置文件格式错误，应为 JSON 对象'}), 400
+    try:
+        entries = _prepare_import_entries(data)
+    except ConfigValidationError as exc:
+        return _validation_response(exc)
 
-    valid_keys = {'config', 'subscribe', 'demo', 'alias', 'scan_config'}
-    imported = []
-    for key, value in data.items():
-        if key in valid_keys:
-            try:
-                set_config_data(key, value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
-                imported.append(key)
-            except Exception:
-                pass
+    # Validation of every item completes before the first write.  The explicit
+    # transaction ensures a database failure cannot leave a partial import.
+    _write_import_entries_atomically(entries)
+    imported = [key for key, _ in entries]
 
-    cfg = load_config()
+    cfg = _safe_current_config(load_config())
     if cfg.get('run_mode', 'once') == 'once':
         _reload_scheduler_config()
         try:
@@ -275,7 +566,7 @@ def api_config_import():
 
 # ─────────────── 频道发现 API ───────────────
 
-@config_bp.route('/api/discover', methods=['GET'])
+@config_bp.route('/api/discover', methods=['POST'])
 def api_discover():
     """Scan subscription sources and discover available channels."""
     from engine.discovery import discover_channels

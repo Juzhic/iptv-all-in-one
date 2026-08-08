@@ -1,11 +1,14 @@
 {
   "name": "iptv-all-in-one-frontend",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run && node tests/layout.test.js",
+    "test:unit": "vitest run",
     "build": "vite build",
+    "check:size": "node tests/bundle-size.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -16,7 +19,11 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",
+    "@vue/test-utils": "^2.4.11",
+    "jsdom": "^29.1.1",
     "less": "^4.2.0",
-    "vite": "^6.0.0"
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.10"
   }
 }

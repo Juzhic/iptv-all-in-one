@@ -1,7 +1,7 @@
 <template>
   <div class="detection-tab" :class="{ 'is-dark-theme': isDarkTheme }">
     <!-- 概览卡：检测轮次记录（置顶） -->
-    <t-card size="small" :bordered="false" class="detection-card">
+    <t-card size="small" :bordered="false" class="detection-card workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">检测概览</div>
@@ -10,7 +10,7 @@
         </div>
       </div>
 
-      <div class="det-runs-toolbar">
+      <div class="det-runs-toolbar responsive-toolbar">
         <t-date-range-picker
           v-model="detDateRange"
           placeholder="选择时间范围"
@@ -21,7 +21,8 @@
         <t-button theme="primary" size="small" @click="loadDetRuns">查询</t-button>
       </div>
 
-      <t-table
+      <div class="data-table-shell data-table-shell--wide">
+        <t-table
         :columns="detRunColumns"
         :data="detRuns"
         :bordered="false"
@@ -52,11 +53,12 @@
         <template #op="{ row }">
           <t-button size="small" variant="outline" theme="primary" @click="openDetDetail(row)">日志</t-button>
         </template>
-      </t-table>
+        </t-table>
+      </div>
     </t-card>
 
     <!-- 配置卡：检测维护 + 运行日志 + 保存按钮 -->
-    <t-card size="small" :bordered="false" class="detection-card" style="margin-top: 12px;">
+    <t-card size="small" :bordered="false" class="detection-card detection-card--spaced workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">检测监控</div>
@@ -140,7 +142,7 @@
       destroy-on-close
       @close="detDetailPage = 1"
     >
-      <div class="det-detail-toolbar">
+      <div class="det-detail-toolbar responsive-toolbar">
         <t-input v-model="detDetailSearch" placeholder="搜索频道名/URL..." clearable size="small" style="width:200px" />
         <t-select v-model="detDetailCheckFilter" size="small" style="width:120px" clearable placeholder="检测结果">
           <t-option value="" label="全部结果" />
@@ -154,11 +156,12 @@
           <t-option value="unreachable" label="不可达" />
         </t-select>
         <span class="det-detail-count">
-          共 {{ filteredDetDetails.length }} 条
+          共 {{ detDetailTotal }} 条
         </span>
       </div>
 
-      <t-table
+      <div class="data-table-shell data-table-shell--wide">
+        <t-table
         :columns="detDetailColumns"
         :data="filteredDetDetails"
         :bordered="false"
@@ -197,16 +200,18 @@
         <template #response_size_bytes="{ row }">
           {{ formatBytes(row.response_size_bytes) }}
         </template>
-      </t-table>
+        </t-table>
+      </div>
     </t-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { computed, inject, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import { useTheme } from '../composables/useTheme.js'
-import { usePolling } from '../composables/usePolling.js'
+import { useAdaptivePolling, taskIsRunning } from '../composables/useAdaptivePolling.js'
 import { qualityTheme, qualityLabel } from '../utils/quality.js'
 import {
   apiDetectionLogs,
@@ -219,7 +224,19 @@ import {
   connectDetectionSse,
   shouldUseSse,
 } from '../api.js'
-import { normalizeSortInfo, sortRows } from '../utils/tableSort.js'
+import { normalizeSortInfo } from '../utils/tableSort.js'
+import { normalizeTask, readTaskId } from '../utils/tasks.js'
+
+const props = defineProps({
+  active: { type: Boolean, default: true },
+  task: { type: Object, default: null },
+})
+const registerTask = inject('registerTask', () => null)
+const currentTaskId = ref(props.task?.task_id || readTaskId('detection'))
+
+watch(() => props.task, (task) => {
+  if (task?.task_id) currentTaskId.value = task.task_id
+}, { immediate: true })
 
 const { theme } = useTheme()
 const isDarkTheme = computed(() => theme.value === 'dark')
@@ -284,16 +301,22 @@ const detAutoScroll = ref(true)
 const detLogPanelRef = ref(null)
 let detEventSource = null
 
-const { start: startDetPollFallback, stop: stopDetPollFallback } = usePolling(async () => {
+const { start: startDetPollFallback, stop: stopDetPollFallback } = useAdaptivePolling(async () => {
   await loadDetectionLogs()
-  await loadDetectionStatus()
+  const status = await loadDetectionStatus()
   await loadDetRuns({ silent: true })
-}, 10000)
+  return { running: Boolean(status?.cycle_running) || taskIsRunning(status?.task) }
+}, {
+  active: computed(() => props.active),
+  runningDelay: 2000,
+  idleDelay: 10000,
+  getRunning: result => Boolean(result?.running),
+})
 
 async function connectDetectionStream() {
   disconnectDetectionSse()
+  startDetPollFallback()
   if (!await shouldUseSse()) {
-    startDetPollFallback()
     return
   }
   try {
@@ -334,7 +357,6 @@ function disconnectDetectionSse() {
     detEventSource.close()
     detEventSource = null
   }
-  stopDetPollFallback()
 }
 
 async function refreshDetectionOverview() {
@@ -432,9 +454,14 @@ async function loadDetectionLogs() {
 async function loadDetectionStatus() {
   let result = null
   try {
-    const data = await apiDetectionStatus()
+    const data = await apiDetectionStatus(currentTaskId.value)
     if (data && typeof data === 'object') {
       detStatus.value = data
+      const task = normalizeTask(data.task, 'detection')
+      if (task) {
+        registerTask('detection', task)
+        if (task.task_id) currentTaskId.value = task.task_id
+      }
       result = data
     }
   } catch (_) { /* ignore */ }
@@ -525,21 +552,11 @@ const detDetailSortInfo = ref({})
 
 function onDetDetailSortChange(sort) {
   detDetailSortInfo.value = normalizeSortInfo(sort)
+  detDetailPage.value = 1
+  loadDetDetail()
 }
 
-const filteredDetDetails = computed(() => {
-  let data = [...detRunDetails.value]
-  const q = detDetailSearch.value?.toLowerCase()
-  if (q) {
-    data = data.filter(r =>
-      (r.name || '').toLowerCase().includes(q) || (r.url || '').toLowerCase().includes(q)
-    )
-  }
-  if (detDetailCheckFilter.value === 'pass') data = data.filter(r => r.check_ok)
-  else if (detDetailCheckFilter.value === 'fail') data = data.filter(r => !r.check_ok)
-  if (detDetailQualityFilter.value) data = data.filter(r => r.quality_status === detDetailQualityFilter.value)
-  return sortRows(data, detDetailSortInfo.value)
-})
+const filteredDetDetails = computed(() => detRunDetails.value)
 
 const detDetailColumns = [
   { colKey: 'name', title: '频道名称', width: 160, ellipsis: true },
@@ -553,9 +570,30 @@ const detDetailColumns = [
   { colKey: 'op', title: '操作', width: 90, align: 'center' },
 ]
 
+let detDetailController = null
+let detDetailRequestSeq = 0
+let detDetailFilterTimer = null
+
 async function loadDetDetail() {
+  const seq = ++detDetailRequestSeq
+  detDetailController?.abort()
+  detDetailController = new AbortController()
   try {
-    const data = await apiDetectionRunResults(detDetailCycleId.value, detDetailPage.value, detDetailPageSize.value)
+    const sort = detDetailSortInfo.value
+    const data = await apiDetectionRunResults(
+      detDetailCycleId.value,
+      detDetailPage.value,
+      detDetailPageSize.value,
+      {
+        search: detDetailSearch.value.trim(),
+        check: detDetailCheckFilter.value,
+        quality: detDetailQualityFilter.value,
+        sort_by: sort.sortBy,
+        sort_order: sort.sortBy ? (sort.descending ? 'desc' : 'asc') : '',
+      },
+      { signal: detDetailController.signal },
+    )
+    if (seq !== detDetailRequestSeq) return
     if (data && Array.isArray(data.items)) {
       detRunDetails.value = data.items
       detDetailTotal.value = data.total || 0
@@ -564,11 +602,21 @@ async function loadDetDetail() {
       detDetailTotal.value = data.length
     }
   } catch (e) {
+    if (e?.name === 'AbortError' || seq !== detDetailRequestSeq) return
     detRunDetails.value = []
     detDetailTotal.value = 0
     MessagePlugin.error('加载检测明细失败: ' + (e?.message || ''))
   }
 }
+
+watch([detDetailSearch, detDetailCheckFilter, detDetailQualityFilter], () => {
+  if (!detDetailVisible.value) return
+  clearTimeout(detDetailFilterTimer)
+  detDetailFilterTimer = setTimeout(() => {
+    detDetailPage.value = 1
+    loadDetDetail()
+  }, 250)
+})
 
 function onDetDetailPageChange(pageInfo) {
   detDetailPage.value = pageInfo.current
@@ -618,9 +666,22 @@ onMounted(async () => {
   countdownTimer = setInterval(updateDetectionCountdown, 60000)
 })
 
+onActivated(() => {
+  startDetPollFallback()
+  connectDetectionStream()
+})
+
+onDeactivated(() => {
+  disconnectDetectionSse()
+  stopDetPollFallback()
+})
+
 onBeforeUnmount(() => {
   window.removeEventListener('persistent-detection-finished', onPersistentDetectionFinished)
   disconnectDetectionSse()
+  stopDetPollFallback()
+  detDetailController?.abort()
+  clearTimeout(detDetailFilterTimer)
   if (countdownTimer) clearInterval(countdownTimer)
 })
 </script>
@@ -679,6 +740,10 @@ onBeforeUnmount(() => {
   color: var(--surface-text-primary);
   border-radius: 18px;
   background: var(--surface-shell-gradient);
+}
+
+.detection-card--spaced {
+  margin-top: 16px;
 }
 
 .config-header {
@@ -946,5 +1011,29 @@ onBeforeUnmount(() => {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .detection-tab {
+    padding-top: 0;
+  }
+
+  .detection-card :deep(.t-card__body) {
+    padding: 16px;
+  }
+
+  .det-runs-toolbar > :first-child,
+  .det-detail-toolbar > .t-input,
+  .det-detail-toolbar > .t-select {
+    width: 100% !important;
+  }
+
+  .det-runs-toolbar .t-button {
+    width: 100%;
+  }
+
+  .config-panel {
+    padding: 15px;
+    border-radius: 14px;
+  }
 }
+
 </style>

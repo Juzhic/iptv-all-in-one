@@ -2,19 +2,21 @@
 
 ## TDesign 组件库约定
 
-本项目使用 `tdesign-vue-next`（Vue 3 版本，v1.12+），全局注册，不做按需引入。
+本项目使用 `tdesign-vue-next`（Vue 3 版本，v1.12+），通过构建期自动导入按需打包，禁止在 `main.js` 全量注册组件库或全量样式。
 
 ### 集成方式
 
 ```js
-// main.js
-import TDesign from 'tdesign-vue-next'
-import 'tdesign-vue-next/es/style/index.css'
-app.use(TDesign)
+// vite.config.js
+Components({
+  dts: false,
+  resolvers: [TDesignResolver({ library: 'vue-next', esm: true })],
+})
 ```
 
-- 所有 `t-*` 组件无需单独 import，直接在模板中使用
-- 只有编程式 API 需要手动引入，例如 `import { MessagePlugin } from 'tdesign-vue-next'`
+- 模板中的 `t-*` 组件由 `unplugin-vue-components` 与 `TDesignResolver` 自动导入。
+- 编程式 API 必须走直接 ESM 入口，例如 `tdesign-vue-next/es/message/index.mjs`，不要从包根导入。
+- 初始资源 gzip 总量不得超过 450 KiB，任一 JS chunk 原始体积不得超过 750 KiB；用 `npm run check:size` 校验。
 
 ### 主题与深色模式
 
@@ -31,12 +33,27 @@ app.use(TDesign)
   :deep(.t-tabs__bar) { ... }
   ```
 
+## 应用壳层与响应式约定
+
+- 一级导航配置集中在 `frontend/src/navigation.js`，新增页面时必须同步提供分组、短标记和页面说明，不要在 `App.vue` 另写一套列表。
+- 公共布局 token 与工具类集中在 `frontend/src/styles/layout.css`：
+  - `workspace-card`：统一页面卡片圆角、边框和轻阴影。
+  - `responsive-toolbar`：筛选和操作控件允许换行，小屏控件自动占满可用宽度。
+  - `data-table-shell` / `data-table-shell--wide`：让宽表只在局部容器内横向滚动。
+- 大于 `900px` 使用可收起的分组侧栏；`900px` 及以下使用顶部栏和左侧抽屉，禁止回退为横向滚动导航。
+- 页面路由使用 `#/page-name` Hash 形式，导航必须通过 `useHashRoute`，以便刷新恢复当前页并执行配置页离开保护。
+- 异步页面使用 `Suspense`/懒加载；数据请求至少覆盖加载、空数据、错误重试三态，优先复用 `AsyncState.vue`。
+- 任务页轮询仅在页面可见时运行：运行中 2 秒、空闲 10 秒，`document.hidden` 时暂停；任务 ID 同时从 `/api/tasks`、状态响应和 `sessionStorage` 恢复。
+- 页面不能通过固定最小宽度撑开 `documentElement`。宽表需要滚动时必须套局部表格容器，普通卡片、工具栏和操作区不得产生非预期横向溢出。
+- 顶部概览统计只在“总览”页面展示；其他页面只保留当前页标题、说明、运行状态和主题切换，避免重复信息抢占首屏。
+
 ### 常用组件与使用规范
 
 | 场景 | 组件 | 注意事项 |
 |---|---|---|
 | 布局网格 | `t-row` / `t-col` | 用响应式断点 `:xs` `:sm` `:md` `:lg` |
-| 标签页导航 | `t-tabs` / `t-tab-panel` | `v-model` 绑定当前值，`:destroy-on-hide="false"` 保持面板状态 |
+| 一级导航 | 分组侧栏 / `t-drawer` | 桌面侧栏可折叠，移动端使用抽屉，统一由 Hash 路由驱动 |
+| 局部标签页 | `t-tabs` / `t-tab-panel` | 只用于页面内部视图切换，不承担一级路由 |
 | 数据表格 | `t-table` | 通过 `#slot` 自定义列渲染；`size="small"` 适配紧凑场景 |
 | 按钮 | `t-button` | `theme` 区分语义（primary/danger），`variant="outline"` 做次要操作，`size="small"` 用于紧凑区域 |
 | 开关 | `t-switch` | `size="large"` 用于配置项，`size="small"` 用于顶栏等轻量场景 |
@@ -49,6 +66,13 @@ app.use(TDesign)
 | 进度条 | `t-progress` | `status` 控制颜色（success/warning），`size="small"` 紧凑显示 |
 | 折叠面板 | `t-collapse` / `t-collapse-panel` | 用于可展开的详情区域 |
 | 加载 | `t-loading` | 可作独立组件或指令使用 |
+
+### 数据页交互约定
+
+- 搜索、排序、分页必须把 `search`、`sort_by`、`sort_order`、`page`、`size` 发给服务端，不能只重排当前页。
+- 请求切换时使用 `AbortController` 与递增序号，旧响应不得覆盖新筛选结果。
+- 多选文案必须明确“本页”；导出必须分别提供“本页”和“全部筛选结果”，全量导出通过分页拉取现有接口完成。
+- 日志在 DOM 中最多渲染最后 500 条，但下载应包含当前会话的完整日志；暂停按钮只暂停自动滚动。
 
 ### Props 使用模式
 

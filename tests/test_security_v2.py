@@ -1,0 +1,472 @@
+import base64
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import types
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+
+import generate_env as env_generator
+from engine import test_engine
+
+
+def _load_web_modules_without_startup():
+    """Load route modules without executing web/__init__.py or touching MySQL."""
+    root = Path(__file__).resolve().parents[1]
+    module_names = (
+        'web', 'web.state', 'web.scheduler', 'web.routes',
+        'web.routes.params', 'web.routes.config', 'web.app',
+    )
+    previous = {name: sys.modules.get(name) for name in module_names}
+
+    def load(name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    try:
+        web_package = types.ModuleType('web')
+        web_package.__path__ = [str(root / 'web')]
+        sys.modules['web'] = web_package
+
+        routes_package = types.ModuleType('web.routes')
+        routes_package.__path__ = [str(root / 'web' / 'routes')]
+        sys.modules['web.routes'] = routes_package
+        web_package.routes = routes_package
+
+        state = load('web.state', root / 'web' / 'state.py')
+        web_package.state = state
+        scheduler = load('web.scheduler', root / 'web' / 'scheduler.py')
+        web_package.scheduler = scheduler
+        params = load('web.routes.params', root / 'web' / 'routes' / 'params.py')
+        routes_package.params = params
+        config_module = load(
+            'web.routes.config', root / 'web' / 'routes' / 'config.py'
+        )
+        app_module = load('web.app', root / 'web' / 'app.py')
+        return app_module, config_module
+    finally:
+        for name in reversed(module_names):
+            sys.modules.pop(name, None)
+            if previous[name] is not None:
+                sys.modules[name] = previous[name]
+
+
+web_app_module, config_routes = _load_web_modules_without_startup()
+
+
+@pytest.fixture
+def local_tmp_path():
+    """Windows-safe temp directory that avoids pytest's restrictive chmod."""
+    path = Path(__file__).resolve().parents[1] / 'output' / f'.security-v2-{uuid.uuid4().hex}'
+    path.mkdir(parents=True)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _auth_headers(**extra):
+    credentials = (
+        f'{web_app_module.BASIC_AUTH_USER}:'
+        f'{web_app_module.BASIC_AUTH_PASSWORD}'
+    ).encode('utf-8')
+    headers = {
+        'Authorization': 'Basic ' + base64.b64encode(credentials).decode('ascii'),
+    }
+    headers.update(extra)
+    return headers
+
+
+def _mutation_headers(**extra):
+    headers = {
+        'Origin': 'http://localhost',
+        'X-IPTV-Request': '1',
+    }
+    headers.update(extra)
+    return _auth_headers(**headers)
+
+
+def _make_app(monkeypatch):
+    monkeypatch.delenv('IPTV_REQUIRE_STRONG_CREDENTIALS', raising=False)
+    monkeypatch.delenv('IPTV_TRUSTED_ORIGINS', raising=False)
+    app = web_app_module.create_app()
+    app.config.update(TESTING=True)
+    return app
+
+
+def test_output_paths_are_fixed_and_web_fields_are_removed(monkeypatch, local_tmp_path):
+    monkeypatch.setenv('IPTV_OUTPUT_DIR', str(local_tmp_path))
+    paths = test_engine.get_output_paths()
+
+    assert 'output_txt' not in test_engine.DEFAULT_CONFIG
+    assert 'output_m3u' not in test_engine.DEFAULT_CONFIG
+    assert paths == {
+        'directory': str(local_tmp_path),
+        'txt': str(local_tmp_path / 'result.txt'),
+        'm3u': str(local_tmp_path / 'result.m3u'),
+        'history': str(local_tmp_path / 'history.json'),
+    }
+
+    with pytest.raises(config_routes.ConfigValidationError):
+        config_routes._normalize_config_payload({'output_txt': 'elsewhere.pth'})
+
+
+@pytest.mark.parametrize(
+    'key,value',
+    [
+        ('logo_base_url', 'file:///tmp/logo'),
+        ('logo_base_url', 'https://example.com/\nimport os'),
+        ('logo_base_url', ' https://example.com'),
+        ('epg_url', 'javascript:alert(1)'),
+        ('epg_url', 'https://example.com/' + 'a' * 2048),
+    ],
+)
+def test_config_url_validation_rejects_unsafe_values(key, value):
+    with pytest.raises(config_routes.ConfigValidationError):
+        config_routes._normalize_config_payload({key: value})
+
+
+def test_config_url_validation_normalizes_logo_and_schema():
+    result = config_routes._normalize_config_payload({
+        'logo_base_url': 'https://example.com/logos///',
+        'epg_url': '',
+    })
+    assert result['schema_version'] == 2
+    assert result['logo_base_url'] == 'https://example.com/logos'
+
+
+def test_config_route_rejects_entire_invalid_payload_without_write(monkeypatch):
+    app = _make_app(monkeypatch)
+    app.register_blueprint(config_routes.config_bp)
+    saved = []
+    monkeypatch.setattr(
+        config_routes, 'get_config', lambda defaults: dict(defaults)
+    )
+    monkeypatch.setattr(config_routes, 'db_save_config', saved.append)
+
+    response = app.test_client().post(
+        '/api/config',
+        json={'max_workers': 8, 'output_m3u': 'site-packages/boot.pth'},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 422
+    assert saved == []
+
+
+def test_import_validation_is_all_or_nothing(monkeypatch):
+    app = _make_app(monkeypatch)
+    app.register_blueprint(config_routes.config_bp)
+    writes = []
+    monkeypatch.setattr(
+        config_routes, '_write_import_entries_atomically', writes.append
+    )
+
+    response = app.test_client().post(
+        '/api/config/import',
+        json={
+            'schema_version': 2,
+            'subscribe': 'https://example.com/list.m3u',
+            'config': {'output_txt': 'arbitrary.txt'},
+        },
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 422
+    assert writes == []
+
+
+def test_scan_config_import_encrypts_keys_before_transaction(monkeypatch):
+    from scanner_integration import config_bridge
+
+    monkeypatch.setenv('IPTV_SECRET_KEY', 's' * 48)
+    monkeypatch.setattr(config_bridge, 'get_scan_config', lambda: {})
+
+    entries = config_routes._prepare_import_entries({
+        'schema_version': 2,
+        'scan_config': {
+            'quake_api_keys': ['plain-quake-secret'],
+            'hunter_api_key': 'plain-hunter-secret',
+        },
+    })
+    stored = json.loads(dict(entries)['scan_config'])
+
+    serialized = json.dumps(stored)
+    assert 'plain-quake-secret' not in serialized
+    assert 'plain-hunter-secret' not in serialized
+    assert stored['quake_api_keys'][0].startswith('enc:v1:')
+    assert stored['hunter_api_keys'][0].startswith('enc:v1:')
+
+
+def test_scan_config_export_contains_counts_but_no_key_material(monkeypatch):
+    from scanner_integration import config_bridge
+
+    monkeypatch.setattr(config_bridge, 'get_scan_config', lambda: {
+        'quake_api_keys': ['quake-secret'],
+        'quake_api_key': 'quake-secret',
+        'quake_key': 'quake-secret',
+        'hunter_api_keys': ['one', 'two'],
+        'province': '北京',
+    })
+
+    exported = config_routes._export_scan_config_without_keys()
+    serialized = json.dumps(exported, ensure_ascii=False)
+
+    assert 'quake-secret' not in serialized
+    assert 'quake_api_keys' not in exported
+    assert exported['province'] == '北京'
+    assert exported['api_key_metadata']['counts']['quake'] == 1
+    assert exported['api_key_metadata']['counts']['hunter'] == 2
+
+
+def test_atomic_import_uses_one_transaction(monkeypatch):
+    class FakeConnection:
+        def __init__(self):
+            self.in_transaction = False
+            self.executed = []
+
+        @contextmanager
+        def transaction(self):
+            assert not self.in_transaction
+            self.in_transaction = True
+            try:
+                yield self
+            finally:
+                self.in_transaction = False
+
+        def execute(self, query, args):
+            assert self.in_transaction
+            self.executed.append((query, args))
+
+    connection = FakeConnection()
+    monkeypatch.setattr(config_routes._database_db, '_get_conn', lambda: connection)
+    monkeypatch.setattr(config_routes._database_db, 'now_str', lambda: 'now')
+
+    config_routes._write_import_entries_atomically([
+        ('subscribe', 'one'),
+        ('demo', 'two'),
+    ])
+
+    assert [args[0] for _, args in connection.executed] == ['subscribe', 'demo']
+    assert not connection.in_transaction
+
+
+def test_mutation_guard_requires_header_origin_and_json(monkeypatch):
+    app = _make_app(monkeypatch)
+
+    @app.post('/api/probe')
+    def probe():
+        return {'ok': True}
+
+    client = app.test_client()
+    auth = _auth_headers()
+    assert client.post('/api/probe', json={}, headers=auth).status_code == 403
+    assert client.post(
+        '/api/probe', json={}, headers=_auth_headers(**{'X-IPTV-Request': '1'})
+    ).status_code == 403
+    assert client.post(
+        '/api/probe', json={}, headers=_mutation_headers(Origin='https://evil.test')
+    ).status_code == 403
+    assert client.post(
+        '/api/probe', data='x', headers=_mutation_headers()
+    ).status_code == 415
+    assert client.post(
+        '/api/probe', data='{', content_type='application/json',
+        headers=_mutation_headers(),
+    ).status_code == 400
+    assert client.post(
+        '/api/probe', json={}, headers=_mutation_headers()
+    ).status_code == 200
+
+
+def test_request_and_import_body_limits(monkeypatch):
+    app = _make_app(monkeypatch)
+
+    @app.post('/api/probe')
+    def probe():
+        return {'ok': True}
+
+    client = app.test_client()
+    oversized = json.dumps('x' * (2 * 1024 * 1024 + 1))
+    response = client.post(
+        '/api/probe', data=oversized, content_type='application/json',
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 413
+
+    import_body = json.dumps('x' * (1024 * 1024 + 1))
+    response = client.post(
+        '/api/config/import', data=import_body, content_type='application/json',
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 413
+
+
+def test_anonymous_feed_cache_headers_and_etag_are_preserved(monkeypatch):
+    app = _make_app(monkeypatch)
+
+    @app.get('/api/download/txt')
+    def public_feed():
+        response = web_app_module.Response('feed', content_type='text/plain')
+        response.headers['Cache-Control'] = 'public, max-age=30'
+        response.set_etag('feed-v1')
+        return response
+
+    response = app.test_client().get('/api/download/txt')
+    assert response.status_code == 200
+    assert response.headers['Cache-Control'] == 'public, max-age=30'
+    assert response.headers['ETag'] == '"feed-v1"'
+
+
+def test_request_teardown_closes_thread_database_connection(monkeypatch):
+    import database
+
+    app = _make_app(monkeypatch)
+    calls = []
+    monkeypatch.setattr(database, 'close_thread_connection', lambda: calls.append(1))
+
+    @app.get('/probe')
+    def probe():
+        return {'ok': True}
+
+    assert app.test_client().get('/probe', headers=_auth_headers()).status_code == 200
+    assert calls == [1]
+
+
+def test_insecure_tls_status_exposes_only_filtered_hosts(monkeypatch):
+    app = _make_app(monkeypatch)
+    app.register_blueprint(config_routes.config_bp)
+    monkeypatch.setenv(
+        'IPTV_INSECURE_TLS_HOSTS',
+        'Example.COM, bad/path, example.com, 10.0.0.8',
+    )
+
+    response = app.test_client().get(
+        '/api/config/security-status', headers=_auth_headers()
+    )
+    assert response.status_code == 200
+    assert response.get_json()['data'] == {
+        'insecure_tls_hosts_enabled': True,
+        'insecure_tls_hosts': ['10.0.0.8', 'example.com'],
+    }
+
+
+def test_m3u_output_cannot_inject_attributes_or_lines(local_tmp_path):
+    channel = 'CCTV"1\n#INJECT'
+    output = local_tmp_path / 'result.m3u'
+    test_engine.save_result_m3u(
+        [('新闻"组', [channel])],
+        {channel: ['https://stream.example/live\n#URL-INJECT']},
+        output_file=str(output),
+        show_update_time=False,
+        config={
+            'logo_base_url': 'https://logo.example/"\n#LOGO-INJECT',
+            'epg_url': 'https://epg.example/"\n#EPG-INJECT',
+        },
+    )
+
+    content = output.read_text(encoding='utf-8')
+    assert '\n#INJECT' not in content
+    assert '\n#URL-INJECT' not in content
+    assert '\n#LOGO-INJECT' not in content
+    assert '\n#EPG-INJECT' not in content
+    assert 'tvg-id="CCTV1#INJECT"' in content
+
+
+def test_subscription_limits_and_channel_name_boundaries(monkeypatch):
+    too_many_lines = '\n'.join('x' for _ in range(50_001))
+    with pytest.raises(ValueError, match='行数'):
+        test_engine.parse_iptv_addresses(too_many_lines)
+
+    long_name = '频' * 257
+    valid_name = '道' * 256
+    parsed = test_engine.parse_iptv_addresses(
+        f'{long_name},https://example.com/too-long\n'
+        f'{valid_name},https://example.com/valid'
+    )
+    assert len(parsed) == 1
+    assert parsed[0][0]['name'] == valid_name
+
+    class FakeResponse:
+        encoding = 'utf-8'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            del chunk_size
+            yield b'x' * (5 * 1024 * 1024)
+            yield b'x'
+
+    monkeypatch.setattr(test_engine, 'http_get', lambda *_a, **_kw: FakeResponse())
+    assert test_engine.fetch_m3u_playlist('https://example.com/list') is None
+
+
+def test_each_cycle_resets_timed_out_regex_rules(monkeypatch):
+    import database
+
+    calls = []
+    monkeypatch.setattr(test_engine, 'reset_regex_timeout_rules', lambda: calls.append(1))
+    monkeypatch.setattr(database, 'clear_run_progress', lambda: None)
+    monkeypatch.setattr(database, 'update_run_progress', lambda *_a, **_kw: None)
+    monkeypatch.setattr(test_engine, 'load_config', lambda: dict(test_engine.DEFAULT_CONFIG))
+    monkeypatch.setattr(test_engine, 'load_aliases', lambda: ({}, {}, []))
+    monkeypatch.setattr(test_engine, 'parse_demo_file', lambda: [])
+
+    test_engine.run_test_cycle()
+    assert calls == [1]
+
+
+def test_generate_env_preserves_values_and_fills_all_secrets(monkeypatch, local_tmp_path):
+    env_path = local_tmp_path / '.env'
+    example_path = local_tmp_path / '.env.example'
+    example_path.write_text(
+        'DB_HOST=mysql\nDB_USER=root\nDB_PASSWORD=\n'
+        'MYSQL_ROOT_PASSWORD=\nIPTV_AUTH_PASSWORD=\nIPTV_SECRET_KEY=\n',
+        encoding='utf-8',
+    )
+    env_path.write_text(
+        'DB_HOST=db.internal\nDB_USER=root\nDB_PASSWORD=existing-db-password-123\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+    monkeypatch.setattr(env_generator, 'EXAMPLE_PATH', example_path)
+
+    original = env_path.read_text(encoding='utf-8')
+    with pytest.raises(RuntimeError, match='--upgrade'):
+        env_generator.generate_env_values()
+    assert env_path.read_text(encoding='utf-8') == original
+
+    first = env_generator.generate_env_values(upgrade=True)
+    second = env_generator.generate_env_values()
+
+    assert first == second
+    assert first['MYSQL_ROOT_PASSWORD'] == 'existing-db-password-123'
+    assert first['DB_PASSWORD'] != 'existing-db-password-123'
+    assert first['DB_USER'] == 'iptv_app'
+    assert first['MYSQL_ROOT_PASSWORD'] != first['DB_PASSWORD']
+    assert len(first['IPTV_AUTH_PASSWORD']) >= 32
+    assert len(first['IPTV_SECRET_KEY']) >= 48
+    assert 'DB_HOST=db.internal' in env_path.read_text(encoding='utf-8')
+    assert not list(local_tmp_path.glob('..env.*'))
+
+    original_secret = first['IPTV_SECRET_KEY']
+    forced = env_generator.generate_env_values(force=True)
+    assert forced['IPTV_SECRET_KEY'] == original_secret
+
+    if os.name != 'nt':
+        assert env_path.stat().st_mode & 0o777 == 0o600

@@ -1,14 +1,30 @@
 <template>
   <div class="log-panel-wrapper">
     <div class="log-toolbar">
-      <t-button :theme="autoScroll ? 'primary' : 'default'" variant="outline" size="small" @click="autoScroll = !autoScroll">
+      <t-button
+        :theme="autoScroll ? 'primary' : 'default'"
+        variant="outline"
+        size="small"
+        :aria-pressed="autoScroll"
+        @click="autoScroll = !autoScroll"
+      >
         {{ autoScroll ? '暂停滚动' : '自动滚动' }}
       </t-button>
       <t-button variant="outline" size="small" @click="$emit('clear')">清空日志</t-button>
-      <span v-if="showCount" class="log-count">{{ entries.length }} 条</span>
+      <t-button variant="outline" size="small" :disabled="!entries.length" @click="downloadLogs">下载完整日志</t-button>
+      <span v-if="showCount" class="log-count">
+        {{ entries.length }} 条<span v-if="entries.length > maxRendered"> · 页面显示最后 {{ maxRendered }} 条</span>
+      </span>
     </div>
-    <div class="log-panel" ref="panelRef">
-      <div v-for="(line, index) in entries" :key="line.ts ? `${line.ts}-${index}` : index" class="log-line">
+    <div
+      ref="panelRef"
+      class="log-panel"
+      role="log"
+      :aria-live="autoScroll ? 'polite' : 'off'"
+      aria-label="任务运行日志"
+      tabindex="0"
+    >
+      <div v-for="(line, index) in renderedEntries" :key="line.seq ?? (line.ts ? `${line.ts}-${index}` : index)" class="log-line">
         <span v-if="line.ts || line.time" class="log-time">[{{ line.ts || line.time }}]</span>
         <span v-if="line.level" :class="levelClass(line.level)">[{{ levelText(line.level) }}]</span>
         <span :class="msgClass(line)">{{ line.message || line.msg || '' }}</span>
@@ -19,18 +35,21 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 const props = defineProps({
   entries: { type: Array, default: () => [] },
   showCount: { type: Boolean, default: true },
   emptyText: { type: String, default: '暂无日志' },
+  downloadName: { type: String, default: 'iptv-session.log' },
+  maxRendered: { type: Number, default: 500 },
 })
 
 defineEmits(['clear'])
 
 const panelRef = ref(null)
 const autoScroll = ref(true)
+const renderedEntries = computed(() => props.entries.slice(-Math.max(1, props.maxRendered)))
 
 watch(() => props.entries.length, () => {
   if (!autoScroll.value) return
@@ -57,6 +76,27 @@ function msgClass(line) {
   if (/失败|异常|error|终止/i.test(msg)) return 'log-msg-fail'
   if (/通过|完成|pass|成功|存活|发现/i.test(msg)) return 'log-msg-pass'
   return 'log-msg-info'
+}
+
+function serializeLine(line) {
+  const parts = []
+  if (line.ts || line.time) parts.push(`[${line.ts || line.time}]`)
+  if (line.level) parts.push(`[${levelText(line.level)}]`)
+  parts.push(line.message || line.msg || '')
+  return parts.filter(Boolean).join(' ')
+}
+
+function downloadLogs() {
+  if (!props.entries.length) return
+  const content = props.entries.map(serializeLine).join('\n') + '\n'
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = props.downloadName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 </script>
 

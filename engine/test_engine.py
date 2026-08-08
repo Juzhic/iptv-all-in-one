@@ -5,7 +5,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from engine.alias import load_aliases, match_channel_name
+from engine.alias import load_aliases, match_channel_name, reset_regex_timeout_rules
 from engine.ffmpeg_test import (
     analyze_iptv_with_ffmpeg,
     register_timeout as _reg_timeout,
@@ -28,6 +28,7 @@ except ImportError:
 
 # 默认配置（config.json 不存在时使用）
 DEFAULT_CONFIG = {
+    'schema_version': 2,
     'test_duration': 15,
     'max_workers': 30,
     'max_ffmpeg_workers': 6,
@@ -41,8 +42,6 @@ DEFAULT_CONFIG = {
     'update_time_position': 'top',
     'min_width': 1920,
     'min_height': 1080,
-    'output_txt': 'output/result.txt',
-    'output_m3u': 'output/result.m3u',
     'run_mode': 'once',
     'run_times': [],
     'run_interval_minutes': 60,
@@ -50,6 +49,34 @@ DEFAULT_CONFIG = {
     'logo_base_url': 'https://www.xn--rgv465a.top/tvlogo',
     'epg_url': '',
 }
+
+CONFIG_SCHEMA_VERSION = 2
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
+MAX_SUBSCRIPTION_LINES = 50_000
+MAX_SUBSCRIPTION_ENTRIES = 50_000
+MAX_CHANNEL_NAME_LENGTH = 256
+
+
+def get_output_paths():
+    """Return the operator-controlled directory with fixed output filenames.
+
+    Output filenames are deliberately not part of the Web-managed config.  This
+    keeps an authenticated Web user from turning result generation into an
+    arbitrary-file-write primitive while still allowing an operator to move the
+    whole output directory with ``IPTV_OUTPUT_DIR``.
+    """
+    configured = os.environ.get('IPTV_OUTPUT_DIR', '').strip()
+    output_dir = configured or os.path.join(_PROJECT_ROOT, 'output')
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(_PROJECT_ROOT, output_dir)
+    output_dir = os.path.abspath(os.path.expanduser(output_dir))
+    return {
+        'directory': output_dir,
+        'txt': os.path.join(output_dir, 'result.txt'),
+        'm3u': os.path.join(output_dir, 'result.m3u'),
+        'history': os.path.join(output_dir, 'history.json'),
+    }
 
 
 def load_config(filepath=None):
@@ -330,7 +357,6 @@ def setup_logging(run_id=''):
 
 def fetch_m3u_playlist(url):
     """从指定 URL 获取订阅源内容。"""
-    max_bytes = 20 * 1024 * 1024
     try:
         with http_get(url, timeout=30, stream=True) as response:
             response.raise_for_status()
@@ -340,17 +366,27 @@ def fetch_m3u_playlist(url):
                 if not chunk:
                     continue
                 total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError(f"M3U 内容超过 {max_bytes // 1024 // 1024}MB，已跳过")
+                if total > MAX_SUBSCRIPTION_BYTES:
+                    raise ValueError(
+                        f"M3U 内容超过 {MAX_SUBSCRIPTION_BYTES // 1024 // 1024}MB，已跳过"
+                    )
                 chunks.append(chunk)
             content = b''.join(chunks)
             encodings = [response.encoding, 'utf-8-sig', 'utf-8', 'gb18030']
             for encoding in dict.fromkeys(filter(None, encodings)):
                 try:
-                    return content.decode(encoding)
+                    decoded = content.decode(encoding)
+                    break
                 except UnicodeDecodeError:
                     continue
-            return content.decode('utf-8', errors='ignore')
+            else:
+                decoded = content.decode('utf-8', errors='ignore')
+
+            if len(decoded.splitlines()) > MAX_SUBSCRIPTION_LINES:
+                raise ValueError(
+                    f"M3U 行数超过 {MAX_SUBSCRIPTION_LINES}，已跳过"
+                )
+            return decoded
     except Exception as e:
         print(f"获取 M3U 数据失败：{e}")
         return None
@@ -362,7 +398,11 @@ def parse_iptv_addresses(m3u_content):
     支持标准 M3U（#EXTINF + URL）和 DIYP/TXT（频道名,URL）两种常见订阅格式。
     """
     iptv_list = []
+    if not isinstance(m3u_content, str):
+        raise ValueError("M3U 内容必须是文本")
     lines = m3u_content.splitlines()
+    if len(lines) > MAX_SUBSCRIPTION_LINES:
+        raise ValueError(f"M3U 行数超过 {MAX_SUBSCRIPTION_LINES}")
 
     current_channel = {}
     current_group = ''
@@ -370,6 +410,21 @@ def parse_iptv_addresses(m3u_content):
 
     def is_url(value):
         return bool(url_pattern.match((value or '').strip()))
+
+    def bounded_name(value):
+        value = (value or '').strip()
+        if not value or len(value) > MAX_CHANNEL_NAME_LENGTH:
+            return ''
+        return value
+
+    def append_entry(channel_info, stream_url):
+        name = bounded_name(channel_info.get('name'))
+        if not name:
+            return
+        channel_info['name'] = name
+        if len(iptv_list) >= MAX_SUBSCRIPTION_ENTRIES:
+            raise ValueError(f"M3U 条目数超过 {MAX_SUBSCRIPTION_ENTRIES}")
+        iptv_list.append((channel_info, stream_url))
 
     for line in lines:
         line = line.strip().lstrip('\ufeff')
@@ -386,11 +441,11 @@ def parse_iptv_addresses(m3u_content):
             match = re.search(r'group-title="([^"]*)".*?,(.+)$', line)
             if match:
                 current_channel['group'] = match.group(1).strip()
-                current_channel['name'] = match.group(2).strip()
+                current_channel['name'] = bounded_name(match.group(2))
             else:
                 parts = line.rsplit(',', 1)
                 if len(parts) > 1:
-                    current_channel['name'] = parts[-1].strip()
+                    current_channel['name'] = bounded_name(parts[-1])
                 if current_group:
                     current_channel.setdefault('group', current_group)
             continue
@@ -409,14 +464,14 @@ def parse_iptv_addresses(m3u_content):
             channel_info = current_channel.copy()
             if current_group:
                 channel_info.setdefault('group', current_group)
-            iptv_list.append((channel_info, line))
+            append_entry(channel_info, line)
             current_channel = {}
             continue
 
         # DIYP/TXT 订阅格式：分类行是 “分类,#genre#”，频道行是 “频道名,播放地址”。
         if ',' in line:
             name, url = line.split(',', 1)
-            name = name.strip()
+            name = bounded_name(name)
             url = url.strip()
             if name and is_url(url) and not detect_non_live_media_url(url):
                 if is_valid_stream_url is not None and not is_valid_stream_url(url):
@@ -424,7 +479,7 @@ def parse_iptv_addresses(m3u_content):
                 channel_info = {'name': name}
                 if current_group:
                     channel_info['group'] = current_group
-                iptv_list.append((channel_info, url))
+                append_entry(channel_info, url)
 
     return iptv_list
 
@@ -1023,6 +1078,21 @@ def _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases=None):
     return [_entry_url(item) for item in urls]
 
 
+def _sanitize_m3u_attr(value):
+    """Remove characters that can escape an EXTINF quoted attribute."""
+    text = '' if value is None else str(value)
+    return ''.join(
+        ch for ch in text
+        if ch != '"' and not (ord(ch) < 32 or 127 <= ord(ch) <= 159)
+    )
+
+
+def _sanitize_m3u_line(value):
+    """Keep externally sourced values on exactly one M3U line."""
+    text = '' if value is None else str(value)
+    return ''.join(ch for ch in text if not (ord(ch) < 32 or 127 <= ord(ch) <= 159))
+
+
 def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.txt', show_update_time=True, update_time_position='top', update_time=None):
     """按 demo 格式输出结果到 txt 文件。只输出测速通过的频道，跳过空分类。"""
     update_time_str = resolve_output_update_time(filtered_urls, update_time)
@@ -1051,8 +1121,10 @@ def save_result_txt(demo_structure, filtered_urls, name_to_canonical=None, regex
 def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex_aliases=None, output_file='result.m3u', show_update_time=True, update_time_position='top', update_time=None, config=None):
     """输出 M3U 格式文件。只输出测速通过的频道，跳过空分类。"""
     cfg = config or DEFAULT_CONFIG
-    logo_base = cfg.get('logo_base_url', DEFAULT_CONFIG['logo_base_url'])
-    epg_url = cfg.get('epg_url', DEFAULT_CONFIG['epg_url'])
+    logo_base = _sanitize_m3u_attr(
+        cfg.get('logo_base_url', DEFAULT_CONFIG['logo_base_url'])
+    ).rstrip('/')
+    epg_url = _sanitize_m3u_attr(cfg.get('epg_url', DEFAULT_CONFIG['epg_url']))
     update_time_str = resolve_output_update_time(filtered_urls, update_time)
     update_entry = (
         f'#EXTINF:-1 tvg-id="更新时间" tvg-name="更新时间" '
@@ -1071,11 +1143,16 @@ def save_result_m3u(demo_structure, filtered_urls, name_to_canonical=None, regex
             for ch in channels:
                 urls = _resolve_urls(ch, filtered_urls, name_to_canonical, regex_aliases)
                 for url in urls:
+                    safe_ch = _sanitize_m3u_attr(ch)
+                    safe_genre = _sanitize_m3u_attr(genre)
+                    safe_url = _sanitize_m3u_line(url)
+                    if not safe_url:
+                        continue
                     genre_lines.append(
-                        f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" '
-                        f'tvg-logo="{logo_base}/{ch}.png" '
-                        f'group-title="{genre}",{ch}\n'
-                        f'{url}\n'
+                        f'#EXTINF:-1 tvg-id="{safe_ch}" tvg-name="{safe_ch}" '
+                        f'tvg-logo="{logo_base}/{safe_ch}.png" '
+                        f'group-title="{safe_genre}",{safe_ch}\n'
+                        f'{safe_url}\n'
                     )
             if genre_lines:
                 for line in genre_lines:
@@ -1095,6 +1172,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     """执行一轮完整的测速筛选流程。每次运行时重新读取所有配置。"""
     from database import clear_run_progress, update_run_progress
     _clear_timeouts()
+    reset_regex_timeout_rules()
     run_start_time = time.time()
     run_id = now_str().replace('-', '').replace(':', '').replace(' ', '_')
 
@@ -1220,18 +1298,17 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
         _log("没有可测试的频道地址")
         return
 
-    # 确保输出目录存在
-    output_dir = os.path.dirname(cfg['output_txt'])
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    # 输出路径只由运维环境变量控制，文件名固定。
+    output_paths = get_output_paths()
+    os.makedirs(output_paths['directory'], mode=0o750, exist_ok=True)
 
     # 实时写入的频道通过记录
     filtered_urls = {}
     _write_lock = threading.Lock()
     show_time = cfg.get('show_update_time', True)
     time_pos = cfg.get('update_time_position', 'top')
-    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
+    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['txt'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['m3u'], show_time, time_pos, config=cfg)
     _log("已清空旧输出文件，开始写入本轮实时结果")
 
     def _on_channel_pass(name, entry):
@@ -1243,8 +1320,8 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
             if url and url not in {_entry_url(item) for item in filtered_urls[name]}:
                 filtered_urls[name].append(entry)
             filtered_urls[name] = sort_and_limit_channel_entries(filtered_urls[name], MAX_URLS_PER_CHANNEL)
-            save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
+            save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['txt'], show_time, time_pos)
+            save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['m3u'], show_time, time_pos, config=cfg)
 
     # 测速筛选（实时写入）
     # 始终写入 SQLite 进度表，供 Web 端读取
@@ -1282,8 +1359,8 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     )
 
     filtered_urls = build_output_urls_from_results(test_results, MAX_URLS_PER_CHANNEL)
-    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_txt'], show_time, time_pos)
-    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, cfg['output_m3u'], show_time, time_pos, config=cfg)
+    save_result_txt(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['txt'], show_time, time_pos)
+    save_result_m3u(demo_structure, filtered_urls, name_to_canonical, regex_aliases, output_paths['m3u'], show_time, time_pos, config=cfg)
 
     # 运行结束，清空进度
     clear_run_progress()
@@ -1312,7 +1389,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
         },
         'results': test_results
     }
-    history_path = os.path.join(os.path.dirname(cfg['output_txt']) or '.', 'history.json')
+    history_path = output_paths['history']
     save_run_result(run_data, history_path)
     # 刷新日志缓冲区，确保所有日志写入数据库
     try:
@@ -1327,7 +1404,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
 
     print(f"\n{'=' * 60}")
     print(f"完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址")
-    print(f"结果已保存到 {cfg['output_txt']} 和 {cfg['output_m3u']}")
+    print(f"结果已保存到 {output_paths['txt']} 和 {output_paths['m3u']}")
     print(f"历史记录已保存到 {history_path}")
     print(f"{'=' * 60}")
     _log(f"测试完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址，耗时 {run_elapsed:.0f} 秒")
