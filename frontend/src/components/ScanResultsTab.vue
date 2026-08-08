@@ -78,9 +78,11 @@
             <t-option v-for="p in detailProvinces" :key="p" :value="p" :label="p" />
           </t-select>
           <div style="flex:1"></div>
-          <t-button variant="outline" size="small" @click="selectAllDetail">{{ isAllDetailSelected ? '取消全选' : '全选' }}</t-button>
-          <t-button theme="primary" size="small" @click="exportDetailM3U">导出 M3U</t-button>
-          <t-button theme="primary" size="small" variant="outline" @click="exportDetailCSV">导出 CSV</t-button>
+          <t-button variant="outline" size="small" @click="selectAllDetail">{{ isAllDetailSelected ? '取消本页' : '选择本页' }}</t-button>
+          <t-button v-if="selectedDetailKeys.length" variant="outline" size="small" @click="exportSelectedDetailM3U">导出选中 ({{ selectedDetailKeys.length }})</t-button>
+          <t-button theme="primary" size="small" variant="outline" @click="exportCurrentDetailM3U">导出本页 M3U</t-button>
+          <t-button theme="primary" size="small" :loading="exportingAll" @click="exportAllDetailM3U">导出全部筛选结果</t-button>
+          <t-button variant="outline" size="small" :loading="exportingAll" @click="exportAllDetailCSV">全部筛选 CSV</t-button>
         </div>
         <div class="detail-table-shell">
           <t-table
@@ -124,7 +126,7 @@
                 :model-value="row.priority ?? 0"
                 size="small"
                 style="width:90px"
-                @change="(val) => onPriorityChange(row.url, val)"
+                @change="(val) => onPriorityChange(row, val)"
               >
                 <t-option :value="0" label="普通" />
                 <t-option :value="1" label="高" />
@@ -139,7 +141,15 @@
       </t-dialog>
 
       <!-- 分组视图（默认） -->
-      <t-skeleton :loading="groupedLoading" :row-col="[{ width: '100%' }, { width: '100%' }, { width: '100%' }]">
+      <AsyncState
+        :loading="groupedLoading"
+        :error="groupedError"
+        :empty="!filteredGroupedData.length"
+        empty-title="暂无数据"
+        empty-description="暂无持久化扫描结果"
+        :retry="loadGrouped"
+        :rows="3"
+      >
         <t-collapse v-if="filteredGroupedData.length" v-model="expandedPlatforms">
           <t-collapse-panel
             v-for="plat in filteredGroupedData"
@@ -155,7 +165,9 @@
                 <t-tag size="small" variant="light">稳定性 {{ plat.avg_stability }}%</t-tag>
               </t-space>
             </template>
-            <t-table
+            <div class="data-table-shell data-table-shell--wide source-table-shell">
+              <t-table
+              class="source-results-table"
               :columns="sourceColumns"
               :data="filteredSources(plat)"
               :bordered="false"
@@ -187,11 +199,11 @@
               <template #first_seen="{ row }">{{ formatDate(row.first_seen) }}</template>
               <template #last_checked_at="{ row }">{{ formatDate(row.last_checked_at || row.last_updated) }}</template>
               <template #last_ingested_at="{ row }">{{ formatDate(row.last_ingested_at) }}</template>
-            </t-table>
+              </t-table>
+            </div>
           </t-collapse-panel>
         </t-collapse>
-        <t-empty v-else-if="!groupedLoading" description="暂无持久化扫描结果" />
-      </t-skeleton>
+      </AsyncState>
     </template>
 
     <!-- ==================== 历史模式视图（原按扫描记录功能） ==================== -->
@@ -231,9 +243,12 @@
         <t-tag theme="primary" variant="light">{{ total }} 条结果</t-tag>
       </div>
       <div class="legacy-actions-row">
-        <t-button variant="outline" size="small" @click="selectAllLegacy">{{ isAllLegacySelected ? '取消全选' : '全选' }}</t-button>
+        <t-button variant="outline" size="small" @click="selectAllLegacy">{{ isAllLegacySelected ? '取消本页' : '选择本页' }}</t-button>
+        <t-button variant="outline" size="small" @click="exportLegacyCurrent">导出本页 M3U</t-button>
+        <t-button theme="primary" size="small" :loading="exportingAll" @click="exportLegacyAll">导出全部筛选结果</t-button>
       </div>
-      <t-table
+      <div class="data-table-shell data-table-shell--wide legacy-table-shell">
+        <t-table
         :columns="legacyColumns"
         :data="results"
         :loading="resultsLoading"
@@ -270,20 +285,22 @@
         </template>
         <template #delay="{ row }">{{ row.delay != null ? Math.round(row.delay) + ' ms' : '-' }}</template>
         <template #bandwidth="{ row }">{{ formatBandwidth(row.bandwidth) }}</template>
-      </t-table>
+        </t-table>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
 import CopyIcon from 'tdesign-icons-vue-next/esm/components/copy.js'
+import AsyncState from './AsyncState.vue'
 import {
   apiScanResults, apiScanHistory, apiScanStats,
-  apiPersistentGrouped, apiPersistentDetails, apiPersistentStats,
+  apiPersistentGrouped, apiPersistentDetails, apiPersistentAllDetails, apiPersistentStats,
   apiPersistentManualCheck, apiPersistentRecheck, apiPersistentPriority,
-  apiDetectionStatus,
+  apiDetectionStatus, apiScanAllResults,
 } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { platformLabel } from '../utils/platform.js'
@@ -303,9 +320,11 @@ const viewMode = ref('grouped')
 // ─── 分组视图状态 ───
 const groupedData = ref([])
 const groupedLoading = ref(false)
+const groupedError = ref('')
 const expandedPlatforms = ref([])
 const persistentStats = ref({ total: 0, good: 0, poor: 0, unreachable: 0, pending: 0 })
 const manualChecking = ref(false)
+const exportingAll = ref(false)
 
 // ─── 分组视图过滤 ───
 const groupedSearch = ref('')
@@ -376,20 +395,18 @@ const detailCategories = ref([])
 const detailProvinces = ref([])
 
 function getDetailFilters() {
+  const sort = detailSortInfo.value
   return {
     search: detailSearch.value.trim(),
     quality: detailQualityFilter.value,
     category: detailCategoryFilter.value,
     province: detailProvinceFilter.value,
+    sort_by: sort.sortBy,
+    sort_order: sort.sortBy ? (sort.descending ? 'desc' : 'asc') : '',
   }
 }
 
-const filteredDetailData = computed(() => {
-  // 服务端已分页，allDetailData 即当前页数据
-  // NOTE: Client-side sorting only affects the current page of server-paginated data.
-  // This is acceptable for ad-hoc re-sorting within a page; primary ordering comes from the server.
-  return sortRows(allDetailData.value, detailSortInfo.value)
-})
+const filteredDetailData = computed(() => allDetailData.value)
 
 const detailPagination = computed(() => ({
   current: detailPage.value,
@@ -401,6 +418,9 @@ const detailPagination = computed(() => ({
 
 function onDetailSortChange(sort) {
   detailSortInfo.value = normalizeSortInfo(sort)
+  detailPage.value = 1
+  selectedDetailKeys.value = []
+  loadDetailPage()
 }
 
 function onDetailPageChange(info) {
@@ -410,14 +430,22 @@ function onDetailPageChange(info) {
   loadDetailPage()
 }
 
+let detailRequestController = null
+let detailRequestSeq = 0
+
 async function loadDetailPage() {
+  const seq = ++detailRequestSeq
+  detailRequestController?.abort()
+  detailRequestController = new AbortController()
   try {
     const data = await apiPersistentDetails(
       detailSourceIp.value,
       detailPage.value,
       detailPerPage.value,
       getDetailFilters(),
+      { signal: detailRequestController.signal },
     )
+    if (seq !== detailRequestSeq) return
     if (data && data.items) {
       allDetailData.value = data.items
       detailTotal.value = data.total || 0
@@ -427,6 +455,7 @@ async function loadDetailPage() {
       detailTotal.value = allDetailData.value.length
     }
   } catch (e) {
+    if (e?.name === 'AbortError' || seq !== detailRequestSeq) return
     allDetailData.value = []
     detailTotal.value = 0
   }
@@ -534,6 +563,7 @@ function qualityPct(status) {
 // ─── 分组视图加载 ───
 async function loadGrouped() {
   groupedLoading.value = true
+  groupedError.value = ''
   try {
     const [groupedRes, statsRes] = await Promise.allSettled([
       apiPersistentGrouped(),
@@ -548,7 +578,9 @@ async function loadGrouped() {
     } else {
       console.error('加载分组数据失败', groupedRes.reason)
       groupedData.value = []
-      MessagePlugin.error('加载分组数据失败')
+      groupedError.value = groupedRes.reason instanceof Error
+        ? groupedRes.reason
+        : new Error('加载分组数据失败，请稍后重试')
     }
     if (statsRes.status === 'fulfilled') {
       persistentStats.value = statsRes.value || {}
@@ -575,14 +607,7 @@ async function openSourceDetail(sourceIp) {
   detailSortInfo.value = {}
   detailDialogVisible.value = true
   try {
-    const data = await apiPersistentDetails(sourceIp, 1, 50, getDetailFilters())
-    if (data && data.items) {
-      allDetailData.value = data.items
-      detailTotal.value = data.total || 0
-    } else {
-      allDetailData.value = Array.isArray(data) ? data : []
-      detailTotal.value = allDetailData.value.length
-    }
+    await loadDetailPage()
     // NOTE: Filter options are extracted from the current page only (server-paginated).
     // If the first page doesn't cover all categories/provinces, some options may be missing.
     // This is a known limitation; a dedicated API endpoint would be needed for exhaustive options.
@@ -614,18 +639,19 @@ function selectAllDetail() {
   }
 }
 
-function exportDetailM3U() {
-  const items = selectedDetailKeys.value.length
-    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
-    : filteredDetailData.value
-  if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
-  downloadM3U(items, `scan_${detailSourceIp.value}.m3u`)
+function exportSelectedDetailM3U() {
+  const items = filteredDetailData.value.filter(row => selectedDetailKeys.value.includes(row.id))
+  if (!items.length) { MessagePlugin.error('请先选择当前页频道'); return }
+  downloadM3U(items, `scan_${detailSourceIp.value}_selected.m3u`)
 }
 
-function exportDetailCSV() {
-  const items = selectedDetailKeys.value.length
-    ? filteredDetailData.value.filter(r => selectedDetailKeys.value.includes(r.id))
-    : filteredDetailData.value
+function exportCurrentDetailM3U() {
+  const items = filteredDetailData.value
+  if (!items.length) { MessagePlugin.error('当前页没有可导出的频道'); return }
+  downloadM3U(items, `scan_${detailSourceIp.value}_page_${detailPage.value}.m3u`)
+}
+
+function downloadDetailCSV(items, filename) {
   if (!items.length) { MessagePlugin.error('没有可导出的频道'); return }
   const headers = ['name', 'url', 'category', 'province', 'stability', 'delay', 'bandwidth', 'quality_status', 'source_ip']
   const headerLabels = ['频道名', '频道地址', '分类', '省份', '稳定性', '延迟', '带宽', '质量状态', '来源IP']
@@ -640,9 +666,46 @@ function exportDetailCSV() {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = `scan_${detailSourceIp.value}.csv`; a.click()
+  a.href = url; a.download = filename; a.click()
   URL.revokeObjectURL(url)
   MessagePlugin.success(`已导出 ${items.length} 个频道`)
+}
+
+let exportController = null
+
+async function loadAllFilteredDetails() {
+  exportController?.abort()
+  exportController = new AbortController()
+  return apiPersistentAllDetails(detailSourceIp.value, getDetailFilters(), {
+    pageSize: 200,
+    signal: exportController.signal,
+  })
+}
+
+async function exportAllDetailM3U() {
+  exportingAll.value = true
+  try {
+    const items = await loadAllFilteredDetails()
+    if (!items.length) { MessagePlugin.error('筛选条件下没有可导出的频道'); return }
+    downloadM3U(items, `scan_${detailSourceIp.value}_all_filtered.m3u`)
+  } catch (error) {
+    if (error?.name !== 'AbortError') MessagePlugin.error(`导出失败: ${error?.message || ''}`)
+  } finally {
+    exportingAll.value = false
+  }
+}
+
+async function exportAllDetailCSV() {
+  exportingAll.value = true
+  try {
+    const items = await loadAllFilteredDetails()
+    if (!items.length) { MessagePlugin.error('筛选条件下没有可导出的频道'); return }
+    downloadDetailCSV(items, `scan_${detailSourceIp.value}_all_filtered.csv`)
+  } catch (error) {
+    if (error?.name !== 'AbortError') MessagePlugin.error(`导出失败: ${error?.message || ''}`)
+  } finally {
+    exportingAll.value = false
+  }
 }
 
 let manualCheckPollToken = 0
@@ -711,10 +774,15 @@ async function recheckChannel(url) {
 }
 
 async function onPriorityChange(url, priority) {
+  const row = typeof url === 'object' ? url : allDetailData.value.find(item => item.url === url)
+  const targetUrl = row?.url || url
+  const previous = row?.priority ?? 0
+  if (row) row.priority = priority
   try {
-    const res = await apiPersistentPriority(url, priority)
+    await apiPersistentPriority(targetUrl, priority)
     MessagePlugin.success('优先级已更新')
   } catch (_) {
+    if (row) row.priority = previous
     MessagePlugin.error('更新优先级失败')
   }
 }
@@ -789,15 +857,18 @@ async function loadFilterOptions() {
   } catch (_) {}
 }
 
+let legacyRequestController = null
+let legacyRequestSeq = 0
+
 async function loadResults() {
-  const params = { page: page.value, size: perPage.value }
-  if (selectedScanId.value) params.scan_id = selectedScanId.value
-  if (categoryFilter.value) params.category = categoryFilter.value
-  if (provinceFilter.value) params.province = provinceFilter.value
-  if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+  const seq = ++legacyRequestSeq
+  legacyRequestController?.abort()
+  legacyRequestController = new AbortController()
+  const params = { ...legacyFilterParams(), page: page.value, size: perPage.value }
   resultsLoading.value = true
   try {
-    const data = await apiScanResults(params)
+    const data = await apiScanResults(params, { signal: legacyRequestController.signal })
+    if (seq !== legacyRequestSeq) return
     results.value = (data.items || []).map(r => ({
       ...r,
       stability: Math.round(r.stability || 0),
@@ -806,10 +877,11 @@ async function loadResults() {
     }))
     total.value = data.total || results.value.length
   } catch (e) {
+    if (e?.name === 'AbortError' || seq !== legacyRequestSeq) return
     results.value = []
     total.value = 0
   } finally {
-    resultsLoading.value = false
+    if (seq === legacyRequestSeq) resultsLoading.value = false
   }
 }
 
@@ -890,6 +962,38 @@ function selectAllLegacy() {
   }
 }
 
+function legacyFilterParams() {
+  const params = {}
+  if (selectedScanId.value) params.scan_id = selectedScanId.value
+  if (categoryFilter.value) params.category = categoryFilter.value
+  if (provinceFilter.value) params.province = provinceFilter.value
+  if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+  return params
+}
+
+function exportLegacyCurrent() {
+  if (!results.value.length) { MessagePlugin.error('当前页没有可导出的频道'); return }
+  downloadM3U(results.value, `scan_history_page_${page.value}.m3u`)
+}
+
+async function exportLegacyAll() {
+  exportingAll.value = true
+  exportController?.abort()
+  exportController = new AbortController()
+  try {
+    const items = await apiScanAllResults(legacyFilterParams(), {
+      pageSize: 200,
+      signal: exportController.signal,
+    })
+    if (!items.length) { MessagePlugin.error('筛选条件下没有可导出的频道'); return }
+    downloadM3U(items, 'scan_history_all_filtered.m3u')
+  } catch (error) {
+    if (error?.name !== 'AbortError') MessagePlugin.error(`导出失败: ${error?.message || ''}`)
+  } finally {
+    exportingAll.value = false
+  }
+}
+
 function downloadM3U(items, filename) {
   let m3u = '#EXTM3U\n'
   items.forEach(ch => {
@@ -928,6 +1032,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   manualCheckPollToken += 1
+  detailRequestController?.abort()
+  legacyRequestController?.abort()
+  exportController?.abort()
   if (debounceTimer) clearTimeout(debounceTimer)
   if (detailFilterTimer) clearTimeout(detailFilterTimer)
 })
@@ -941,6 +1048,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.source-table-shell,
+.legacy-table-shell {
+  border-radius: 10px;
 }
 
 .stats-bar {
@@ -1022,6 +1134,25 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 720px) {
+  .scan-results-tab {
+    padding-top: 0;
+  }
+
+  .view-tabs-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .filter-bar > .t-input,
+  .filter-bar > .t-select,
+  .dialog-toolbar > .t-input,
+  .dialog-toolbar > .t-select,
+  .legacy-toolbar > .t-input,
+  .legacy-toolbar > .t-select {
+    width: 100% !important;
+  }
+
   .scan-record-select {
     width: 100%;
   }
@@ -1045,7 +1176,7 @@ onBeforeUnmount(() => {
 .stability-bad { background: #ef4444; }
 
 /* 来源表格可点击 */
-:deep(.t-table__body tr) {
+.source-results-table :deep(.t-table__body tr) {
   cursor: pointer;
 }
 
@@ -1074,5 +1205,11 @@ onBeforeUnmount(() => {
 }
 .url-with-copy:hover .copy-btn {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .copy-btn {
+    opacity: 1;
+  }
 }
 </style>

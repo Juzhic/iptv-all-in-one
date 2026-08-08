@@ -6,11 +6,13 @@ from flask import Blueprint, jsonify, send_file
 
 from database import get_latest_run, get_latest_passed_results
 from web.result_gen import _generate_result_txt, _generate_result_m3u
+from web.subscription_cache import anonymous_feed
 
 download_bp = Blueprint('download', __name__)
 
 
 @download_bp.route('/api/download/<fmt>', methods=['GET'])
+@anonymous_feed
 def api_download(fmt):
     """下载结果文件（从数据库动态生成）。"""
     if fmt not in ('txt', 'm3u'):

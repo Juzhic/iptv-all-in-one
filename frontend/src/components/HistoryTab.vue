@@ -1,41 +1,66 @@
 <template>
   <div class="history-tab">
     <!-- 日期筛选 -->
-    <t-card size="small" :bordered="false" style="margin-bottom:12px">
-      <t-space>
-        <t-date-picker v-model="startDate" placeholder="开始日期" clearable />
-        <span style="color:var(--td-text-color-placeholder)">~</span>
-        <t-date-picker v-model="endDate" placeholder="结束日期" clearable />
-        <t-button theme="primary" size="small" @click="queryHistory">查询</t-button>
-        <t-button variant="outline" size="small" @click="resetWeek">最近7天</t-button>
-        <t-button variant="outline" size="small" @click="reset3Days">最近3天</t-button>
-        <t-button variant="outline" size="small" @click="resetAll">全部</t-button>
-      </t-space>
+    <t-card size="small" :bordered="false" class="panel-card history-filter-card">
+      <div class="section-header">
+        <div>
+          <div class="section-title">历史记录</div>
+          <p class="section-subtitle">按日期筛选测速轮次，展开记录可继续查看频道和地址明细。</p>
+        </div>
+      </div>
+      <div class="filter-toolbar">
+        <t-date-picker v-model="startDate" placeholder="开始日期" clearable class="date-filter" />
+        <span class="date-separator">~</span>
+        <t-date-picker v-model="endDate" placeholder="结束日期" clearable class="date-filter" />
+        <t-input v-model="historySearch" placeholder="搜索轮次或状态" clearable class="history-search" @enter="queryHistory" />
+        <t-select v-model="historySort" class="history-sort" @change="queryHistory">
+          <t-option value="finished_at" label="按完成时间" />
+          <t-option value="pass_rate" label="按通过率" />
+          <t-option value="duration_seconds" label="按耗时" />
+        </t-select>
+        <t-select v-model="historySortOrder" class="history-order" @change="queryHistory">
+          <t-option value="desc" label="降序" />
+          <t-option value="asc" label="升序" />
+        </t-select>
+        <div class="filter-actions">
+          <t-button theme="primary" size="small" @click="queryHistory">查询</t-button>
+          <t-button variant="outline" size="small" @click="resetWeek">最近7天</t-button>
+          <t-button variant="outline" size="small" @click="reset3Days">最近3天</t-button>
+          <t-button variant="outline" size="small" @click="resetAll">全部</t-button>
+        </div>
+      </div>
     </t-card>
 
     <!-- 对比按钮 -->
-    <div v-if="selectedRowKeys.length > 0" style="margin-bottom:8px">
-      <t-space>
+    <div v-if="selectedRowKeys.length > 0" class="selection-toolbar">
+      <div class="selection-actions">
         <t-button theme="primary" size="small" :disabled="selectedRowKeys.length !== 2" @click="openCompare">
           对比选中 ({{ selectedRowKeys.length }}/2)
         </t-button>
         <t-button variant="outline" size="small" @click="selectedRowKeys = []">取消选择</t-button>
-      </t-space>
+      </div>
     </div>
 
     <!-- 历史表格 -->
-    <t-table
-      :columns="columns"
-      :data="historyRuns"
-      :bordered="false"
-      row-key="run_id"
-      :expand-icon="true"
-      :expanded-row-keys="expandedKeys"
-      @expand-change="onExpandChange"
-      :row-selection="{ selectedRowKeys, onChange: onSelectionChange }"
-      size="small"
+    <AsyncState
       :loading="loading"
+      :error="historyError"
+      :empty="!historyRuns.length"
+      empty-title="该日期范围内暂无测速记录"
+      :retry="queryHistory"
     >
+    <div class="table-scroll-shell history-table-shell">
+      <t-table
+        :columns="columns"
+        :data="historyRuns"
+        :bordered="false"
+        row-key="run_id"
+        :expand-icon="true"
+        :expanded-row-keys="expandedKeys"
+        @expand-change="onExpandChange"
+        :row-selection="{ selectedRowKeys, onChange: onSelectionChange }"
+        size="small"
+      >
       <template #summary_pass_rate="{ row }">
         <div class="rate-cell">
           <span>{{ row.summary.pass_rate }}%</span>
@@ -55,8 +80,15 @@
       <template #expandedRow="{ row }">
         <div class="detail-panel" v-if="channelCache[row.run_id]">
           <div class="detail-toolbar">
-            <t-input v-model="detailSearch[row.run_id]" placeholder="搜索频道名或 URL..." clearable style="width:240px" />
-            <t-select v-model="detailFilter[row.run_id]" style="width:140px">
+            <t-input
+              v-model="detailSearch[row.run_id]"
+              placeholder="搜索频道名或 URL..."
+              clearable
+              class="detail-search"
+              @enter="onDetailFiltersChange(row.run_id)"
+              @clear="onDetailFiltersChange(row.run_id)"
+            />
+            <t-select v-model="detailFilter[row.run_id]" class="detail-filter" @change="onDetailFiltersChange(row.run_id)">
               <t-option value="all" label="全部频道" />
               <t-option value="pass" label="有通过的" />
               <t-option value="fail" label="全部失败的" />
@@ -79,7 +111,7 @@
                 <div class="ch-header">
                   <div class="ch-name">
                     {{ name }}
-                    <t-tag v-if="hasH265(ch)" size="small" variant="light" style="margin-left:6px" class="codec-tag-h265">H.265</t-tag>
+                    <t-tag v-if="hasH265(ch)" size="small" variant="light" class="codec-tag-h265 codec-tag-inline">H.265</t-tag>
                   </div>
                   <div class="ch-meta">
                     <t-tag
@@ -97,14 +129,15 @@
                   </div>
                 </div>
               </template>
-              <t-table
-                :columns="urlColumns"
-                :data="ch.urls || []"
-                :bordered="false"
-                size="small"
-                row-key="url"
-                :pagination="null"
-              >
+              <div class="table-scroll-shell detail-table-shell">
+                <t-table
+                  :columns="urlColumns"
+                  :data="ch.urls || []"
+                  :bordered="false"
+                  size="small"
+                  row-key="url"
+                  :pagination="null"
+                >
                 <template #url="{ row: r }">
                   <div class="url-with-copy">
                     <t-popup :content="r.url" placement="top">
@@ -139,7 +172,8 @@
                 <template #quality_score="{ row: r }">
                   {{ r.quality_score != null ? Number(r.quality_score).toFixed(2) : '-' }}
                 </template>
-              </t-table>
+                </t-table>
+              </div>
             </t-collapse-panel>
           </t-collapse>
 
@@ -155,11 +189,21 @@
             />
           </div>
         </div>
-        <div v-else style="padding:12px;color:var(--td-text-color-placeholder)">加载中...</div>
+        <div v-else class="detail-loading">加载中...</div>
       </template>
-    </t-table>
-
-    <div v-if="!loading && !historyRuns.length" class="no-data">该日期范围内暂无测速记录</div>
+      </t-table>
+    </div>
+    <t-pagination
+      v-if="historyTotal > historyPageSize"
+      class="history-pagination"
+      :total="historyTotal"
+      :current="historyPage"
+      :page-size="historyPageSize"
+      :show-page-size="false"
+      show-jumper
+      @current-change="onHistoryPageChange"
+    />
+    </AsyncState>
 
     <!-- 日志弹窗 -->
     <t-dialog
@@ -170,15 +214,15 @@
       destroy-on-close
     >
       <template #header>
-        <div>
-          <div style="font-size:16px;font-weight:600">运行日志</div>
-          <div style="font-size:12px;color:var(--td-text-color-placeholder);margin-top:4px">{{ logMeta }}</div>
+        <div class="dialog-heading">
+          <div class="dialog-title">运行日志</div>
+          <div class="dialog-subtitle">{{ logMeta }}</div>
         </div>
       </template>
-      <t-space style="margin-bottom:8px">
-        <t-input v-model="logSearch" placeholder="搜索日志内容..." clearable style="width:300px" />
-        <span style="font-size:12px;color:var(--td-text-color-placeholder)">{{ logEntries.length }} 条</span>
-      </t-space>
+      <div class="log-dialog-toolbar">
+        <t-input v-model="logSearch" placeholder="搜索日志内容..." clearable class="log-search" />
+        <span class="toolbar-count">{{ logEntries.length }} 条</span>
+      </div>
       <LogPanel
         :entries="filteredLogs"
         :show-count="false"
@@ -195,13 +239,13 @@
       width="1200px"
       destroy-on-close
     >
-      <div v-if="compareLoading" style="text-align:center;padding:40px;color:var(--td-text-color-placeholder)">加载中...</div>
+      <div v-if="compareLoading" class="compare-loading">加载中...</div>
       <div v-else-if="compareData">
         <!-- 顶部：两个 run 概览 -->
-        <t-row :gutter="16" style="margin-bottom:16px">
-          <t-col :span="6">
+        <t-row :gutter="[16, 16]" class="compare-summary-row">
+          <t-col :xs="12" :sm="6">
             <t-card size="small" header="A (基准)">
-              <div style="font-size:13px;line-height:2">
+              <div class="compare-summary-copy">
                 <div>时间：{{ compareData.run_a.finished_at }}</div>
                 <div>通过率：{{ compareData.run_a.pass_rate }}%</div>
                 <div>频道覆盖：{{ compareData.run_a.unique_channels_passed }}/{{ compareData.run_a.unique_channels_total }}</div>
@@ -209,9 +253,9 @@
               </div>
             </t-card>
           </t-col>
-          <t-col :span="6">
+          <t-col :xs="12" :sm="6">
             <t-card size="small" header="B (比较)">
-              <div style="font-size:13px;line-height:2">
+              <div class="compare-summary-copy">
                 <div>时间：{{ compareData.run_b.finished_at }}</div>
                 <div>通过率：{{ compareData.run_b.pass_rate }}%</div>
                 <div>频道覆盖：{{ compareData.run_b.unique_channels_passed }}/{{ compareData.run_b.unique_channels_total }}</div>
@@ -222,7 +266,7 @@
         </t-row>
 
         <!-- 中间：delta 标签 -->
-        <t-space :size="12" style="margin-bottom:16px">
+        <div class="compare-delta-toolbar">
           <t-tag theme="success" variant="light">改善 {{ compareData.summary.channels_improved }}</t-tag>
           <t-tag theme="danger" variant="light">退步 {{ compareData.summary.channels_regressed }}</t-tag>
           <t-tag theme="primary" variant="light">新增 {{ compareData.summary.new_channels }}</t-tag>
@@ -230,18 +274,19 @@
           <t-tag variant="outline">通过率 {{ fmtDelta(compareData.summary.pass_rate_delta, '%') }}</t-tag>
           <t-tag variant="outline">带宽 {{ fmtDelta(compareData.summary.avg_bandwidth_delta, ' MB/s') }}</t-tag>
           <t-tag variant="outline">延迟 {{ fmtDelta(compareData.summary.avg_latency_delta, ' ms') }}</t-tag>
-        </t-space>
+        </div>
 
         <!-- 底部：频道级对比表 -->
-        <t-table
-          :columns="compareChannelColumns"
-          :data="compareData.channels"
-          :bordered="false"
-          size="small"
-          row-key="channel"
-          :pagination="{ pageSize: 30 }"
-          max-height="480"
-        >
+        <div class="table-scroll-shell compare-table-shell">
+          <t-table
+            :columns="compareChannelColumns"
+            :data="compareData.channels"
+            :bordered="false"
+            size="small"
+            row-key="channel"
+            :pagination="{ pageSize: 30 }"
+            max-height="480"
+          >
           <template #a_passed="{ row }">
             <t-tag v-if="row.a_passed != null" :theme="row.a_passed ? 'success' : 'danger'" size="small">{{ row.a_passed ? '是' : '否' }}</t-tag>
             <span v-else>-</span>
@@ -259,7 +304,8 @@
               {{ statusMap[row.status]?.label || row.status }}
             </t-tag>
           </template>
-        </t-table>
+          </t-table>
+        </div>
       </div>
     </t-dialog>
   </div>
@@ -267,12 +313,14 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import CopyIcon from 'tdesign-icons-vue-next/esm/components/copy.js'
 import { apiGetRuns, apiGetRunChannels, apiDeleteRun, apiGetRunLogs, apiCompareRuns } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { platformTheme } from '../utils/platform.js'
 import LogPanel from './LogPanel.vue'
+import AsyncState from './AsyncState.vue'
 
 const { copyText: rawCopy } = useClipboard()
 async function copyText(text) {
@@ -280,10 +328,15 @@ async function copyText(text) {
   MessagePlugin.success('已复制')
 }
 
-const emit = defineEmits(['update-overview'])
-
 const historyRuns = ref([])
 const loading = ref(false)
+const historyError = ref('')
+const historySearch = ref('')
+const historySort = ref('finished_at')
+const historySortOrder = ref('desc')
+const historyPage = ref(1)
+const historyPageSize = ref(30)
+const historyTotal = ref(0)
 const startDate = ref('')
 const endDate = ref('')
 const expandedKeys = ref([])
@@ -347,21 +400,33 @@ const urlColumns = [
 async function queryHistory() {
   const seq = ++querySeq
   loading.value = true
+  historyError.value = ''
   historyRuns.value = []
   expandedKeys.value = []
   selectedRowKeys.value = []
   Object.keys(channelCache).forEach(key => delete channelCache[key])
   try {
-    const data = await apiGetRuns(startDate.value, endDate.value)
+    const data = await apiGetRuns(startDate.value, endDate.value, {
+      search: historySearch.value.trim(),
+      sort_by: historySort.value,
+      sort_order: historySortOrder.value,
+      page: historyPage.value,
+      size: historyPageSize.value,
+    })
     if (seq !== querySeq) return
-    const runs = Array.isArray(data) ? data : []
+    const runs = Array.isArray(data) ? data : (data?.items || [])
     historyRuns.value = runs
-    emit('update-overview', runs)
+    historyTotal.value = Array.isArray(data) ? data.length : Number(data?.total || runs.length)
   } catch (e) {
-    if (seq === querySeq) MessagePlugin.error('查询失败: ' + e.message)
+    if (seq === querySeq) historyError.value = e?.message || '查询历史记录失败'
   } finally {
     if (seq === querySeq) loading.value = false
   }
+}
+
+function onHistoryPageChange(page) {
+  historyPage.value = page
+  queryHistory()
 }
 
 function reset3Days() {
@@ -396,7 +461,11 @@ async function loadChannelPage(runId, page) {
   const seq = (channelPageSeq[runId] || 0) + 1
   channelPageSeq[runId] = seq
   try {
-    const data = await apiGetRunChannels(runId, page, DETAIL_PAGE_SIZE)
+    const filter = detailFilter[runId] || 'all'
+    const data = await apiGetRunChannels(runId, page, DETAIL_PAGE_SIZE, {
+      search: (detailSearch[runId] || '').trim(),
+      status: filter === 'all' ? '' : filter,
+    })
     if (channelPageSeq[runId] !== seq) return  // 过期请求丢弃
     // 服务端分页格式：{ channels: {}, total_channels, page, page_size }
     channelCache[runId] = data || {}
@@ -404,6 +473,12 @@ async function loadChannelPage(runId, page) {
     detailFilter[runId] = detailFilter[runId] || 'all'
     detailPage[runId] = page
   } catch (e) { MessagePlugin.error('加载详情失败') }
+}
+
+function onDetailFiltersChange(runId) {
+  detailPage[runId] = 1
+  detailExpandState[runId] = []
+  loadChannelPage(runId, 1)
 }
 
 function getChannelData(runId) {
@@ -486,7 +561,7 @@ async function deleteRun(runId) {
       try {
         await apiDeleteRun(runId)
         historyRuns.value = historyRuns.value.filter(r => r.run_id !== runId)
-        emit('update-overview', historyRuns.value)
+        historyTotal.value = Math.max(0, historyTotal.value - 1)
         MessagePlugin.success('已删除')
       } catch (e) { MessagePlugin.error('删除失败: ' + e.message) }
       confirmDialog.hide()
@@ -571,26 +646,345 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.history-tab { padding-top: 4px; }
-.rate-cell { display: inline-flex; align-items: center; gap: 6px; }
-.mini-bar { width: 60px; height: 6px; background: var(--td-border-level-1-color, #e5e7eb); border-radius: 3px; overflow: hidden; }
-.mini-fill { height: 100%; border-radius: 3px; }
-.detail-panel { padding: 12px 0; }
-.detail-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-.no-data { text-align: center; padding: 40px; color: var(--td-text-color-placeholder); font-size: 13px; }
-.codec-tag-h265 { background: var(--td-brand-color-light); color: var(--td-brand-color); }
-.codec-tag-codec { background: var(--td-bg-color-component); color: var(--td-text-color-secondary); }
-.ch-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
-.ch-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; }
-.ch-meta { display: flex; align-items: center; gap: 8px; }
-.ch-rate { font-size: 13px; color: var(--td-text-color-primary); }
-.source-tag { font-size: 11px; }
-.empty-hint { text-align: center; padding: 24px; color: var(--td-text-color-placeholder); font-size: 13px; }
-.detail-summary { font-size: 12px; color: var(--td-text-color-placeholder); margin-bottom: 8px; }
-.detail-pagination { display: flex; justify-content: center; margin-top: 12px; }
-.url-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--td-text-color-placeholder, #6b7280); font-family: monospace; cursor: pointer; }
-.url-cell:hover { white-space: normal; word-break: break-all; }
-.url-with-copy { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
-.copy-btn { flex-shrink: 0; opacity: 0; transition: opacity 0.15s; padding: 0 2px !important; min-width: auto !important; }
-.url-with-copy:hover .copy-btn { opacity: 1; }
+.history-tab {
+  padding-top: 4px;
+}
+
+.panel-card {
+  margin-bottom: 16px;
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: 12px;
+  background: var(--td-bg-color-container, #ffffff);
+  box-shadow: none;
+}
+
+.section-header {
+  margin-bottom: 14px;
+}
+
+.section-title {
+  color: var(--td-text-color-primary, #111827);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.section-subtitle {
+  margin: 4px 0 0;
+  color: var(--td-text-color-placeholder, #6b7280);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.filter-toolbar,
+.filter-actions,
+.selection-actions,
+.detail-toolbar,
+.log-dialog-toolbar,
+.compare-delta-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.date-filter {
+  width: 200px;
+  max-width: 100%;
+}
+
+.history-search {
+  width: 190px;
+  max-width: 100%;
+}
+
+.history-sort {
+  width: 140px;
+}
+
+.history-order {
+  width: 90px;
+}
+
+.history-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
+.date-separator {
+  color: var(--td-text-color-placeholder, #6b7280);
+}
+
+.selection-toolbar {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--td-brand-color, #366ef4) 22%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--td-brand-color-1, #edf3ff) 72%, transparent);
+}
+
+.table-scroll-shell {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.history-table-shell {
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: 12px;
+  background: var(--td-bg-color-container, #ffffff);
+}
+
+.history-table-shell :deep(.t-table) {
+  min-width: 920px;
+}
+
+.rate-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-bar {
+  width: 60px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--td-border-level-1-color, #e5e7eb);
+}
+
+.mini-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.detail-panel {
+  padding: 14px 4px;
+}
+
+.detail-toolbar {
+  margin-bottom: 12px;
+}
+
+.detail-search {
+  width: 260px;
+  max-width: 100%;
+}
+
+.detail-filter {
+  width: 150px;
+  max-width: 100%;
+}
+
+.detail-table-shell {
+  border-radius: 8px;
+}
+
+.detail-table-shell :deep(.t-table) {
+  min-width: 1080px;
+}
+
+.detail-loading,
+.no-data,
+.empty-hint,
+.compare-loading {
+  color: var(--td-text-color-placeholder, #6b7280);
+  font-size: 13px;
+  text-align: center;
+}
+
+.detail-loading {
+  padding: 12px;
+}
+
+.no-data,
+.compare-loading {
+  padding: 40px 20px;
+}
+
+.empty-hint {
+  padding: 24px;
+}
+
+.codec-tag-h265 {
+  background: var(--td-brand-color-light);
+  color: var(--td-brand-color);
+}
+
+.codec-tag-codec {
+  background: var(--td-bg-color-component);
+  color: var(--td-text-color-secondary);
+}
+
+.codec-tag-inline {
+  margin-left: 6px;
+}
+
+.ch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.ch-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ch-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ch-rate {
+  color: var(--td-text-color-primary);
+  font-size: 13px;
+}
+
+.source-tag {
+  font-size: 11px;
+}
+
+.detail-summary {
+  margin-bottom: 8px;
+  color: var(--td-text-color-placeholder);
+  font-size: 12px;
+}
+
+.detail-pagination {
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+  margin-top: 12px;
+  overflow-x: auto;
+}
+
+.dialog-title {
+  color: var(--td-text-color-primary, #111827);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dialog-subtitle {
+  margin-top: 4px;
+  color: var(--td-text-color-placeholder, #6b7280);
+  font-size: 12px;
+}
+
+.log-dialog-toolbar {
+  margin-bottom: 10px;
+}
+
+.log-search {
+  width: 320px;
+  max-width: 100%;
+}
+
+.toolbar-count {
+  color: var(--td-text-color-placeholder, #6b7280);
+  font-size: 12px;
+}
+
+.compare-summary-row,
+.compare-delta-toolbar {
+  margin-bottom: 16px;
+}
+
+.compare-summary-copy {
+  font-size: 13px;
+  line-height: 2;
+}
+
+.compare-table-shell :deep(.t-table) {
+  min-width: 960px;
+}
+
+.url-cell {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--td-text-color-placeholder, #6b7280);
+  font-family: monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.url-with-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.copy-btn {
+  min-width: auto !important;
+  flex-shrink: 0;
+  padding: 0 2px !important;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.url-with-copy:hover .copy-btn,
+.copy-btn:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .copy-btn {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .filter-toolbar,
+  .detail-toolbar,
+  .log-dialog-toolbar {
+    align-items: stretch;
+  }
+
+  .date-filter,
+  .detail-search,
+  .detail-filter,
+  .log-search {
+    width: 100%;
+  }
+
+  .date-separator {
+    display: none;
+  }
+
+  .filter-actions,
+  .selection-actions {
+    width: 100%;
+  }
+
+  .filter-actions :deep(.t-button),
+  .selection-actions :deep(.t-button) {
+    flex: 1 1 120px;
+  }
+
+  .ch-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ch-meta {
+    justify-content: flex-start;
+  }
+
+  .codec-tag-inline {
+    margin-left: 4px;
+  }
+}
 </style>

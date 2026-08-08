@@ -3,16 +3,17 @@
 
 import json
 import logging
-import threading
 import time
-import uuid
-from datetime import datetime
 
 from flask import Blueprint, request, jsonify, Response
 
 import database as db
 import web.state as _state
 from web.routes.params import bounded_int, int_arg
+from web.routes.test_control import (
+    SSE_MAX_DURATION_SECONDS,
+    acquire_sse_slot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,8 @@ def _normalize_ports(raw_ports):
         if 1 <= port <= 65535 and port not in seen:
             ports.append(port)
             seen.add(port)
-        if len(ports) >= 100:
-            break
+        if len(ports) > 64:
+            raise ValueError('端口最多允许 64 个')
     return ports or [8080, 80, 443]
 
 
@@ -93,7 +94,10 @@ def api_ip_scan_trigger():
     if not scan_types:
         return jsonify({'ok': False, 'error': '请选择至少一种扫描类型'}), 400
     
-    ports = _normalize_ports(data.get('ports', [8080, 80, 443]))
+    try:
+        ports = _normalize_ports(data.get('ports', [8080, 80, 443]))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
     workers = bounded_int(data.get('workers', 16), 16, 1, 100)
     rate_limit = bounded_int(data.get('rate_limit', 5000), 5000, 100, 50000)
     http_concurrent = bounded_int(data.get('http_concurrent', 50), 50, 1, 500)
@@ -111,9 +115,20 @@ def api_ip_scan_trigger():
     )
     
     if 'error' in result:
-        return jsonify({'ok': False, 'error': result['error']}), 409
-    
-    return jsonify({'ok': True, 'message': 'IP扫描已启动'})
+        status = 400 if result.get('code') == 'invalid_input' else 409
+        return jsonify({
+            'ok': False,
+            'error': result['error'],
+            'data': result.get('task'),
+        }), status
+    task = result.get('task') or {}
+    return jsonify({
+        'ok': True,
+        'message': 'IP扫描已启动',
+        'task_id': task.get('task_id'),
+        'state': 'starting',
+        'data': result.get('task'),
+    }), 202
 
 
 @ip_scan_bp.route('/api/ip-scan/stop', methods=['POST'])
@@ -124,15 +139,37 @@ def api_ip_scan_stop():
         return err, code
     
     result = scanner.request_stop_ip_scan()
-    return jsonify({'ok': True, 'message': '已请求停止'})
+    if result.get('error'):
+        return jsonify({
+            'ok': False,
+            'error': result['error'],
+            'data': result.get('task'),
+        }), 409
+    task = result.get('task') or {}
+    return jsonify({
+        'ok': True,
+        'message': result.get('message', '已请求停止'),
+        'task_id': task.get('task_id'),
+        'state': 'stopping',
+        'data': result.get('task'),
+    }), 202
 
 
 @ip_scan_bp.route('/api/ip-scan/force-clear', methods=['POST'])
 def api_ip_scan_force_clear():
     """强制清除IP扫描状态。"""
     try:
-        db.reset_ip_scan_progress()
-        return jsonify({'ok': True, 'message': '状态已清除'})
+        scanner, err, code = _ensure_ip_scan_bridge()
+        if err:
+            return err, code
+        result = scanner.force_clear_ip_scan()
+        if result.get('error'):
+            return jsonify({
+                'ok': False,
+                'error': result['error'],
+                'data': result.get('task'),
+            }), 409
+        return jsonify({'ok': True, 'message': result.get('message', '状态已清除')})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
 
@@ -166,30 +203,35 @@ def api_ip_scan_stream():
     scanner, err, code = _ensure_ip_scan_bridge()
     if err:
         return err, code
+    slot = acquire_sse_slot()
+    if slot is None:
+        return jsonify({'ok': False, 'error': 'SSE 连接数已达上限'}), 429
     
     def generate():
-        q = scanner.subscribe_ip_scan_sse()
-        import time as _time
-        started = _time.time()
-        MAX_SSE_DURATION = 1800  # 30 分钟最大时长
+        q = None
+        deadline = time.monotonic() + SSE_MAX_DURATION_SECONDS
         try:
+            q = scanner.subscribe_ip_scan_sse()
             progress = scanner.get_ip_scan_status()
             yield f"event: status\ndata: {json.dumps(progress, ensure_ascii=False)}\n\n"
             while True:
-                if _time.time() - started > MAX_SSE_DURATION:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     yield f"event: error\ndata: {json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
                     break
                 try:
-                    msg = q.get(timeout=30)
+                    msg = q.get(timeout=min(30, remaining))
                     yield msg
                 except Exception:
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass
         finally:
-            scanner.unsubscribe_ip_scan_sse(q)
+            if q is not None:
+                scanner.unsubscribe_ip_scan_sse(q)
+            slot.release()
     
-    return Response(
+    response = Response(
         generate(),
         mimetype='text/event-stream',
         headers={
@@ -198,6 +240,8 @@ def api_ip_scan_stream():
             'X-Accel-Buffering': 'no'
         }
     )
+    response.call_on_close(slot.release)
+    return response
 
 
 # ─────────────── IP扫描结果 API ───────────────

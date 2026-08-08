@@ -10,11 +10,12 @@
         <div class="config-header-pills">
           <span class="config-pill">3 份文本文件</span>
           <span class="config-pill config-pill--accent">{{ currentFileLabel }}</span>
+          <span v-if="isDirty" class="config-pill config-pill--dirty">有未保存更改</span>
         </div>
       </div>
 
       <div class="editor-shell">
-        <t-tabs v-model="currentFile" class="editor-tabs" @change="loadFile">
+        <t-tabs :model-value="currentFile" class="editor-tabs" @change="onFileTabChange">
           <t-tab-panel value="subscribe" label="订阅源" />
           <t-tab-panel value="demo" label="频道模板" />
           <t-tab-panel value="alias" label="别名映射" />
@@ -31,6 +32,7 @@
             placeholder="加载中..."
             :autosize="false"
             class="editor-textarea"
+            aria-label="当前数据文件内容"
           />
         </div>
       </div>
@@ -38,8 +40,8 @@
       <div class="editor-actions">
         <div class="config-actions-tip">保存后会直接覆盖当前文本文件，适合修订订阅源、模板和别名映射。</div>
         <t-space>
-          <t-button theme="primary" :loading="saving" @click="saveFile">保存</t-button>
-          <t-button variant="outline" @click="loadFile">重新加载</t-button>
+          <t-button class="settings-file-save-button" theme="primary" :loading="saving" @click="saveFile">保存</t-button>
+          <t-button variant="outline" @click="reloadFile">重新加载</t-button>
           <t-button
             v-if="currentFile === 'demo'"
             theme="danger"
@@ -243,13 +245,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText, apiExportConfig, apiImportConfig } from '../api.js'
 import { useTheme } from '../composables/useTheme.js'
+import { hasConfigurationChanges } from '../utils/configDirty.js'
 
 const currentFile = ref('subscribe')
 const fileContent = ref('')
+const savedFileContent = ref('')
 const fileStatus = ref('')
 const saving = ref(false)
 const configSaving = ref(false)
@@ -258,6 +263,9 @@ const importing = ref(false)
 const importInput = ref(null)
 const runTimesInput = ref('')
 const runTimesHint = ref('')
+const savedConfigFingerprint = ref('')
+const savedConfigState = ref(null)
+const configLoaded = ref(false)
 const { theme } = useTheme()
 
 const fieldErrors = reactive({})
@@ -323,6 +331,25 @@ const config = reactive({})
 CONFIG_FIELDS.forEach((key) => { config[key] = 0 })
 config.run_mode = 'once'
 
+function currentConfigPayload() {
+  return Object.fromEntries(CONFIG_FIELDS.map((key) => [
+    key,
+    key === 'run_times' ? runTimesInput.value : config[key],
+  ]))
+}
+
+const fileDirty = computed(() => fileContent.value !== savedFileContent.value)
+const configDirty = computed(() => (
+  configLoaded.value && JSON.stringify(currentConfigPayload()) !== savedConfigFingerprint.value
+))
+const isDirty = computed(() => hasConfigurationChanges({
+  fileContent: fileContent.value,
+  savedFileContent: savedFileContent.value,
+  configLoaded: configLoaded.value,
+  currentConfigFingerprint: JSON.stringify(currentConfigPayload()),
+  savedConfigFingerprint: savedConfigFingerprint.value,
+}))
+
 const currentRunModeLabel = computed(() => {
   const labelMap = {
     once: '当前模式：单次执行',
@@ -368,6 +395,9 @@ async function loadConfig() {
       config.run_times = cfg.run_times
       runTimesHint.value = cfg.run_times.length > 0 ? `已规范化为：${cfg.run_times.join(', ')}` : ''
     }
+    savedConfigFingerprint.value = JSON.stringify(currentConfigPayload())
+    savedConfigState.value = JSON.parse(savedConfigFingerprint.value)
+    configLoaded.value = true
   } catch (_) {
     MessagePlugin.error('加载配置失败')
   }
@@ -407,7 +437,9 @@ async function saveConfig() {
   configSaving.value = true
   try {
     const data = { ...config, run_times: runTimesInput.value }
+    const submittedFingerprint = JSON.stringify(currentConfigPayload())
     const res = await apiSaveConfig(data)
+    const unchangedWhileSaving = JSON.stringify(currentConfigPayload()) === submittedFingerprint
     MessagePlugin.success('配置已保存')
     if (res.config) {
       CONFIG_FIELDS.forEach((key) => {
@@ -419,6 +451,10 @@ async function saveConfig() {
         runTimesHint.value = res.config.run_times.length ? `已规范化为：${res.config.run_times.join(', ')}` : ''
       }
     }
+    savedConfigFingerprint.value = unchangedWhileSaving
+      ? JSON.stringify(currentConfigPayload())
+      : submittedFingerprint
+    savedConfigState.value = JSON.parse(savedConfigFingerprint.value)
   } catch (error) {
     MessagePlugin.error(`保存失败: ${error.message}`)
   } finally {
@@ -510,25 +546,93 @@ function normalizeRunTimes() {
   }
 }
 
+let fileRequestController = null
+let fileRequestSeq = 0
+
+function confirmDiscardChanges(body = '当前页面有未保存的更改，确认放弃这些更改吗？') {
+  return new Promise((resolve) => {
+    let settled = false
+    let dialog = null
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      dialog?.hide?.()
+      resolve(value)
+    }
+    dialog = DialogPlugin.confirm({
+      header: '未保存的更改',
+      body,
+      theme: 'warning',
+      confirmBtn: { content: '放弃更改', theme: 'danger' },
+      cancelBtn: '继续编辑',
+      onConfirm: () => finish(true),
+      onCancel: () => finish(false),
+      onClose: () => finish(false),
+    })
+  })
+}
+
+function discardChanges() {
+  fileContent.value = savedFileContent.value
+  if (savedConfigState.value) {
+    for (const key of CONFIG_FIELDS) {
+      if (key === 'run_times') runTimesInput.value = savedConfigState.value[key] || ''
+      else config[key] = savedConfigState.value[key]
+    }
+  }
+}
+
+async function canLeave() {
+  if (!isDirty.value) return true
+  const confirmed = await confirmDiscardChanges()
+  if (confirmed) discardChanges()
+  return confirmed
+}
+
+async function onFileTabChange(nextFile) {
+  if (!nextFile || nextFile === currentFile.value) return
+  if (fileDirty.value && !await confirmDiscardChanges('当前文本文件尚未保存，切换文件会丢失修改。')) return
+  fileContent.value = savedFileContent.value
+  currentFile.value = nextFile
+  await loadFile()
+}
+
+async function reloadFile() {
+  if (fileDirty.value && !await confirmDiscardChanges('重新加载会覆盖当前文本修改，确认继续吗？')) return
+  await loadFile()
+}
+
 async function loadFile() {
+  const requestedFile = currentFile.value
+  const seq = ++fileRequestSeq
+  fileRequestController?.abort()
+  fileRequestController = new AbortController()
   fileStatus.value = '加载中...'
   try {
-    const data = await apiGetText(currentFile.value)
-    fileContent.value = data.content || ''
+    const data = await apiGetText(requestedFile, { signal: fileRequestController.signal })
+    if (seq !== fileRequestSeq || requestedFile !== currentFile.value) return
+    const content = data.content || ''
+    fileContent.value = content
+    savedFileContent.value = content
     fileStatus.value = ''
-  } catch (_) {
+  } catch (error) {
+    if (error?.name === 'AbortError' || seq !== fileRequestSeq) return
     fileStatus.value = '加载失败'
-    MessagePlugin.error('加载失败')
+    MessagePlugin.error(`加载失败: ${error?.message || ''}`)
   }
 }
 
 async function saveFile() {
+  const requestedFile = currentFile.value
+  const submittedContent = fileContent.value
   saving.value = true
   fileStatus.value = '保存中...'
   try {
-    const res = await apiSaveText(currentFile.value, fileContent.value)
+    const res = await apiSaveText(requestedFile, submittedContent)
+    if (requestedFile !== currentFile.value) return
+    savedFileContent.value = submittedContent
     fileStatus.value = '已保存'
-    MessagePlugin.success(`${res.filename || currentFile.value} 已保存`)
+    MessagePlugin.success(`${res.filename || requestedFile} 已保存`)
   } catch (error) {
     fileStatus.value = '保存失败'
     MessagePlugin.error(`保存失败: ${error.message}`)
@@ -538,6 +642,7 @@ async function saveFile() {
 }
 
 async function resetDemo() {
+  if (fileDirty.value && !await confirmDiscardChanges('恢复默认模板会覆盖当前未保存的文本修改，确认继续吗？')) return
   const confirmDialog = DialogPlugin.confirm({
     header: '恢复默认模板',
     body: '恢复默认模板将覆盖当前的频道模板内容，确认继续？',
@@ -556,9 +661,32 @@ async function resetDemo() {
   })
 }
 
+function handleBeforeUnload(event) {
+  if (!isDirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+async function saveActiveChanges() {
+  if (fileDirty.value) await saveFile()
+  if (configDirty.value) await saveConfig()
+}
+
+defineExpose({
+  canLeave,
+  save: saveActiveChanges,
+  isDirty,
+})
+
 onMounted(() => {
   loadConfig()
   loadFile()
+  window.addEventListener('beforeunload', handleBeforeUnload)
+})
+
+onBeforeUnmount(() => {
+  fileRequestController?.abort()
+  window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 </script>
 
@@ -791,6 +919,8 @@ onMounted(() => {
 }
 
 .config-card {
+  min-width: 0;
+  overflow: hidden;
   color: var(--surface-text-primary);
   border-radius: 18px;
   background: var(--surface-shell-gradient);
@@ -831,11 +961,13 @@ onMounted(() => {
 
 .config-panel-grid {
   display: grid;
+  min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
 }
 
 .config-panel {
+  min-width: 0;
   padding: 18px;
   border: 1px solid var(--surface-border-strong);
   border-radius: 18px;
@@ -958,6 +1090,18 @@ onMounted(() => {
   border-top: 1px solid var(--surface-border-soft);
 }
 
+.config-pill--dirty {
+  border-color: color-mix(in srgb, var(--td-warning-color, #ed7b2f) 35%, transparent);
+  background: color-mix(in srgb, var(--td-warning-color, #ed7b2f) 12%, transparent);
+  color: var(--td-warning-color, #c45a13);
+}
+
+.config-actions :deep(.t-space),
+.editor-actions :deep(.t-space) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
 .config-actions-tip {
   color: var(--surface-text-secondary);
   font-size: 12px;
@@ -989,6 +1133,21 @@ onMounted(() => {
   .field-control--wide,
   .field-stack {
     width: 100%;
+  }
+
+  .config-card :deep(.t-card__body) {
+    padding: 16px;
+  }
+
+  .config-actions :deep(.t-space),
+  .editor-actions :deep(.t-space) {
+    display: flex;
+    width: 100%;
+  }
+
+  .config-actions :deep(.t-space-item),
+  .editor-actions :deep(.t-space-item) {
+    flex: 1 1 auto;
   }
 }
 

@@ -2,6 +2,7 @@
 """
 scanner_integration 包入口，提供异步扫描到同步 Flask 路由的桥接层。"""
 import asyncio
+import concurrent.futures
 import os
 import threading
 import time
@@ -176,6 +177,16 @@ class ScanState:
 
 # ==================== 异步桥接 ====================
 
+
+class BridgeTimeoutError(TimeoutError):
+    """A synchronous bridge wait expired and its coroutine was cancelled."""
+
+
+def _close_unsubmitted_coroutine(coro):
+    close = getattr(coro, 'close', None)
+    if callable(close):
+        close()
+
 class AsyncBridge:
     """在守护线程中维护一个 asyncio 事件循环。"""
 
@@ -183,39 +194,67 @@ class AsyncBridge:
         self._loop = None
         self._thread = None
         self._start_lock = threading.Lock()
+        self._ready = threading.Event()
 
     def start(self):
         with self._start_lock:
             if self._loop is not None and self._loop.is_running():
                 return
             if self._loop is not None and self._thread is not None and self._thread.is_alive():
-                # 线程已启动但循环还没标记 running，等一下
-                for _ in range(50):
-                    if self._loop.is_running():
-                        return
-                    time.sleep(0.05)
-                return
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(target=self._run, daemon=True, name='scan-async')
-            self._thread.start()
+                ready = self._ready
+            else:
+                self._ready.clear()
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(target=self._run, daemon=True, name='scan-async')
+                self._thread.start()
+                ready = self._ready
+        if not ready.wait(timeout=5) or not self._loop.is_running():
+            raise RuntimeError("异步事件循环启动超时")
         logger.info("[Bridge] 异步事件循环已启动。")
 
     def _run(self):
         asyncio.set_event_loop(self._loop)
+        self._loop.call_soon(self._ready.set)
         self._loop.run_forever()
 
     def run_sync(self, coro, timeout=None):
         """将协程提交到异步循环并阻塞等待结果。"""
         if self._loop is None or not self._loop.is_running():
+            _close_unsubmitted_coroutine(coro)
             raise RuntimeError("异步事件循环未启动，请先调用 bridge.start()")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except BaseException:
+            _close_unsubmitted_coroutine(coro)
+            raise
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            # asyncio.TimeoutError raised *by* the coroutine is part of the
+            # operation result. Only cancel when the concurrent future is
+            # genuinely still pending after the bridge deadline.
+            if future.done():
+                return future.result()
+            future.cancel()
+            try:
+                future.result(timeout=1)
+            except (concurrent.futures.CancelledError,
+                    concurrent.futures.TimeoutError):
+                pass
+            raise BridgeTimeoutError(
+                f"异步操作等待超过 {timeout} 秒，已取消"
+            ) from exc
 
     def run_background(self, coro):
         """在异步循环中启动后台协程，不等待结果。"""
         if self._loop is None or not self._loop.is_running():
+            _close_unsubmitted_coroutine(coro)
             raise RuntimeError("异步事件循环未启动。")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except BaseException:
+            _close_unsubmitted_coroutine(coro)
+            raise
 
 
 # 全局实例
@@ -226,6 +265,26 @@ _background_lock_handle = None
 _daily_task_future = None
 _daily_reload_event = threading.Event()
 _db_maintenance_future = None
+_managed_futures = {}
+_managed_futures_lock = threading.Lock()
+_TASK_OWNER = f"pid:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+_TASK_LEASE_SECONDS = 90
+_TASK_HEARTBEAT_SECONDS = 3
+
+
+def _submit_managed_background(task_id, coro):
+    """Submit and retain a background Future until its completion callback."""
+    future = bridge.run_background(coro)
+    with _managed_futures_lock:
+        _managed_futures[task_id] = future
+
+    def _forget(done_future):
+        with _managed_futures_lock:
+            if _managed_futures.get(task_id) is done_future:
+                _managed_futures.pop(task_id, None)
+
+    future.add_done_callback(_forget)
+    return future
 
 
 from database import local_now as _local_now
@@ -421,6 +480,141 @@ def _yield_deep_counts(quick_channels, deep_channels, db_module):
         if bucket['unreachable_count'] > 0:
             bucket['unreachable_count'] -= 1
     return counts
+
+
+async def _monitor_task_lease(task_type, task_id, owner, stop_callback):
+    """Renew one lease and relay cross-worker stop requests locally."""
+    import database as _db
+
+    try:
+        while True:
+            current = _db.get_task_lease(task_type)
+            if not current or current.get('task_id') != task_id or not current.get('active'):
+                stop_callback()
+                return
+            state = current.get('state')
+            if state == 'stopping':
+                stop_callback()
+            if not _db.heartbeat_task_lease(
+                task_type,
+                task_id,
+                owner,
+                state='stopping' if state == 'stopping' else 'running',
+                lease_seconds=_TASK_LEASE_SECONDS,
+            ):
+                stop_callback()
+                return
+            await asyncio.sleep(_TASK_HEARTBEAT_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("[TaskLease] %s/%s 心跳异常", task_type, task_id)
+        try:
+            stop_callback()
+        except Exception:
+            pass
+
+
+async def _run_leased_scan(task_id, owner, operation):
+    """Run a full/incremental scan under the cross-process singleton lease."""
+    import database as _db
+
+    monitor = asyncio.create_task(
+        _monitor_task_lease('scan', task_id, owner, scan_state.request_stop)
+    )
+    try:
+        _db.heartbeat_task_lease(
+            'scan', task_id, owner, state='running',
+            lease_seconds=_TASK_LEASE_SECONDS, message='扫描进行中',
+        )
+        scan_id = await operation
+        lease = _db.get_task_lease('scan') or {}
+        run = _db.get_scan_run(scan_id) or {}
+        run_status = run.get('status')
+        if lease.get('state') == 'stopping' or run_status == 'stopped':
+            _db.finish_task_lease(
+                'scan', task_id, state='cancelled', message='扫描已停止'
+            )
+        elif run_status == 'failed':
+            error = run.get('error') or '扫描失败'
+            _db.finish_task_lease(
+                'scan', task_id, state='failed', message='扫描失败', error=error
+            )
+        else:
+            _db.finish_task_lease(
+                'scan', task_id, state='completed', message='扫描完成'
+            )
+        return scan_id
+    except asyncio.CancelledError:
+        scan_state.request_stop()
+        _db.finish_task_lease(
+            'scan', task_id, state='cancelled', message='扫描任务已取消'
+        )
+        raise
+    except Exception as exc:
+        _db.finish_task_lease(
+            'scan', task_id, state='failed', message='扫描失败', error=str(exc)
+        )
+        raise
+    finally:
+        monitor.cancel()
+        try:
+            await monitor
+        except asyncio.CancelledError:
+            pass
+        _db.close_thread_connection()
+
+
+def _start_scan_task(mode, operation):
+    """Atomically acquire and schedule a scan, returning its task snapshot."""
+    import database as _db
+
+    try:
+        bridge.start()
+    except Exception as exc:
+        _close_unsubmitted_coroutine(operation)
+        return {'ok': False, 'error': f'扫描启动失败: {exc}', 'task': None}
+    task_id = f"scan-{uuid.uuid4().hex}"
+    acquired, task = _db.acquire_task_lease(
+        'scan', task_id, _TASK_OWNER,
+        lease_seconds=_TASK_LEASE_SECONDS,
+        message='增量扫描等待启动' if mode == 'incremental' else '扫描等待启动',
+    )
+    if not acquired:
+        _close_unsubmitted_coroutine(operation)
+        return {'ok': False, 'error': '扫描正在进行中', 'task': task}
+    try:
+        _submit_managed_background(
+            task_id,
+            _run_leased_scan(task_id, _TASK_OWNER, operation),
+        )
+    except Exception as exc:
+        _close_unsubmitted_coroutine(operation)
+        _db.finish_task_lease(
+            'scan', task_id, state='failed', message='扫描启动失败', error=str(exc)
+        )
+        return {'ok': False, 'error': f'扫描启动失败: {exc}', 'task': _db.get_task_lease('scan')}
+    return {'ok': True, 'mode': mode, 'task': _db.get_task_lease('scan')}
+
+
+async def _run_scheduled_scan():
+    """Acquire the same lease used by Web triggers before a scheduled run."""
+    import database as _db
+
+    task_id = f"scan-{uuid.uuid4().hex}"
+    acquired, task = _db.acquire_task_lease(
+        'scan', task_id, _TASK_OWNER,
+        lease_seconds=_TASK_LEASE_SECONDS, message='定时扫描等待启动',
+    )
+    if not acquired:
+        logger.info(
+            "[DailyTask] 跳过定时扫描，已有活跃任务: %s",
+            (task or {}).get('task_id', ''),
+        )
+        return None
+    return await _run_leased_scan(
+        task_id, _TASK_OWNER, _do_scan()
+    )
 
 
 async def _do_scan(platforms_override=None, provinces_override=None):
@@ -874,45 +1068,40 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
 
 def trigger_scan(platforms=None, provinces=None):
     """触发全量扫描（入口，供路由调用）。"""
-    import database as _db
-    progress = _db.get_scan_progress()
-    if progress and progress.get('running'):
-        return {'ok': False, 'error': '扫描正在进行中'}
-    bridge.start()  # 确保异步循环已启动
-    bridge.run_background(_do_scan(
-        platforms_override=platforms,
-        provinces_override=provinces,
+    return _start_scan_task('full', _do_scan(
+        platforms_override=platforms, provinces_override=provinces,
     ))
-    return {'ok': True, 'mode': 'full'}
 
 
 def trigger_stop():
     """请求停止扫描。"""
+    import database as _db
+
+    accepted, task = _db.request_task_stop('scan', message='停止扫描请求已接受')
+    if not accepted:
+        return {'ok': False, 'error': '当前没有正在运行的扫描', 'task': task}
     scan_state.request_stop()
-    return {'ok': True, 'message': '已请求停止扫描'}
+    return {'ok': True, 'message': '已请求停止扫描', 'task': task}
 
 
 def force_clear_scan():
     """强制清除卡死的扫描状态。"""
     import database as _db
-    # 清除数据库中的扫描进度
+
+    cleared, task = _db.clear_stale_task_lease('scan')
+    if not cleared:
+        return {'ok': False, 'error': '扫描仍在运行，不能强制清除', 'task': task}
     _db.clear_scan_progress()
-    # 重置内存状态
     scan_state.clear_stop()
     return {'ok': True, 'message': '扫描状态已清除'}
 
 
 def trigger_incremental_scan(platforms_override=None, provinces_override=None):
     """触发增量扫描（入口，供路由或定时任务调用）。"""
-    import database as _db
-    progress = _db.get_scan_progress()
-    if progress and progress.get('running'):
-        return {'ok': False, 'error': '扫描正在进行中'}
-    bridge.run_background(_do_incremental_scan(
+    return _start_scan_task('incremental', _do_incremental_scan(
         platforms_override=platforms_override,
         provinces_override=provinces_override,
     ))
-    return {'ok': True, 'mode': 'incremental'}
 
 
 def get_scan_status():
@@ -955,11 +1144,14 @@ def get_scan_status():
 
 
 def get_scan_results(scan_id=None, page=1, size=50, category=None,
-                     province=None, search=None):
+                     province=None, search=None, platform=None,
+                     sort_by=None, sort_order='desc'):
     """分页查询扫描结果。"""
     import database as _db
     return _db.get_scan_results(scan_id=scan_id, page=page, size=size,
-                                category=category, province=province, search=search)
+                                category=category, province=province, search=search,
+                                platform=platform, sort_by=sort_by,
+                                sort_order=sort_order)
 
 
 def get_latest_scan():
@@ -1038,10 +1230,16 @@ def get_detection_runs(start=None, end=None, limit=100):
     return _db.get_detection_runs(start, end, limit)
 
 
-def get_detection_results(cycle_id, page=None, size=100):
+def get_detection_results(cycle_id, page=None, size=100, search=None,
+                          outcome=None, quality=None, sort_by=None,
+                          sort_order='asc'):
     """获取某轮检测的 URL 结果明细。"""
     import database as _db
-    return _db.get_detection_results(cycle_id, page=page, size=size)
+    return _db.get_detection_results(
+        cycle_id, page=page, size=size, search=search,
+        outcome=outcome, quality=quality, sort_by=sort_by,
+        sort_order=sort_order,
+    )
 
 
 def trigger_persistent_manual_check():
@@ -1197,7 +1395,10 @@ async def _daily_update_task():
 
             # 到达目标时间，检查是否有正在进行的扫描
             import database as _db
-            progress = _db.get_scan_progress()
+            try:
+                progress = _db.get_scan_progress()
+            finally:
+                _db.close_thread_connection()
             if progress and progress.get('running'):
                 logger.info("[Scheduler] 已有扫描在运行，跳过本次")
                 await _sleep_until_or_reload(60)
@@ -1205,7 +1406,7 @@ async def _daily_update_task():
 
             # 触发扫描
             logger.info("[Scheduler] 定时扫描触发")
-            await _do_scan()
+            await _run_scheduled_scan()
 
             # 防止重复触发
             await _sleep_until_or_reload(60)
@@ -1252,28 +1453,31 @@ async def _daily_db_maintenance_task():
             await asyncio.sleep(wait_seconds)
 
             import database as _db
-            logger.info("[DBMaint] 开始每日数据库维护...")
-
-            # 1. 清理过期日志
             try:
-                from database.db import RUN_LOGS_RETENTION_DAYS
-                deleted = _db.cleanup_old_run_logs(days=RUN_LOGS_RETENTION_DAYS)
-                logger.info(f"[DBMaint] 清理过期 run_logs: {deleted} 条。")
-            except Exception as e:
-                logger.warning(f"[DBMaint] 清理 run_logs 失败: {e}")
+                logger.info("[DBMaint] 开始每日数据库维护...")
 
-            # 2. 数据库维护（MySQL 无需 VACUUM）
-            try:
-                progress = _db.get_scan_progress()
-                if progress.get('running'):
-                    logger.info("[DBMaint] 扫描正在进行中，跳过维护。")
-                else:
-                    _db.vacuum_database()  # MySQL 下为空操作
-                    logger.info("[DBMaint] 数据库维护完成（MySQL 无需 VACUUM）")
-            except Exception as e:
-                logger.warning(f"[DBMaint] 维护异常: {e}")
+                # 1. 清理过期日志
+                try:
+                    from database.db import RUN_LOGS_RETENTION_DAYS
+                    deleted = _db.cleanup_old_run_logs(days=RUN_LOGS_RETENTION_DAYS)
+                    logger.info(f"[DBMaint] 清理过期 run_logs: {deleted} 条。")
+                except Exception as e:
+                    logger.warning(f"[DBMaint] 清理 run_logs 失败: {e}")
 
-            logger.info("[DBMaint] 每日维护完成")
+                # 2. 数据库维护（MySQL 无需 VACUUM）
+                try:
+                    progress = _db.get_scan_progress()
+                    if progress.get('running'):
+                        logger.info("[DBMaint] 扫描正在进行中，跳过维护。")
+                    else:
+                        _db.vacuum_database()  # MySQL 下为空操作
+                        logger.info("[DBMaint] 数据库维护完成（MySQL 无需 VACUUM）")
+                except Exception as e:
+                    logger.warning(f"[DBMaint] 维护异常: {e}")
+
+                logger.info("[DBMaint] 每日维护完成")
+            finally:
+                _db.close_thread_connection()
             # 防止同一天重复触发
             await asyncio.sleep(60)
 
@@ -1340,15 +1544,102 @@ def _ip_scan_log(msg):
 
 _ip_scan_log_seq = 0
 _ip_scan_stop_requested = False
+_active_ip_scanner = None
+_active_ip_scan_task_id = None
+_active_ip_scanner_lock = threading.Lock()
 
 
-async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_concurrent, timeout):
+def _set_active_ip_scanner(scanner, task_id):
+    global _active_ip_scanner, _active_ip_scan_task_id
+    with _active_ip_scanner_lock:
+        _active_ip_scanner = scanner
+        _active_ip_scan_task_id = task_id
+
+
+def _clear_active_ip_scanner(scanner):
+    global _active_ip_scanner, _active_ip_scan_task_id
+    with _active_ip_scanner_lock:
+        if _active_ip_scanner is scanner:
+            _active_ip_scanner = None
+            _active_ip_scan_task_id = None
+
+
+def _signal_active_ip_scan_stop(task_id=None):
+    """Stop the exact scanner instance created for the active bridge task."""
+    global _ip_scan_stop_requested
+    _ip_scan_stop_requested = True
+    with _active_ip_scanner_lock:
+        scanner = _active_ip_scanner
+        active_task_id = _active_ip_scan_task_id
+    if scanner is not None and (task_id is None or task_id == active_task_id):
+        scanner.request_stop()
+
+
+async def _run_leased_ip_scan(task_id, owner, operation):
+    import database as _db
+
+    monitor = asyncio.create_task(
+        _monitor_task_lease(
+            'ip_scan', task_id, owner,
+            lambda: _signal_active_ip_scan_stop(task_id),
+        )
+    )
+    try:
+        _db.heartbeat_task_lease(
+            'ip_scan', task_id, owner, state='running',
+            lease_seconds=_TASK_LEASE_SECONDS, message='IP 扫描进行中',
+        )
+        scan_id = await operation
+        lease = _db.get_task_lease('ip_scan') or {}
+        latest = _db.get_latest_ip_scan_run() or {}
+        run_status = latest.get('status') if latest.get('scan_id') == scan_id else ''
+        if lease.get('state') == 'stopping' or run_status == 'stopped':
+            _db.finish_task_lease(
+                'ip_scan', task_id, state='cancelled', message='IP 扫描已停止'
+            )
+        elif run_status == 'failed':
+            error = latest.get('error') or 'IP 扫描失败'
+            _db.finish_task_lease(
+                'ip_scan', task_id, state='failed', message='IP 扫描失败', error=error
+            )
+        else:
+            _db.finish_task_lease(
+                'ip_scan', task_id, state='completed', message='IP 扫描完成'
+            )
+        return scan_id
+    except asyncio.CancelledError:
+        _signal_active_ip_scan_stop(task_id)
+        _db.finish_task_lease(
+            'ip_scan', task_id, state='cancelled', message='IP 扫描任务已取消'
+        )
+        raise
+    except Exception as exc:
+        _db.finish_task_lease(
+            'ip_scan', task_id, state='failed', message='IP 扫描失败', error=str(exc)
+        )
+        raise
+    finally:
+        monitor.cancel()
+        try:
+            await monitor
+        except asyncio.CancelledError:
+            pass
+        _db.close_thread_connection()
+
+
+async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
+                      http_concurrent, timeout, task_id=None):
     """执行IP扫描的核心协程。"""
     import database as _db
     from .ip_scanner import IPScanner
     
     global _ip_scan_stop_requested
-    _ip_scan_stop_requested = False
+    current_lease = _db.get_task_lease('ip_scan') if task_id else None
+    _ip_scan_stop_requested = bool(
+        current_lease
+        and current_lease.get('task_id') == task_id
+        and current_lease.get('state') == 'stopping'
+    )
     
     now = _local_now()
     scan_id = f"ip_scan_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -1356,6 +1647,7 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_conc
     
     # 初始化日志序号
     global _ip_scan_log_seq
+    scanner = None
     try:
         _db.init_ip_scan_log_seq()
         _ip_scan_log_seq = 0
@@ -1386,9 +1678,12 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_conc
             'http_concurrent': http_concurrent,
             'timeout': timeout,
         })
+        _set_active_ip_scanner(scanner, task_id)
         
         # 重置停止标志
         scanner.clear_stop()
+        if _ip_scan_stop_requested:
+            scanner.request_stop()
 
         def _emit_ip_scan_progress(progress):
             total_count = int(progress.get('total') or 0)
@@ -1467,6 +1762,19 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_conc
             'message': '扫描完成'
         })
         
+    except asyncio.CancelledError:
+        _signal_active_ip_scan_stop(task_id)
+        try:
+            _db.update_ip_scan_run(
+                scan_id, status='stopped', finished_at=_db.now_str(),
+                duration_seconds=time.time() - start_time,
+            )
+            _db.update_ip_scan_progress(
+                running=False, phase='idle', message='扫描任务已取消'
+            )
+        except Exception:
+            pass
+        raise
     except Exception as e:
         _ip_scan_log(f"[IP扫描:{scan_id}] 扫描异常: {e}")
         try:
@@ -1476,12 +1784,13 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit, http_conc
             pass
         _db.update_ip_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
         _broadcast_ip_scan_sse('status', {'running': False, 'message': f'扫描失败: {e}'})
-    
-    # 刷新日志缓冲区
-    try:
-        _db.flush_log_buffer()
-    except Exception:
-        pass
+    finally:
+        if scanner is not None:
+            _clear_active_ip_scanner(scanner)
+        try:
+            _db.flush_log_buffer()
+        except Exception:
+            pass
     
     return scan_id
 
@@ -1490,40 +1799,82 @@ def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000,
                     http_concurrent=50, timeout=3600):
     """触发一次IP扫描。"""
     import database as _db
-    
-    # 检查是否已有扫描在运行
-    progress = _db.get_ip_scan_progress()
-    if progress and progress.get('running'):
-        return {'error': 'IP扫描正在进行中'}
-    
-    # 在异步循环中启动扫描
-    bridge.run_background(_do_ip_scan(
+    from .ip_scanner import IPScanner, IPScanInputError
+
+    config = {
+        'workers': workers,
+        'rate_limit': rate_limit,
+        'http_concurrent': http_concurrent,
+        'timeout': timeout,
+    }
+    try:
+        IPScanner(config).validate_request(targets, ports)
+    except (IPScanInputError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc), 'code': 'invalid_input'}
+
+    try:
+        bridge.start()
+    except Exception as exc:
+        return {'ok': False, 'error': f'IP 扫描启动失败: {exc}', 'task': None}
+    task_id = f"ipscan-{uuid.uuid4().hex}"
+    acquired, task = _db.acquire_task_lease(
+        'ip_scan', task_id, _TASK_OWNER,
+        lease_seconds=_TASK_LEASE_SECONDS, message='IP 扫描等待启动',
+    )
+    if not acquired:
+        return {'ok': False, 'error': 'IP扫描正在进行中', 'task': task}
+
+    operation = _do_ip_scan(
         targets=targets,
         scan_types=scan_types,
         ports=ports,
         workers=workers,
         rate_limit=rate_limit,
         http_concurrent=http_concurrent,
-        timeout=timeout
-    ))
-    
-    return {'ok': True}
+        timeout=timeout,
+        task_id=task_id,
+    )
+    try:
+        _submit_managed_background(
+            task_id,
+            _run_leased_ip_scan(task_id, _TASK_OWNER, operation),
+        )
+    except Exception as exc:
+        _close_unsubmitted_coroutine(operation)
+        _db.finish_task_lease(
+            'ip_scan', task_id, state='failed',
+            message='IP 扫描启动失败', error=str(exc),
+        )
+        return {
+            'ok': False,
+            'error': f'IP 扫描启动失败: {exc}',
+            'task': _db.get_task_lease('ip_scan'),
+        }
+    return {'ok': True, 'task': _db.get_task_lease('ip_scan')}
 
 
 def request_stop_ip_scan():
     """请求停止IP扫描。"""
-    global _ip_scan_stop_requested
-    _ip_scan_stop_requested = True
-    
-    # 同时设置scanner实例的停止标志
-    try:
-        from .ip_scanner import get_ip_scanner
-        scanner = get_ip_scanner()
-        scanner.request_stop()
-    except Exception:
-        pass
-    
-    return {'ok': True, 'message': '已请求停止'}
+    import database as _db
+
+    accepted, task = _db.request_task_stop(
+        'ip_scan', message='停止 IP 扫描请求已接受'
+    )
+    if not accepted:
+        return {'ok': False, 'error': '当前没有正在运行的 IP 扫描', 'task': task}
+    _signal_active_ip_scan_stop(task.get('task_id') if task else None)
+    return {'ok': True, 'message': '已请求停止', 'task': task}
+
+
+def force_clear_ip_scan():
+    """Clear only stale IP-scan state; an active lease is never erased."""
+    import database as _db
+
+    cleared, task = _db.clear_stale_task_lease('ip_scan')
+    if not cleared:
+        return {'ok': False, 'error': 'IP 扫描仍在运行，不能强制清除', 'task': task}
+    _db.reset_ip_scan_progress()
+    return {'ok': True, 'message': 'IP 扫描状态已清除'}
 
 
 def get_ip_scan_status():

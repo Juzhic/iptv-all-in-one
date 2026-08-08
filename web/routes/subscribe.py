@@ -6,6 +6,7 @@ from flask import Blueprint, Response, request, send_file
 
 from database import get_latest_run, get_latest_passed_results
 from web.result_gen import _generate_result_txt, _generate_result_m3u
+from web.subscription_cache import anonymous_feed
 
 subscribe_bp = Blueprint('subscribe', __name__)
 
@@ -60,6 +61,7 @@ def _get_passed_results_with_codec(codec_filter=None, min_bw=None):
 
 
 @subscribe_bp.route('/api/subscribe.m3u')
+@anonymous_feed
 def api_subscribe():
     """动态 M3U 订阅端点，供 IPTV 播放器直接订阅。
 

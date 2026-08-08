@@ -1,45 +1,74 @@
 # -*- coding: utf-8 -*-
 """web 包 — 扫描模块 API 蓝图。"""
-import ipaddress
+import asyncio
 import logging
-from urllib.parse import urlparse
+import time
 from flask import Blueprint, request, jsonify, Response
 
 import database as db
 import web.state as _state
 from web.app import _finite_number_or_none
 from web.routes.params import int_arg
+from web.routes.test_control import (
+    SSE_MAX_DURATION_SECONDS,
+    acquire_sse_slot,
+)
+from scanner_integration.safe_http import (
+    DEFAULT_MAX_RESPONSE_BYTES,
+    NetworkPolicyError,
+    safe_fetch,
+    validate_http_url,
+)
 
 logger = logging.getLogger(__name__)
 SUPPORTED_KEY_PLATFORMS = ('quake', 'hunter', 'daydaymap', 'fofa')
+_SCAN_RUNTIME_KEY_ALIASES = frozenset(
+    ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key')
+)
+
+
+def _is_scan_secret_field(name):
+    return (
+        name in _SCAN_RUNTIME_KEY_ALIASES
+        or name.endswith('_api_key')
+        or name.endswith('_api_keys')
+    )
+
+
+def _public_scan_config(cfg):
+    """Return scanner settings without API keys or runtime secret aliases."""
+    source = cfg if isinstance(cfg, dict) else {}
+    public = {
+        key: value for key, value in source.items()
+        if not _is_scan_secret_field(str(key))
+    }
+    key_status = {}
+    for platform in SUPPORTED_KEY_PLATFORMS:
+        values = source.get(f'{platform}_api_keys', [])
+        count = len(values) if isinstance(values, list) else 0
+        if not count and source.get(f'{platform}_api_key'):
+            count = 1
+        key_status[platform] = {'has_keys': count > 0, 'count': count}
+    public['key_status'] = key_status
+    return public
+
+
+def _strip_scan_secret_updates(data):
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value for key, value in data.items()
+        if not _is_scan_secret_field(str(key))
+    }
 
 
 def _validate_recheck_url(url):
-    """Validate URL for recheck to prevent SSRF attacks."""
+    """Perform syntax/policy preflight; safe_fetch enforces resolved peers."""
     try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https'):
-            return False, '仅支持 http/https 协议'
-        hostname = parsed.hostname
-        if not hostname:
-            return False, '无效的主机名'
-        # Block localhost and common internal addresses
-        blocked = ('localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]', '169.254.169.254')
-        if hostname in blocked:
-            return False, '不允许访问内部地址'
-        # Resolve and check IP ranges
-        import socket
-        try:
-            infos = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
-            for _, _, _, _, sockaddr in infos:
-                ip = ipaddress.ip_address(sockaddr[0])
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
-                    return False, f'不允许访问内部地址 ({ip})'
-        except (socket.gaierror, ValueError, OSError):
-            return False, '无法解析主机名'
+        validate_http_url(url)
         return True, ''
-    except Exception:
-        return False, 'URL 格式无效'
+    except NetworkPolicyError as exc:
+        return False, str(exc)
 
 scan_bp = Blueprint('scan', __name__)
 
@@ -59,6 +88,27 @@ def _ensure_scan_bridge():
     return scanner, None, None
 
 
+def _scan_result_filters(args):
+    return {
+        'scan_id': args.get('scan_id') or None,
+        'category': (args.get('category') or '').strip() or None,
+        'province': (args.get('province') or '').strip() or None,
+        'platform': (args.get('platform') or '').strip() or None,
+        'search': (args.get('search') or '').strip()[:200] or None,
+        'sort_by': (args.get('sort_by') or '').strip() or None,
+        'sort_order': (args.get('sort_order') or 'desc').strip().lower(),
+    }
+
+
+def _one_line(value):
+    return str(value or '').replace('\r', ' ').replace('\n', ' ').strip()
+
+
+def _redact_value(value, secret):
+    text = str(value or '')
+    return text.replace(secret, '***') if secret else text
+
+
 # ─────────────── 扫描控制 API ───────────────
 
 @scan_bp.route('/api/scan/trigger', methods=['POST'])
@@ -74,7 +124,14 @@ def api_scan_trigger():
     )
     if 'error' in result:
         return jsonify({'ok': False, 'error': result['error']}), 409
-    return jsonify({'ok': True, 'message': '扫描已启动'})
+    task = result.get('task') or {}
+    return jsonify({
+        'ok': True,
+        'message': '扫描已启动',
+        'task_id': task.get('task_id'),
+        'state': 'starting',
+        'data': result.get('task'),
+    }), 202
 
 
 @scan_bp.route('/api/scan/trigger-incremental', methods=['POST'])
@@ -90,7 +147,15 @@ def api_scan_trigger_incremental():
     )
     if 'error' in result:
         return jsonify({'ok': False, 'error': result['error']}), 409
-    return jsonify({'ok': True, 'message': '增量扫描已启动', 'mode': 'incremental'})
+    task = result.get('task') or {}
+    return jsonify({
+        'ok': True,
+        'message': '增量扫描已启动',
+        'mode': 'incremental',
+        'task_id': task.get('task_id'),
+        'state': 'starting',
+        'data': result.get('task'),
+    }), 202
 
 
 @scan_bp.route('/api/scan/stop', methods=['POST'])
@@ -100,7 +165,16 @@ def api_scan_stop():
     if err:
         return err, code
     result = scanner.trigger_stop()
-    return jsonify({'ok': True, 'data': result})
+    if result.get('error'):
+        return jsonify({'ok': False, 'error': result['error'], 'data': result.get('task')}), 409
+    task = result.get('task') or {}
+    return jsonify({
+        'ok': True,
+        'message': result.get('message', ''),
+        'task_id': task.get('task_id'),
+        'state': 'stopping',
+        'data': result.get('task'),
+    }), 202
 
 
 @scan_bp.route('/api/scan/force-clear', methods=['POST'])
@@ -111,6 +185,8 @@ def api_scan_force_clear():
         db.clear_scan_progress()
         return jsonify({'ok': True, 'message': '扫描状态已清除'})
     result = scanner.force_clear_scan()
+    if result.get('error'):
+        return jsonify({'ok': False, 'error': result['error'], 'data': result.get('task')}), 409
     return jsonify({'ok': True, 'data': result})
 
 
@@ -130,32 +206,37 @@ def api_scan_stream():
     scanner = _get_scanner()
     if scanner is None:
         return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+    slot = acquire_sse_slot()
+    if slot is None:
+        return jsonify({'ok': False, 'error': 'SSE 连接数已达上限'}), 429
 
     def generate():
-        q = scanner.subscribe_sse()
-        import time as _time
-        started = _time.time()
-        MAX_SSE_DURATION = 1800  # 30 分钟最大时长
+        q = None
+        deadline = time.monotonic() + SSE_MAX_DURATION_SECONDS
         try:
+            q = scanner.subscribe_sse()
             # 立即发送当前状态
             import json
             status = scanner.get_scan_status()
             yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
             while True:
-                if _time.time() - started > MAX_SSE_DURATION:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     yield f"event: error\ndata: {json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
                     break
                 try:
-                    msg = q.get(timeout=30)
+                    msg = q.get(timeout=min(30, remaining))
                     yield msg
                 except Exception:
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass
         finally:
-            scanner.unsubscribe_sse(q)
+            if q is not None:
+                scanner.unsubscribe_sse(q)
+            slot.release()
 
-    return Response(
+    response = Response(
         generate(),
         mimetype='text/event-stream',
         headers={
@@ -164,6 +245,8 @@ def api_scan_stream():
             'Connection': 'keep-alive',
         }
     )
+    response.call_on_close(slot.release)
+    return response
 
 
 @scan_bp.route('/api/scan/results', methods=['GET'])
@@ -172,17 +255,64 @@ def api_scan_results():
     scanner = _get_scanner()
     if scanner is None:
         return jsonify({'ok': True, 'items': [], 'total': 0})
-    scan_id = request.args.get('scan_id')
     page = int_arg(request.args, 'page', 1, 1, None)
     size = int_arg(request.args, 'size', 50, 1, 200)
-    category = request.args.get('category')
-    province = request.args.get('province')
-    search = request.args.get('search')
+    filters = _scan_result_filters(request.args)
     total, items = scanner.get_scan_results(
-        scan_id=scan_id, page=page, size=size,
-        category=category, province=province, search=search
+        page=page, size=size, **filters,
     )
     return jsonify({'ok': True, 'items': items, 'total': total, 'page': page, 'size': size})
+
+
+@scan_bp.route('/api/scan/results/export', methods=['GET'])
+def api_scan_results_export():
+    """Stream every scan result matching the same filters as the table API."""
+    scanner = _get_scanner()
+    if scanner is None:
+        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+    output_format = (request.args.get('format') or 'm3u').strip().lower()
+    if output_format not in ('txt', 'm3u'):
+        return jsonify({'ok': False, 'error': 'format must be txt or m3u'}), 400
+    filters = _scan_result_filters(request.args)
+
+    def generate():
+        page = 1
+        emitted = 0
+        try:
+            if output_format == 'm3u':
+                yield '#EXTM3U\n'
+            while True:
+                total, items = scanner.get_scan_results(
+                    page=page, size=500, **filters,
+                )
+                if not items:
+                    break
+                for item in items:
+                    name = _one_line(item.get('name')) or '未知频道'
+                    url = _one_line(item.get('url'))
+                    if not url:
+                        continue
+                    if output_format == 'm3u':
+                        yield f'#EXTINF:-1,{name}\n{url}\n'
+                    else:
+                        yield f'{name},{url}\n'
+                    emitted += 1
+                if page * 500 >= total:
+                    break
+                page += 1
+        finally:
+            try:
+                db._reset_thread_conn()
+            except Exception:
+                pass
+
+    filename = f"scan_results.{output_format}"
+    mimetype = 'audio/x-mpegurl' if output_format == 'm3u' else 'text/plain'
+    return Response(
+        generate(),
+        mimetype=mimetype,
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
 
 
 @scan_bp.route('/api/scan/latest', methods=['GET'])
@@ -217,10 +347,10 @@ def api_scan_config_get():
                 logger.warning(f"[ScanConfig] 初始化扫描后台任务失败: {e}")
         from scanner_integration.config_bridge import get_scan_config
         cfg = get_scan_config()
-        return jsonify({'ok': True, 'data': cfg})
+        return jsonify({'ok': True, 'data': _public_scan_config(cfg)})
     except Exception:
         from scanner_integration.config_bridge import DEFAULT_SCAN_CONFIG
-        return jsonify({'ok': True, 'data': DEFAULT_SCAN_CONFIG})
+        return jsonify({'ok': True, 'data': _public_scan_config(DEFAULT_SCAN_CONFIG)})
 
 
 @scan_bp.route('/api/scan/config', methods=['POST'])
@@ -230,7 +360,7 @@ def api_scan_config_set():
         from scanner_integration.config_bridge import save_scan_config, get_scan_config
         from scanner_integration.key_manager import init_key_manager
         data = request.get_json(silent=True) or {}
-        save_scan_config(data)
+        save_scan_config(_strip_scan_secret_updates(data))
         init_key_manager()
         scanner = _get_scanner()
         if scanner is not None:
@@ -240,7 +370,7 @@ def api_scan_config_set():
             except Exception as e:
                 logger.warning(f"[ScanConfig] 重载定时扫描配置失败: {e}")
         cfg = get_scan_config()
-        return jsonify({'ok': True, 'data': cfg})
+        return jsonify({'ok': True, 'data': _public_scan_config(cfg)})
     except Exception as e:
         return jsonify({'ok': False, 'error': f'保存失败: {e}'}), 500
 
@@ -251,6 +381,7 @@ def api_scan_keys_list():
     try:
         from scanner_integration.config_bridge import get_scan_config
         from scanner_integration.key_manager import KeyManager, init_key_manager
+        from scanner_integration.secure_keys import key_id, key_suffix
         init_key_manager()
         km = KeyManager.instance()
         cfg = get_scan_config()
@@ -259,11 +390,10 @@ def api_scan_keys_list():
         for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
             keys = km.get_all_keys(platform)
             for key in keys:
-                suffix = f"...{key[-6:]}"
                 result.append({
                     'platform': platform,
-                    'key': key,
-                    'key_suffix': suffix,
+                    'key_id': key_id(platform, key),
+                    'key_suffix': f"...{key_suffix(key)}",
                     'credit': None,
                     'role': '',
                     'role_limit': None,
@@ -292,6 +422,7 @@ def api_scan_keys_credits():
         init_key_manager()
         km = KeyManager.instance()
         from scanner_integration.config_bridge import get_scan_config
+        from scanner_integration.secure_keys import key_id, key_suffix
         cfg = get_scan_config()
         fofa_email = cfg.get('fofa_email', '')
         credits_info = {}
@@ -323,18 +454,16 @@ def api_scan_keys_credits():
         for platform in ('quake', 'hunter', 'daydaymap', 'fofa'):
             keys = km.get_all_keys(platform)
             platform_credits = credits_info.get(platform, [])
-            credit_map = {c['key_suffix']: c for c in platform_credits}
-            for key in keys:
-                suffix = f"...{key[-6:]}"
-                ci = credit_map.get(suffix, {})
+            for index, key in enumerate(keys):
+                ci = platform_credits[index] if index < len(platform_credits) else {}
                 result.append({
                     'platform': platform,
-                    'key': key,
-                    'key_suffix': suffix,
+                    'key_id': key_id(platform, key),
+                    'key_suffix': f"...{key_suffix(key)}",
                     'credit': _finite_number_or_none(ci.get('credit')),
                     'role': ci.get('role', ''),
                     'role_limit': _finite_number_or_none(ci.get('role_limit')),
-                    'error': ci.get('error', ''),
+                    'error': _redact_value(ci.get('error', ''), key),
                     'email': fofa_email if platform == 'fofa' else '',
                 })
         return jsonify({'ok': True, 'data': result})
@@ -381,15 +510,16 @@ def api_scan_keys_add():
 
 @scan_bp.route('/api/scan/keys', methods=['DELETE'])
 def api_scan_keys_delete():
-    """删除一个 API Key（支持通过后缀匹配）。"""
+    """Delete one API key by its opaque key_id."""
     try:
         from scanner_integration.config_bridge import get_scan_config, save_scan_config
         from scanner_integration.key_manager import init_key_manager
+        from scanner_integration.secure_keys import find_key_by_id
         data = request.get_json(silent=True) or {}
         platform = data.get('platform', '').strip()
-        key = data.get('key', '').strip()
-        if not platform or not key:
-            return jsonify({'ok': False, 'error': '平台和 Key 不能为空'}), 400
+        requested_id = data.get('key_id', '').strip()
+        if not platform or not requested_id:
+            return jsonify({'ok': False, 'error': '平台和 key_id 不能为空'}), 400
         if platform not in SUPPORTED_KEY_PLATFORMS:
             return jsonify({'ok': False, 'error': '不支持的平台'}), 400
 
@@ -397,14 +527,11 @@ def api_scan_keys_delete():
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
-        # 支持后缀匹配（前端传 ...xxx，后端存完整 key）
-        if key in keys_list:
-            keys_list.remove(key)
-        else:
-            suffix = key.lstrip('.')
-            matched = [k for k in keys_list if k.endswith(suffix)]
-            if matched:
-                keys_list.remove(matched[0])
+        match = find_key_by_id(platform, keys_list, requested_id)
+        if match is None:
+            return jsonify({'ok': False, 'error': 'Key 不存在'}), 404
+        index, _ = match
+        keys_list.pop(index)
         cfg[f'{platform}_api_keys'] = keys_list
         if len(keys_list) == 1:
             cfg[f'{platform}_api_key'] = keys_list[0]
@@ -419,15 +546,16 @@ def api_scan_keys_delete():
 
 @scan_bp.route('/api/scan/keys', methods=['PUT'])
 def api_scan_keys_update():
-    """更新一个 API Key（替换旧值，支持后缀匹配）。"""
+    """Replace one API key selected only by its opaque key_id."""
     try:
         from scanner_integration.config_bridge import get_scan_config, save_scan_config
         from scanner_integration.key_manager import init_key_manager
+        from scanner_integration.secure_keys import find_key_by_id
         data = request.get_json(silent=True) or {}
         platform = data.get('platform', '').strip()
-        old_key = data.get('old_key', '').strip()
-        new_key = data.get('new_key', '').strip()
-        if not platform or not old_key or not new_key:
+        requested_id = data.get('key_id', '').strip()
+        new_key = (data.get('new_key') or data.get('key') or '').strip()
+        if not platform or not requested_id or not new_key:
             return jsonify({'ok': False, 'error': '参数不完整'}), 400
         if platform not in SUPPORTED_KEY_PLATFORMS:
             return jsonify({'ok': False, 'error': '不支持的平台'}), 400
@@ -441,20 +569,15 @@ def api_scan_keys_update():
             if not email:
                 return jsonify({'ok': False, 'error': 'Fofa Email 不能为空'}), 400
             cfg['fofa_email'] = email
+        match = find_key_by_id(platform, keys_list, requested_id)
+        if match is None:
+            return jsonify({'ok': False, 'error': '原 Key 不存在'}), 404
+        idx, old_key = match
         if old_key == new_key:
             save_scan_config(cfg)
             init_key_manager()
             return jsonify({'ok': True, 'message': 'Fofa Email 已更新' if platform == 'fofa' else 'Key 未变更'})
-        # 支持后缀匹配（前端传 ...xxx，后端存完整 key）
-        if old_key in keys_list:
-            idx = keys_list.index(old_key)
-        else:
-            suffix = old_key.lstrip('.')
-            matched = [(i, k) for i, k in enumerate(keys_list) if k.endswith(suffix)]
-            if not matched:
-                return jsonify({'ok': False, 'error': '原 Key 不存在'}), 400
-            idx = matched[0][0]
-        if new_key in keys_list:
+        if any(key == new_key for index, key in enumerate(keys_list) if index != idx):
             return jsonify({'ok': False, 'error': '新 Key 已存在'}), 400
         keys_list[idx] = new_key
         cfg[f'{platform}_api_keys'] = keys_list
@@ -588,16 +711,27 @@ def api_detection_run_results(cycle_id):
         return err, code
     page = int_arg(request.args, 'page', 1, 1, None)
     size = int_arg(request.args, 'size', 100, 1, 200)
-    return jsonify({'ok': True, 'data': scanner.get_detection_results(cycle_id, page=page, size=size)})
+    search = (request.args.get('search') or '').strip()[:200]
+    outcome = (request.args.get('outcome') or '').strip().lower()
+    quality = (request.args.get('quality') or '').strip()[:50]
+    sort_by = (request.args.get('sort_by') or '').strip()
+    sort_order = (request.args.get('sort_order') or 'asc').strip().lower()
+    return jsonify({'ok': True, 'data': scanner.get_detection_results(
+        cycle_id,
+        page=page,
+        size=size,
+        search=search,
+        outcome=outcome,
+        quality=quality,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )})
 
 
 @scan_bp.route('/api/scan/persistent/recheck', methods=['POST'])
 def api_persistent_recheck():
     """重新检测指定频道。"""
     import database as db
-    from scanner_integration.video_check import run_deep_check
-    from scanner_integration.network import get_session
-    import asyncio
 
     data = request.get_json(silent=True) or {}
     url = data.get('url')
@@ -609,20 +743,31 @@ def api_persistent_recheck():
         return jsonify({'ok': False, 'error': reason}), 400
 
     async def _do_recheck():
-        async with get_session(limit=5, timeout=10) as session:
-            result = await run_deep_check(session, url)
-            if result:
-                db.update_persistent_check(
-                    url, ok=True,
-                    stability=result.get('stability'),
-                    delay=result.get('delay'),
-                    bandwidth=result.get('bandwidth'),
-                    jitter=result.get('jitter'),
-                )
-                return {'ok': True, 'stability': result.get('stability'), 'delay': result.get('delay')}
-            else:
-                db.update_persistent_check(url, ok=False)
-                return {'ok': False, 'reason': 'deep_check failed'}
+        started = time.monotonic()
+        response = await safe_fetch(
+            url,
+            timeout=20,
+            max_bytes=DEFAULT_MAX_RESPONSE_BYTES,
+            allow_rfc1918=False,
+        )
+        elapsed = max(time.monotonic() - started, 0.001)
+        if 200 <= response.status < 300 and response.body:
+            delay = round(elapsed * 1000, 1)
+            bandwidth = round(len(response.body) / elapsed / (1024 * 1024), 4)
+            stability = 100
+            db.update_persistent_check(
+                url, ok=True, stability=stability,
+                delay=delay, bandwidth=bandwidth, jitter=0,
+            )
+            return {
+                'ok': True,
+                'stability': stability,
+                'delay': delay,
+                'bandwidth': bandwidth,
+                'http_status': response.status,
+            }
+        db.update_persistent_check(url, ok=False)
+        return {'ok': False, 'reason': f'HTTP {response.status}'}
 
     try:
         scanner, err, code = _ensure_scan_bridge()
@@ -630,6 +775,12 @@ def api_persistent_recheck():
             return err, code
         result = scanner.bridge.run_sync(_do_recheck(), timeout=30)
         return jsonify({'ok': True, 'data': result})
+    except scanner.BridgeTimeoutError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 504
+    except asyncio.TimeoutError:
+        return jsonify({'ok': False, 'error': '远端检测超时'}), 504
+    except NetworkPolicyError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 422
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -668,11 +819,16 @@ def api_detection_stream():
     scanner = _get_scanner()
     if scanner is None:
         return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+    slot = acquire_sse_slot()
+    if slot is None:
+        return jsonify({'ok': False, 'error': 'SSE 连接数已达上限'}), 429
 
     def generate():
         import json
-        q = scanner.subscribe_detection_sse()
+        q = None
+        deadline = time.monotonic() + SSE_MAX_DURATION_SECONDS
         try:
+            q = scanner.subscribe_detection_sse()
             try:
                 status = scanner.get_detection_status()
                 yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
@@ -684,17 +840,23 @@ def api_detection_stream():
                 for entry in recent:
                     yield f"event: log\ndata: {json.dumps(entry, ensure_ascii=False)}\n\n"
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    yield f"event: error\ndata: {json.dumps({'error': 'SSE 连接超时，请重新连接'})}\n\n"
+                    break
                 try:
-                    msg = q.get(timeout=30)
+                    msg = q.get(timeout=min(30, remaining))
                     yield msg
                 except Exception:
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass
         finally:
-            scanner.unsubscribe_detection_sse(q)
+            if q is not None:
+                scanner.unsubscribe_detection_sse(q)
+            slot.release()
 
-    return Response(
+    response = Response(
         generate(),
         mimetype='text/event-stream',
         headers={
@@ -703,3 +865,5 @@ def api_detection_stream():
             'Connection': 'keep-alive',
         }
     )
+    response.call_on_close(slot.release)
+    return response

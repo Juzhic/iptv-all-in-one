@@ -1,9 +1,9 @@
 <template>
   <div class="scanner-tab">
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">频道扫描</div>
       <p class="section-subtitle">先在“扫描配置”里设置 API Key 和扫描参数，再启动采集和过滤流程。</p>
-      <t-space>
+      <t-space class="scan-actions">
         <t-button theme="success" :disabled="scanRunning" :loading="scanStarting" @click="triggerScan">
           {{ startButtonText }}
         </t-button>
@@ -17,7 +17,7 @@
       <p class="section-subtitle clear-hint">仅在进度卡住、或点“开始”提示“正在进行中”但没有实际任务时使用；不会清空日志和历史记录。</p>
     </t-card>
 
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">扫描进度</div>
       <span class="phase-text">{{ phaseText }}</span>
       <div v-if="scanRunning || progressVisible" class="progress-wrap">
@@ -30,6 +30,7 @@
       <LogPanel
         :entries="scanLogLines"
         :show-count="false"
+        download-name="iptv-channel-scan-session.log"
         empty-text="等待扫描开始..."
         @clear="clearScanLogLines"
       />
@@ -59,7 +60,7 @@
         :key="card.key"
         size="small"
         :bordered="false"
-        class="stat-card"
+        class="stat-card workspace-card"
         :class="card.tone"
       >
         <div class="stat-top">
@@ -75,11 +76,24 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { computed, inject, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import { apiScanForceClear, apiScanLatest, apiScanStatus, apiScanStop, apiScanTrigger, connectScanSse, shouldUseSse } from '../api.js'
-import { usePolling } from '../composables/usePolling.js'
+import { useAdaptivePolling, taskIsRunning } from '../composables/useAdaptivePolling.js'
+import { normalizeTask, readTaskId } from '../utils/tasks.js'
 import LogPanel from './LogPanel.vue'
+
+const props = defineProps({
+  active: { type: Boolean, default: true },
+  task: { type: Object, default: null },
+})
+const registerTask = inject('registerTask', () => null)
+const currentTaskId = ref(props.task?.task_id || readTaskId('scan'))
+
+watch(() => props.task, (task) => {
+  if (task?.task_id) currentTaskId.value = task.task_id
+}, { immediate: true })
 
 const scanRunning = ref(false)
 const scanStarting = ref(false)
@@ -229,7 +243,13 @@ function disconnectScanStream() {
 }
 
 function applyStatus(data = {}) {
-  const running = Boolean(data.running)
+  const statusTask = normalizeTask(data.task, 'scan')
+  if (statusTask?.task_id && currentTaskId.value && statusTask.task_id !== currentTaskId.value) return
+  if (statusTask) {
+    registerTask('scan', statusTask)
+    if (statusTask.task_id) currentTaskId.value = statusTask.task_id
+  }
+  const running = data.running != null ? Boolean(data.running) : taskIsRunning(statusTask)
   // 刚点“开始扫描”后，后端可能还没把 running 翻成 true。
   // triggerPending 期间（10s 内）忽略 running=false，避免把刚启动的扫描误判为已完成。
   if (!running && triggerPending) return
@@ -268,24 +288,23 @@ function applyStatus(data = {}) {
     const terminalError = data.error || (nextSummary.status === 'failed' ? nextSummary.error : '')
     if (terminalError) MessagePlugin.error(`扫描异常: ${terminalError}`)
     else MessagePlugin.success(data.message || (currentPhase.value === 'health_check' ? '健康检查已完成' : '扫描已完成'))
-    stopPoll()
     disconnectScanStream()
     return
   }
 
-  stopPoll()
   disconnectScanStream()
 }
 
 async function refreshStatus() {
   try {
-    const data = await apiScanStatus()
+    const data = await apiScanStatus(currentTaskId.value)
     if (!data?.summary?.scan_id) {
       try {
         data.summary = await apiScanLatest()
       } catch (_) {}
     }
     applyStatus(data)
+    return data
   } catch (_) {}
 }
 
@@ -370,13 +389,20 @@ function formatMetric(value) {
   return String(value ?? 0)
 }
 
-const { start: startPoll, stop: stopPoll } = usePolling(refreshStatus, 2000, { pauseWhenHidden: true })
+const { start: startPoll, stop: stopPoll, setRunning: setPollRunning } = useAdaptivePolling(refreshStatus, {
+  active: computed(() => props.active),
+  runningDelay: 2000,
+  idleDelay: 10000,
+  getRunning: data => Boolean(data?.running) || taskIsRunning(data?.task),
+})
 
 async function triggerScan() {
   scanStarting.value = true
   triggerPending = true
   try {
     const res = await apiScanTrigger()
+    const task = registerTask('scan', res)
+    if (task?.task_id) currentTaskId.value = task.task_id
     MessagePlugin.success('扫描已启动')
     scanLogLines.value = []
     lastLogSeq = 0
@@ -385,6 +411,7 @@ async function triggerScan() {
     phaseText.value = '扫描启动中...'
     progressLabel.value = '正在连接扫描任务...'
     connectScanStream()
+    setPollRunning(true)
     startPoll()
     setTimeout(() => { triggerPending = false }, 10000)
   } catch (_) {
@@ -430,8 +457,8 @@ async function forceClear() {
     // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
     triggerPending = false
     wasRunning = false
-    stopPoll()
     await refreshStatus()
+    setPollRunning(false)
   } catch (_) {
     MessagePlugin.error('清除失败')
   } finally {
@@ -451,12 +478,23 @@ async function clearScanLogLines() {
 }
 
 onMounted(async () => {
+  startPoll()
   await refreshStatus()
   if (scanRunning.value) {
     progressVisible.value = true
     connectScanStream()
     startPoll()
   }
+})
+
+onActivated(() => {
+  startPoll()
+  if (scanRunning.value) connectScanStream()
+})
+
+onDeactivated(() => {
+  disconnectScanStream()
+  stopPoll()
 })
 
 onBeforeUnmount(() => {
@@ -471,9 +509,9 @@ onBeforeUnmount(() => {
 }
 
 .panel-card {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   background: var(--td-bg-color-container);
-  border-radius: var(--td-radius-default);
+  border-radius: var(--app-radius-lg, 18px);
 }
 
 .section-title {
@@ -685,6 +723,19 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
+  .scanner-tab {
+    padding-top: 0;
+  }
+
+  .panel-card :deep(.t-card__body) {
+    padding: 16px;
+  }
+
+  .scan-actions {
+    display: flex !important;
+    flex-wrap: wrap;
+  }
+
   .summary-head {
     flex-direction: column;
     align-items: stretch;
@@ -700,11 +751,16 @@ onBeforeUnmount(() => {
   }
 
   .stat-card :deep(.t-card__body) {
-    min-height: 154px;
+    min-height: 142px;
+    padding: 15px;
   }
 
   .stat-value {
-    font-size: 30px;
+    font-size: 26px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

@@ -13,6 +13,7 @@ import aiohttp
 from .. import config_bridge
 from ..network import global_sem, get_session
 from ..logger_bridge import logger
+from ..safe_http import read_response_limited
 from .shared import (
     _parse_channels_payload, _extract_cache_key, _get_extract_cache,
     _set_extract_cache, _stats_add,
@@ -60,7 +61,10 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
                 ) as r:
                     if r.status != 200:
                         continue
-                    result = _parse_channels_payload(await r.read(), str(r.url), prov, city, ip)
+                    result = _parse_channels_payload(
+                        await read_response_limited(r, 1024 * 1024),
+                        str(r.url), prov, city, ip,
+                    )
                     if result:
                         _set_extract_cache(cache_key, result)
                         return result

@@ -7,6 +7,7 @@ import re
 import threading
 import time as _time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pymysql
@@ -40,6 +41,7 @@ class MySQLConnection:
         self._config = config
         self._conn = self._create_conn()
         self._cursor = None
+        self._in_transaction = False
 
     def _create_conn(self, max_retries=5, retry_delay=3):
         """创建 MySQL 连接，连接类错误自动重试（Docker 启动时 MySQL 可能未就绪）。
@@ -57,7 +59,10 @@ class MySQLConnection:
                     database=config['database'],
                     charset=config.get('charset', 'utf8mb4'),
                     cursorclass=pymysql.cursors.DictCursor,
-                    autocommit=False,
+                    # Most helpers issue one self-contained statement.  Keep
+                    # those statements out of implicit, thread-long MySQL
+                    # transactions; multi-statement units use transaction().
+                    autocommit=True,
                     connect_timeout=10,
                     read_timeout=30,
                     write_timeout=30
@@ -91,6 +96,7 @@ class MySQLConnection:
         except Exception:
             pass
         self._cursor = None
+        self._in_transaction = False
         self._conn = self._create_conn()
 
     @property
@@ -105,7 +111,7 @@ class MySQLConnection:
             cursor.execute(query, args)
             return cursor
         except pymysql.OperationalError as e:
-            if e.args[0] in (2006, 2013, 2014):
+            if e.args[0] in (2006, 2013, 2014) and not self._in_transaction:
                 self._reconnect()
                 cursor = self._get_cursor
                 cursor.execute(query, args)
@@ -118,7 +124,7 @@ class MySQLConnection:
             cursor.executemany(query, args)
             return cursor
         except pymysql.OperationalError as e:
-            if e.args[0] in (2006, 2013, 2014):
+            if e.args[0] in (2006, 2013, 2014) and not self._in_transaction:
                 self._reconnect()
                 cursor = self._get_cursor
                 cursor.executemany(query, args)
@@ -134,9 +140,35 @@ class MySQLConnection:
         self._cursor = None
     
     def close(self):
-        if self._cursor:
-            self._cursor.close()
-        self._conn.close()
+        cursor, self._cursor = self._cursor, None
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if self._conn:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+
+    @contextmanager
+    def transaction(self):
+        """Run an explicit all-or-nothing transaction on this thread connection."""
+        if self._in_transaction:
+            raise RuntimeError("nested database transactions are not supported")
+        self._in_transaction = True
+        try:
+            self._conn.begin()
+            try:
+                yield self
+            except BaseException:
+                self.rollback()
+                raise
+            else:
+                self.commit()
+        finally:
+            self._in_transaction = False
 
 
 def now_str():
@@ -250,28 +282,34 @@ class LogBatcher:
             grouped.setdefault(table, []).append(row)
         with _write_lock:
             conn = _get_conn()
-            for table, rows in grouped.items():
-                if table == 'run_logs':
-                    conn.executemany(
-                        "INSERT INTO run_logs (run_id, ts, level, message) VALUES (%s, %s, %s, %s)",
-                        rows
-                    )
-                elif table == 'scan_logs':
-                    conn.executemany(
-                        "INSERT INTO scan_logs (seq, time, msg) VALUES (%s, %s, %s)",
-                        rows
-                    )
-                elif table == 'detection_logs':
-                    conn.executemany(
-                        "INSERT INTO detection_logs (ts, level, message) VALUES (%s, %s, %s)",
-                        rows
-                    )
-                elif table == 'ip_scan_logs':
-                    conn.executemany(
-                        "INSERT INTO ip_scan_logs (seq, time, msg) VALUES (%s, %s, %s)",
-                        rows
-                    )
-            conn.commit()
+            try:
+                with conn.transaction():
+                    for table, rows in grouped.items():
+                        if table == 'run_logs':
+                            conn.executemany(
+                                "INSERT INTO run_logs (run_id, ts, level, message) VALUES (%s, %s, %s, %s)",
+                                rows
+                            )
+                        elif table == 'scan_logs':
+                            conn.executemany(
+                                "INSERT INTO scan_logs (seq, time, msg) VALUES (%s, %s, %s)",
+                                rows
+                            )
+                        elif table == 'detection_logs':
+                            conn.executemany(
+                                "INSERT INTO detection_logs (ts, level, message) VALUES (%s, %s, %s)",
+                                rows
+                            )
+                        elif table == 'ip_scan_logs':
+                            conn.executemany(
+                                "INSERT INTO ip_scan_logs (seq, time, msg) VALUES (%s, %s, %s)",
+                                rows
+                            )
+            except Exception:
+                # Keep failed batches retryable without racing producers.
+                with self._lock:
+                    self._buffer.extendleft(reversed(items))
+                raise
         self._last_flush = _time.monotonic()
 
 
@@ -630,12 +668,29 @@ def _get_conn():
 
 def _reset_thread_conn():
     """重置当前线程的数据库连接。"""
-    if hasattr(_local, 'conn') and _local.conn is not None:
+    close_thread_connection()
+
+
+def close_thread_connection():
+    """Rollback any unfinished transaction and close this thread's handle.
+
+    This function is safe for Flask teardown and background-task ``finally``
+    blocks: it is idempotent and deliberately does not raise, so cleanup never
+    replaces the original request/task exception.
+    """
+    conn = getattr(_local, 'conn', None)
+    if conn is not None:
         try:
-            _local.conn.close()
+            if getattr(conn, '_in_transaction', False):
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.exception("[DB] teardown 回滚未完成事务失败")
+            conn.close()
         except Exception:
-            pass
-        _local.conn = None
+            logger.exception("[DB] teardown 关闭连接失败")
+        finally:
+            _local.conn = None
 
 
 def init_db():
@@ -727,6 +782,21 @@ def init_db():
             updated_at TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         "INSERT IGNORE INTO scheduler_state (id) VALUES (1)",
+
+        """CREATE TABLE IF NOT EXISTS task_leases (
+            task_type VARCHAR(50) PRIMARY KEY,
+            task_id VARCHAR(64) NOT NULL,
+            state VARCHAR(20) NOT NULL,
+            owner VARCHAR(255) NOT NULL,
+            created_at VARCHAR(32) NOT NULL,
+            started_at VARCHAR(32),
+            updated_at VARCHAR(32) NOT NULL,
+            finished_at VARCHAR(32),
+            lease_expires_at VARCHAR(32),
+            message TEXT,
+            error TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE INDEX IF NOT EXISTS idx_task_leases_state ON task_leases(state)",
 
         """CREATE TABLE IF NOT EXISTS scan_runs (
             id INT PRIMARY KEY AUTO_INCREMENT,
@@ -984,10 +1054,18 @@ def init_db():
             if _execute_create_index_compat(conn, sql):
                 continue
             conn.execute(sql)
-        except Exception as e:
-            # 忽略已存在的索引等错误
-            if 'Duplicate key name' not in str(e) and 'already exists' not in str(e):
-                logger.warning(f"[DB] init_db 执行失败: {e}")
+        except Exception as exc:
+            # Multiple workers can race between the index existence check and
+            # CREATE INDEX.  MySQL error 1061 is harmless in that one case;
+            # every other schema failure must stop startup.  Continuing with
+            # a partially upgraded schema only defers the error to requests
+            # and background workers, where it is much harder to diagnose.
+            error_code = exc.args[0] if getattr(exc, 'args', None) else None
+            if error_code == 1061 and _CREATE_INDEX_IF_NOT_EXISTS_RE.match(sql.strip()):
+                logger.info("[DB] 索引已由其他进程创建，跳过: %s", exc)
+                continue
+            logger.exception("[DB] init_db 关键结构初始化失败")
+            raise
 
     _ensure_run_results_columns(conn)
     _ensure_scan_results_columns(conn)
@@ -1104,12 +1182,28 @@ _POST_MIGRATION_INDEXES = (
 )
 
 
+def _row_get_case_insensitive(row, key, default=None):
+    """Read metadata rows across MySQL variants with different key casing."""
+    if not row:
+        return default
+    if key in row:
+        return row[key]
+    target = key.casefold()
+    for candidate, value in row.items():
+        if str(candidate).casefold() == target:
+            return value
+    return default
+
+
 def _describe_table_columns(conn, table_name):
     """Return column names for an existing table."""
     if not _table_exists(conn, table_name):
         return set()
     rows = conn.execute(f"DESCRIBE `{table_name}`").fetchall()
-    return {row['Field'] for row in rows}
+    return {
+        field for row in rows
+        if (field := _row_get_case_insensitive(row, 'Field')) is not None
+    }
 
 
 def _ensure_table_columns(conn, table_name, columns):
@@ -1159,6 +1253,18 @@ def _ensure_schema_migrations(conn):
             'updated_at': 'TEXT',
             'sub_count': 'INT DEFAULT 0',
             'scan_count': 'INT DEFAULT 0',
+        },
+        'task_leases': {
+            'task_id': "VARCHAR(64) NOT NULL DEFAULT ''",
+            'state': "VARCHAR(20) NOT NULL DEFAULT 'failed'",
+            'owner': "VARCHAR(255) NOT NULL DEFAULT ''",
+            'created_at': "VARCHAR(32) NOT NULL DEFAULT ''",
+            'started_at': 'VARCHAR(32)',
+            'updated_at': "VARCHAR(32) NOT NULL DEFAULT ''",
+            'finished_at': 'VARCHAR(32)',
+            'lease_expires_at': 'VARCHAR(32)',
+            'message': 'TEXT',
+            'error': 'TEXT',
         },
         'scan_runs': {
             'finished_at': 'TEXT',
@@ -1318,70 +1424,79 @@ def _ensure_schema_migrations(conn):
     for table_name, columns in table_columns.items():
         try:
             _ensure_table_columns(conn, table_name, columns)
-        except Exception as e:
-            logger.warning(f"[DB] 迁移表 {table_name} 失败: {e}")
+        except Exception:
+            logger.exception("[DB] 迁移表 %s 失败", table_name)
+            raise
 
     for sql in _POST_MIGRATION_INDEXES:
         try:
             _execute_create_index_compat(conn, sql)
-        except Exception as e:
-            logger.warning(f"[DB] 迁移索引失败: {e}")
+        except Exception as exc:
+            error_code = exc.args[0] if getattr(exc, 'args', None) else None
+            if error_code == 1061:
+                logger.info("[DB] 迁移索引已由其他进程创建，跳过: %s", exc)
+                continue
+            logger.exception("[DB] 迁移索引失败: %s", sql)
+            raise
 
     try:
         _migrate_scanner_bandwidth_to_mbps(conn)
-    except Exception as e:
-        logger.warning(f"[DB] 扫描带宽单位迁移失败: {e}")
+    except Exception:
+        logger.exception("[DB] 扫描带宽单位迁移失败")
+        raise
     try:
         _ensure_scan_yield_scan_id_collation(conn)
-    except Exception as e:
-        logger.warning(f"[DB] scan_yield_stats 排序规则迁移失败: {e}")
+    except Exception:
+        logger.exception("[DB] scan_yield_stats 排序规则迁移失败")
+        raise
 
 
 def _migrate_scanner_bandwidth_to_mbps(conn):
     """Convert pre-v1.8.1 scanner measurements from KiB/s to MB/s once."""
-    marker = conn.execute(
-        "SELECT content FROM config_data WHERE `key` = %s",
-        (SCANNER_BANDWIDTH_UNIT_MARKER,),
-    ).fetchone()
-    if marker and marker.get('content') == SCANNER_BANDWIDTH_UNIT_MBPS:
-        return
-
     migrated_tables = []
-    for table_name in ('scan_results', 'persistent_scan_results', 'quality_history'):
-        if 'bandwidth' not in _describe_table_columns(conn, table_name):
-            continue
-        conn.execute(
-            f"UPDATE `{table_name}` SET bandwidth = bandwidth / 1024.0 "
-            "WHERE bandwidth IS NOT NULL"
-        )
-        migrated_tables.append(table_name)
+    with conn.transaction():
+        marker = conn.execute(
+            "SELECT content FROM config_data WHERE `key` = %s FOR UPDATE",
+            (SCANNER_BANDWIDTH_UNIT_MARKER,),
+        ).fetchone()
+        if marker and marker.get('content') == SCANNER_BANDWIDTH_UNIT_MBPS:
+            return
 
-    config_row = conn.execute(
-        "SELECT content FROM config_data WHERE `key` = %s", ('scan_config',)
-    ).fetchone()
-    if config_row:
-        try:
-            scan_config = json.loads(config_row.get('content') or '{}')
-        except (TypeError, ValueError, json.JSONDecodeError):
-            scan_config = None
-        thresholds = scan_config.get('quality_thresholds') if isinstance(scan_config, dict) else None
-        if isinstance(thresholds, dict) and 'min_bandwidth_MBps' not in thresholds:
-            legacy_value = thresholds.get('min_bandwidth_kbps')
-            try:
-                thresholds['min_bandwidth_MBps'] = round(float(legacy_value) / 1024, 4)
-            except (TypeError, ValueError):
-                thresholds['min_bandwidth_MBps'] = 0.3
-            thresholds.pop('min_bandwidth_kbps', None)
+        for table_name in ('scan_results', 'persistent_scan_results', 'quality_history'):
+            if 'bandwidth' not in _describe_table_columns(conn, table_name):
+                continue
             conn.execute(
-                "UPDATE config_data SET content = %s, updated_at = %s WHERE `key` = %s",
-                (json.dumps(scan_config, ensure_ascii=False, indent=4), now_str(), 'scan_config'),
+                f"UPDATE `{table_name}` SET bandwidth = bandwidth / 1024.0 "
+                "WHERE bandwidth IS NOT NULL"
             )
+            migrated_tables.append(table_name)
 
-    conn.execute(
-        """INSERT INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)
-           ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = VALUES(updated_at)""",
-        (SCANNER_BANDWIDTH_UNIT_MARKER, SCANNER_BANDWIDTH_UNIT_MBPS, now_str()),
-    )
+        config_row = conn.execute(
+            "SELECT content FROM config_data WHERE `key` = %s", ('scan_config',)
+        ).fetchone()
+        if config_row:
+            try:
+                scan_config = json.loads(config_row.get('content') or '{}')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                scan_config = None
+            thresholds = scan_config.get('quality_thresholds') if isinstance(scan_config, dict) else None
+            if isinstance(thresholds, dict) and 'min_bandwidth_MBps' not in thresholds:
+                legacy_value = thresholds.get('min_bandwidth_kbps')
+                try:
+                    thresholds['min_bandwidth_MBps'] = round(float(legacy_value) / 1024, 4)
+                except (TypeError, ValueError):
+                    thresholds['min_bandwidth_MBps'] = 0.3
+                thresholds.pop('min_bandwidth_kbps', None)
+                conn.execute(
+                    "UPDATE config_data SET content = %s, updated_at = %s WHERE `key` = %s",
+                    (json.dumps(scan_config, ensure_ascii=False, indent=4), now_str(), 'scan_config'),
+                )
+
+        conn.execute(
+            """INSERT INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)
+               ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = VALUES(updated_at)""",
+            (SCANNER_BANDWIDTH_UNIT_MARKER, SCANNER_BANDWIDTH_UNIT_MBPS, now_str()),
+        )
     logger.info(
         "[DB] 扫描带宽已统一为 MB/s%s",
         f"（已转换 {', '.join(migrated_tables)}）" if migrated_tables else '',
@@ -1396,21 +1511,28 @@ def _ensure_scan_yield_scan_id_collation(conn):
            WHERE table_schema = DATABASE() AND column_name = 'scan_id'
              AND table_name IN ('scan_runs', 'scan_yield_stats')"""
     ).fetchall()
-    columns = {row['table_name']: row for row in rows}
+    columns = {
+        table_name: row
+        for row in rows
+        if (table_name := _row_get_case_insensitive(row, 'table_name'))
+    }
     parent = columns.get('scan_runs')
     child = columns.get('scan_yield_stats')
     if not parent or not child:
         return
     if (
-        parent.get('character_set_name') == child.get('character_set_name')
-        and parent.get('collation_name') == child.get('collation_name')
-        and parent.get('column_type') == child.get('column_type')
+        _row_get_case_insensitive(parent, 'character_set_name')
+        == _row_get_case_insensitive(child, 'character_set_name')
+        and _row_get_case_insensitive(parent, 'collation_name')
+        == _row_get_case_insensitive(child, 'collation_name')
+        and _row_get_case_insensitive(parent, 'column_type')
+        == _row_get_case_insensitive(child, 'column_type')
     ):
         return
 
-    column_type = parent.get('column_type') or 'VARCHAR(255)'
-    charset = parent.get('character_set_name')
-    collation = parent.get('collation_name')
+    column_type = _row_get_case_insensitive(parent, 'column_type') or 'VARCHAR(255)'
+    charset = _row_get_case_insensitive(parent, 'character_set_name')
+    collation = _row_get_case_insensitive(parent, 'collation_name')
     if not (
         re.fullmatch(r'[A-Za-z0-9_() ,]+', column_type)
         and re.fullmatch(r'[A-Za-z0-9_]+', charset or '')
@@ -1477,59 +1599,58 @@ def insert_run(run_data):
     with _write_lock:
         conn = _get_conn()
         summary = run_data.get('summary', {})
-
-        conn.execute(
-            """REPLACE INTO runs
-               (run_id, started_at, finished_at, duration_seconds,
-                total_tested, total_passed, total_failed, pass_rate,
-                unique_channels_passed, unique_channels_total)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (
-                run_data['run_id'],
-                run_data.get('started_at', ''),
-                run_data.get('finished_at', ''),
-                _numeric_or_zero(run_data.get('duration_seconds', 0)),
-                summary.get('total_tested', 0),
-                summary.get('total_passed', 0),
-                summary.get('total_failed', 0),
-                _numeric_or_zero(summary.get('pass_rate', 0)),
-                summary.get('unique_channels_passed', 0),
-                summary.get('unique_channels_total', 0),
-            )
-        )
-
-        results = run_data.get('results', [])
-        if results:
-            conn.executemany(
-                """INSERT INTO run_results
-                   (run_id, channel, url, resolution, bandwidth_MBps,
-                    connection_latency_ms, quality_score, output_updated_at,
-                    codec, is_h265, sample_seconds, passed, reason, cost_seconds, source_url)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                [
-                    (
-                        run_data['run_id'],
-                        r.get('channel', ''),
-                        r.get('url', ''),
-                        r.get('resolution', ''),
-                        _numeric_or_zero(r.get('bandwidth_MBps', 0)),
-                        _numeric_or_none(r.get('connection_latency_ms')),
-                        _numeric_or_zero(r.get('quality_score', 0)),
-                        r.get('output_updated_at', ''),
-                        r.get('codec', ''),
-                        r.get('is_h265', False),
-                        _numeric_or_zero(r.get('sample_seconds', 0)),
-                        r.get('passed', False),
-                        r.get('reason', ''),
-                        _numeric_or_zero(r.get('cost_seconds', 0)),
-                        r.get('source_url', ''),
-                    )
-                    for r in results
-                ]
+        with conn.transaction():
+            conn.execute(
+                """REPLACE INTO runs
+                   (run_id, started_at, finished_at, duration_seconds,
+                    total_tested, total_passed, total_failed, pass_rate,
+                    unique_channels_passed, unique_channels_total)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    run_data['run_id'],
+                    run_data.get('started_at', ''),
+                    run_data.get('finished_at', ''),
+                    _numeric_or_zero(run_data.get('duration_seconds', 0)),
+                    summary.get('total_tested', 0),
+                    summary.get('total_passed', 0),
+                    summary.get('total_failed', 0),
+                    _numeric_or_zero(summary.get('pass_rate', 0)),
+                    summary.get('unique_channels_passed', 0),
+                    summary.get('unique_channels_total', 0),
+                )
             )
 
-        conn.commit()
-        _cleanup_old_runs(conn)
+            results = run_data.get('results', [])
+            if results:
+                conn.executemany(
+                    """INSERT INTO run_results
+                       (run_id, channel, url, resolution, bandwidth_MBps,
+                        connection_latency_ms, quality_score, output_updated_at,
+                        codec, is_h265, sample_seconds, passed, reason, cost_seconds, source_url)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    [
+                        (
+                            run_data['run_id'],
+                            r.get('channel', ''),
+                            r.get('url', ''),
+                            r.get('resolution', ''),
+                            _numeric_or_zero(r.get('bandwidth_MBps', 0)),
+                            _numeric_or_none(r.get('connection_latency_ms')),
+                            _numeric_or_zero(r.get('quality_score', 0)),
+                            r.get('output_updated_at', ''),
+                            r.get('codec', ''),
+                            r.get('is_h265', False),
+                            _numeric_or_zero(r.get('sample_seconds', 0)),
+                            r.get('passed', False),
+                            r.get('reason', ''),
+                            _numeric_or_zero(r.get('cost_seconds', 0)),
+                            r.get('source_url', ''),
+                        )
+                        for r in results
+                    ]
+                )
+
+            _cleanup_old_runs(conn)
 
 
 def _cleanup_old_runs(conn):
@@ -1906,10 +2027,10 @@ def delete_run(run_id):
     """删除指定轮次及其所有结果。"""
     with _write_lock:
         conn = _get_conn()
-        conn.execute("DELETE FROM run_logs WHERE run_id = %s", (run_id,))
-        conn.execute("DELETE FROM run_results WHERE run_id = %s", (run_id,))
-        conn.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
-        conn.commit()
+        with conn.transaction():
+            conn.execute("DELETE FROM run_logs WHERE run_id = %s", (run_id,))
+            conn.execute("DELETE FROM run_results WHERE run_id = %s", (run_id,))
+            conn.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
 
 
 def compare_runs(run_id_a, run_id_b):
@@ -2176,14 +2297,16 @@ def _init_default_data():
             'subscribe': '',
         }
         now = now_str()
-        for key, content in defaults.items():
-            existing = conn.execute("SELECT 1 FROM config_data WHERE `key` = %s", (key,)).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)",
-                    (key, content, now)
-                )
-        conn.commit()
+        with conn.transaction():
+            for key, content in defaults.items():
+                existing = conn.execute(
+                    "SELECT 1 FROM config_data WHERE `key` = %s FOR UPDATE", (key,)
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)",
+                        (key, content, now)
+                    )
 
 
 def clear_run_progress():
@@ -2259,18 +2382,257 @@ def get_scheduler_state():
     }
 
 
+# ─── Cross-process task leases ───
+
+TASK_ACTIVE_STATES = frozenset({'starting', 'running', 'stopping'})
+TASK_FINAL_STATES = frozenset({'completed', 'failed', 'cancelled'})
+
+
+def _task_time(value=None):
+    value = value or datetime.now(LOCAL_TZ)
+    return value.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _task_row_to_dict(row, now=None):
+    if not row:
+        return None
+    item = dict(row)
+    now_text = _task_time(now)
+    lease_expires_at = item.get('lease_expires_at')
+    active = (
+        item.get('state') in TASK_ACTIVE_STATES
+        and bool(lease_expires_at)
+        and lease_expires_at > now_text
+    )
+    if item.get('state') in TASK_ACTIVE_STATES and not active:
+        item['state'] = 'expired'
+    item['active'] = active
+    item['message'] = item.get('message') or ''
+    item['error'] = item.get('error') or ''
+    return item
+
+
+def acquire_task_lease(task_type, task_id, owner, lease_seconds=180, message=''):
+    """Atomically acquire the singleton lease for one task type.
+
+    Returns ``(acquired, task_snapshot)``.  Expired/final rows may be replaced;
+    a live starting/running/stopping row wins across all WSGI workers.
+    """
+    now = datetime.now(LOCAL_TZ)
+    now_text = _task_time(now)
+    expires_text = _task_time(now + timedelta(seconds=max(30, int(lease_seconds))))
+    conn = _get_conn()
+    with _write_lock, conn.transaction():
+        row = conn.execute(
+            "SELECT * FROM task_leases WHERE task_type=%s FOR UPDATE",
+            (task_type,),
+        ).fetchone()
+        current = _task_row_to_dict(row, now)
+        if current and current['active']:
+            return False, current
+        conn.execute(
+            """INSERT INTO task_leases
+               (task_type, task_id, state, owner, created_at, started_at,
+                updated_at, finished_at, lease_expires_at, message, error)
+               VALUES (%s, %s, 'starting', %s, %s, NULL, %s, NULL, %s, %s, '')
+               ON DUPLICATE KEY UPDATE
+                task_id=VALUES(task_id), state='starting', owner=VALUES(owner),
+                created_at=VALUES(created_at), started_at=NULL,
+                updated_at=VALUES(updated_at), finished_at=NULL,
+                lease_expires_at=VALUES(lease_expires_at),
+                message=VALUES(message), error=''""",
+            (task_type, task_id, owner, now_text, now_text, expires_text, message),
+        )
+    return True, get_task_lease(task_type)
+
+
+def heartbeat_task_lease(task_type, task_id, owner, state='running',
+                         lease_seconds=180, message=None):
+    """Renew an owned active lease and optionally move starting -> running."""
+    if state not in TASK_ACTIVE_STATES:
+        raise ValueError(f'invalid active task state: {state}')
+    now = datetime.now(LOCAL_TZ)
+    now_text = _task_time(now)
+    expires_text = _task_time(now + timedelta(seconds=max(30, int(lease_seconds))))
+    with _write_lock:
+        conn = _get_conn()
+        sets = [
+            # A stop request must be monotonic.  A worker heartbeat racing a
+            # remote stop request may renew the lease, but never move it back
+            # from stopping to running.
+            "state=CASE WHEN state='stopping' THEN 'stopping' ELSE %s END",
+            'started_at=COALESCE(started_at, %s)',
+            'updated_at=%s',
+            'lease_expires_at=%s',
+        ]
+        params = [state, now_text, now_text, expires_text]
+        if message is not None:
+            sets.append('message=%s')
+            params.append(message)
+        params.extend([task_type, task_id, owner])
+        cursor = conn.execute(
+            f"UPDATE task_leases SET {', '.join(sets)} "
+            "WHERE task_type=%s AND task_id=%s AND owner=%s "
+            "AND state IN ('starting','running','stopping')",
+            params,
+        )
+        return cursor.rowcount == 1
+
+
+def request_task_stop(task_type, task_id=None, message='停止请求已接受'):
+    """Atomically move a live task lease to ``stopping``."""
+    now = datetime.now(LOCAL_TZ)
+    now_text = _task_time(now)
+    conn = _get_conn()
+    with _write_lock, conn.transaction():
+        row = conn.execute(
+            "SELECT * FROM task_leases WHERE task_type=%s FOR UPDATE",
+            (task_type,),
+        ).fetchone()
+        current = _task_row_to_dict(row, now)
+        if not current or not current['active']:
+            return False, current
+        if task_id and current['task_id'] != task_id:
+            return False, current
+        conn.execute(
+            """UPDATE task_leases
+               SET state='stopping', updated_at=%s, message=%s
+               WHERE task_type=%s AND task_id=%s""",
+            (now_text, message, task_type, current['task_id']),
+        )
+    return True, get_task_lease(task_type)
+
+
+def finish_task_lease(task_type, task_id, state='completed', message='', error=''):
+    """Finalize a task iff ``task_id`` still owns the task-type row."""
+    if state not in TASK_FINAL_STATES:
+        raise ValueError(f'invalid final task state: {state}')
+    now_text = _task_time()
+    with _write_lock:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """UPDATE task_leases
+               SET state=%s, updated_at=%s, finished_at=%s,
+                   lease_expires_at=NULL, message=%s, error=%s
+               WHERE task_type=%s AND task_id=%s""",
+            (state, now_text, now_text, message, error, task_type, task_id),
+        )
+        return cursor.rowcount == 1
+
+
+def get_task_lease(task_type):
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM task_leases WHERE task_type=%s",
+        (task_type,),
+    ).fetchone()
+    return _task_row_to_dict(row)
+
+
+def get_task_lease_by_id(task_id):
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM task_leases WHERE task_id=%s LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return _task_row_to_dict(row)
+
+
+def list_task_leases(active_only=False):
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM task_leases ORDER BY updated_at DESC"
+    ).fetchall()
+    items = [_task_row_to_dict(row) for row in rows]
+    if active_only:
+        items = [item for item in items if item['active']]
+    return items
+
+
+def get_tasks_snapshot(leases=None):
+    """Return the stable public status shape for all supported task types."""
+    task_types = ('test', 'scan', 'ip_scan', 'detection')
+    snapshot = {
+        task_type: {
+            'task_id': None,
+            'state': 'idle',
+            'progress': 0,
+            'started_at': None,
+            'error': '',
+        }
+        for task_type in task_types
+    }
+    aliases = {'system_test': 'test'}
+    for lease in list_task_leases() if leases is None else leases:
+        task_type = aliases.get(lease.get('task_type'), lease.get('task_type'))
+        if task_type not in snapshot:
+            continue
+        state = lease.get('state') or 'idle'
+        progress = lease.get('progress') or (100 if state == 'completed' else 0)
+        snapshot[task_type] = {
+            'task_id': lease.get('task_id'),
+            'state': state,
+            'progress': progress,
+            'started_at': lease.get('started_at'),
+            'error': lease.get('error') or '',
+        }
+    return snapshot
+
+
+def clear_stale_task_lease(task_type):
+    """Clear only an inactive/expired task row; never erase a live lease."""
+    conn = _get_conn()
+    with _write_lock, conn.transaction():
+        row = conn.execute(
+            "SELECT * FROM task_leases WHERE task_type=%s FOR UPDATE",
+            (task_type,),
+        ).fetchone()
+        current = _task_row_to_dict(row)
+        if current and current['active']:
+            return False, current
+        if row:
+            conn.execute("DELETE FROM task_leases WHERE task_type=%s", (task_type,))
+    return True, current
+
+
 def insert_log(run_id, level, message):
     """写入一条日志到数据库（缓冲批量提交）。"""
     _log_batcher.add('run_logs', (run_id, now_str(), level, message))
 
 
-def get_run_logs(run_id, limit=None):
-    """获取指定轮次的日志列表。"""
+def get_run_logs(run_id, limit=None, page=None, page_size=500):
+    """Return recent run logs in chronological order, optionally paginated.
+
+    ``limit=N`` means the latest N records (not the earliest N).  Pagination
+    also walks backwards from the newest records while each page itself is
+    returned oldest-to-newest for readable display.
+    """
     conn = _get_conn()
     total = conn.execute(
         "SELECT COUNT(*) AS cnt FROM run_logs WHERE run_id = %s",
         (run_id,)
     ).fetchone()['cnt']
+
+    if page is not None:
+        try:
+            page = max(1, int(page))
+            page_size = max(1, min(1000, int(page_size)))
+        except (TypeError, ValueError):
+            page, page_size = 1, 500
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            """SELECT ts, level, message FROM run_logs
+               WHERE run_id = %s ORDER BY id DESC LIMIT %s OFFSET %s""",
+            (run_id, page_size, offset)
+        ).fetchall()
+        items = [dict(r) for r in reversed(rows)]
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'truncated': total > len(items),
+            'logs': items,
+        }
 
     if limit is None:
         rows = conn.execute(
@@ -2292,9 +2654,11 @@ def get_run_logs(run_id, limit=None):
             effective_limit = total
         else:
             rows = conn.execute(
-                "SELECT ts, level, message FROM run_logs WHERE run_id = %s ORDER BY id LIMIT %s",
+                """SELECT ts, level, message FROM run_logs
+                   WHERE run_id = %s ORDER BY id DESC LIMIT %s""",
                 (run_id, effective_limit)
             ).fetchall()
+            rows = list(reversed(rows))
 
     items = [dict(r) for r in rows]
     return {
@@ -2482,8 +2846,23 @@ def delete_scan_results_by_urls(scan_id, urls):
         conn.commit()
 
 
+SCAN_RESULT_SORT_COLUMNS = {
+    'id': 'id',
+    'name': 'name',
+    'category': 'category',
+    'province': 'province',
+    'platform': 'platform',
+    'stability': 'stability',
+    'delay': 'delay',
+    'bandwidth': 'bandwidth',
+    'resolution': 'resolution',
+    'codec': 'codec',
+}
+
+
 def get_scan_results(scan_id=None, page=1, size=50, category=None,
-                     province=None, search=None):
+                     province=None, search=None, platform=None,
+                     sort_by=None, sort_order='desc'):
     """分页查询扫描结果。返回 (total, items)。"""
     conn = _get_conn()
     where = ["1=1"]
@@ -2497,9 +2876,13 @@ def get_scan_results(scan_id=None, page=1, size=50, category=None,
     if province:
         where.append("province = %s")
         params.append(province)
+    if platform:
+        where.append("platform = %s")
+        params.append(platform)
     if search:
-        where.append("name LIKE %s")
-        params.append(f"%{search}%")
+        where.append("(name LIKE %s OR url LIKE %s OR source_ip LIKE %s)")
+        search_pattern = f"%{search}%"
+        params.extend([search_pattern, search_pattern, search_pattern])
     where_sql = ' AND '.join(where)
 
     total = conn.execute(
@@ -2507,10 +2890,16 @@ def get_scan_results(scan_id=None, page=1, size=50, category=None,
         params
     ).fetchone()['cnt']
 
+    sort_column = SCAN_RESULT_SORT_COLUMNS.get(sort_by)
+    direction = 'ASC' if str(sort_order).lower() == 'asc' else 'DESC'
+    if sort_column:
+        order_sql = f"{sort_column} {direction}, id ASC"
+    else:
+        order_sql = "stability DESC, bandwidth DESC, id ASC"
     offset = (page - 1) * size
     rows = conn.execute(
         f"""SELECT * FROM scan_results WHERE {where_sql}
-            ORDER BY stability DESC, bandwidth DESC, id
+            ORDER BY {order_sql}
             LIMIT %s OFFSET %s""",
         params + [size, offset]
     ).fetchall()
@@ -2796,7 +3185,32 @@ def _empty_detection_results(page=None, size=100):
     return []
 
 
-def _get_detection_results_fallback(conn, cycle_id, page=None, size=100):
+DETECTION_RESULT_SORT_COLUMNS = {
+    'id': 'id',
+    'name': 'name',
+    'url': 'url',
+    'check_ok': 'check_ok',
+    'http_status': 'http_status',
+    'response_time_ms': 'response_time_ms',
+    'response_size_bytes': 'response_size_bytes',
+    'consecutive_failures': 'consecutive_failures',
+    'quality_status': 'quality_status',
+}
+
+
+def _normalize_detection_filters(search=None, outcome=None, quality=None,
+                                 sort_by=None, sort_order='asc'):
+    outcome = str(outcome or '').strip().lower()
+    if outcome not in ('pass', 'fail'):
+        outcome = ''
+    sort_by = sort_by if sort_by in DETECTION_RESULT_SORT_COLUMNS else 'id'
+    sort_order = 'DESC' if str(sort_order).lower() == 'desc' else 'ASC'
+    return str(search or '').strip(), outcome, str(quality or '').strip(), sort_by, sort_order
+
+
+def _get_detection_results_fallback(conn, cycle_id, page=None, size=100,
+                                    search=None, outcome=None, quality=None,
+                                    sort_by=None, sort_order='asc'):
     run = conn.execute(
         """SELECT cycle_id, started_at, finished_at, total_checked
            FROM detection_runs WHERE cycle_id = %s""",
@@ -2809,8 +3223,23 @@ def _get_detection_results_fallback(conn, cycle_id, page=None, size=100):
     if not start_bound or not end_bound:
         return _empty_detection_results(page, size)
 
-    where_sql = "last_checked_at IS NOT NULL AND last_checked_at BETWEEN %s AND %s"
+    search, outcome, quality, sort_by, sort_order = _normalize_detection_filters(
+        search, outcome, quality, sort_by, sort_order
+    )
+    where = ["last_checked_at IS NOT NULL", "last_checked_at BETWEEN %s AND %s"]
     params = [start_bound, end_bound]
+    if search:
+        where.append("(name LIKE %s OR url LIKE %s)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern])
+    if outcome == 'pass':
+        where.append("quality_status IN ('good', 'poor')")
+    elif outcome == 'fail':
+        where.append("quality_status NOT IN ('good', 'poor')")
+    if quality:
+        where.append("quality_status = %s")
+        params.append(quality)
+    where_sql = ' AND '.join(where)
     select_sql = """SELECT url, name,
                            CASE WHEN quality_status IN ('good', 'poor') THEN 1 ELSE 0 END AS check_ok,
                            CASE WHEN quality_status IN ('good', 'poor') THEN 200 ELSE 0 END AS http_status,
@@ -2820,7 +3249,18 @@ def _get_detection_results_fallback(conn, cycle_id, page=None, size=100):
                            quality_status
                     FROM persistent_scan_results
                     WHERE """
-    order_sql = " ORDER BY last_checked_at DESC, id"
+    fallback_sort = {
+        'id': 'id',
+        'name': 'name',
+        'url': 'url',
+        'check_ok': "CASE WHEN quality_status IN ('good', 'poor') THEN 1 ELSE 0 END",
+        'http_status': "CASE WHEN quality_status IN ('good', 'poor') THEN 200 ELSE 0 END",
+        'response_time_ms': 'delay',
+        'response_size_bytes': '0',
+        'consecutive_failures': 'consecutive_failures',
+        'quality_status': 'quality_status',
+    }
+    order_sql = f" ORDER BY {fallback_sort[sort_by]} {sort_order}, id ASC"
 
     if page is not None:
         total = conn.execute(
@@ -2838,37 +3278,76 @@ def _get_detection_results_fallback(conn, cycle_id, page=None, size=100):
     return [dict(r) for r in rows]
 
 
-def get_detection_results(cycle_id, page=None, size=100):
+def get_detection_results(cycle_id, page=None, size=100, search=None,
+                          outcome=None, quality=None, sort_by=None,
+                          sort_order='asc'):
     """查询某轮检测的所有 URL 结果明细。page 为 None 时返回全部结果。"""
     conn = _get_conn()
+    search, outcome, quality, sort_by, sort_order = _normalize_detection_filters(
+        search, outcome, quality, sort_by, sort_order
+    )
+    where = ["cycle_id = %s"]
+    params = [cycle_id]
+    if search:
+        where.append("(name LIKE %s OR url LIKE %s)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern])
+    if outcome == 'pass':
+        where.append("check_ok = 1")
+    elif outcome == 'fail':
+        where.append("check_ok = 0")
+    if quality:
+        where.append("quality_status = %s")
+        params.append(quality)
+    where_sql = ' AND '.join(where)
+    order_sql = f"{DETECTION_RESULT_SORT_COLUMNS[sort_by]} {sort_order}, id ASC"
 
     if page is not None:
         total = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM detection_results WHERE cycle_id = %s",
-            (cycle_id,)
+            f"SELECT COUNT(*) AS cnt FROM detection_results WHERE {where_sql}",
+            params
         ).fetchone()['cnt']
         offset = (page - 1) * size
         rows = conn.execute(
-            """SELECT url, name, check_ok, http_status,
+            f"""SELECT url, name, check_ok, http_status,
                       response_time_ms, response_size_bytes,
                       consecutive_failures, quality_status
-               FROM detection_results WHERE cycle_id = %s ORDER BY id
+               FROM detection_results WHERE {where_sql} ORDER BY {order_sql}
                LIMIT %s OFFSET %s""",
-            (cycle_id, size, offset)
+            params + [size, offset]
         ).fetchall()
         if total == 0:
-            return _get_detection_results_fallback(conn, cycle_id, page=page, size=size)
+            # Only fall back when this cycle has no persisted detail at all;
+            # a legitimate zero-result filter must remain empty.
+            cycle_total = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM detection_results WHERE cycle_id = %s",
+                (cycle_id,)
+            ).fetchone()['cnt']
+            if cycle_total == 0:
+                return _get_detection_results_fallback(
+                    conn, cycle_id, page=page, size=size,
+                    search=search, outcome=outcome, quality=quality,
+                    sort_by=sort_by, sort_order=sort_order,
+                )
         return {'total': total, 'items': [dict(r) for r in rows], 'page': page, 'page_size': size}
     else:
         rows = conn.execute(
-            """SELECT url, name, check_ok, http_status,
+            f"""SELECT url, name, check_ok, http_status,
                       response_time_ms, response_size_bytes,
                       consecutive_failures, quality_status
-               FROM detection_results WHERE cycle_id = %s ORDER BY id""",
-            (cycle_id,)
+               FROM detection_results WHERE {where_sql} ORDER BY {order_sql}""",
+            params
         ).fetchall()
         if not rows:
-            return _get_detection_results_fallback(conn, cycle_id)
+            cycle_total = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM detection_results WHERE cycle_id = %s",
+                (cycle_id,)
+            ).fetchone()['cnt']
+            if cycle_total == 0:
+                return _get_detection_results_fallback(
+                    conn, cycle_id, search=search, outcome=outcome,
+                    quality=quality, sort_by=sort_by, sort_order=sort_order,
+                )
         return [dict(r) for r in rows]
 
 
@@ -3289,55 +3768,58 @@ def update_persistent_check(url, ok, stability=None, delay=None,
     with _write_lock:
         conn = _get_conn()
         now = now_str()
-        if ok:
-            row = conn.execute(
-                "SELECT stability, delay, bandwidth, jitter FROM persistent_scan_results WHERE url=%s AND deleted_at IS NULL",
-                (url,)
-            ).fetchone()
-            old_stability = row['stability'] if row else None
-            stability = _int_or_none(stability)
-            delay = _numeric_or_none(delay)
-            bandwidth = _numeric_or_none(bandwidth)
-            jitter = _numeric_or_none(jitter)
-            if stability is None:
-                if row:
-                    stability = row['stability']
-                    if delay is None:
-                        delay = _numeric_or_none(row['delay'])
-                    if bandwidth is None:
-                        bandwidth = _numeric_or_none(row['bandwidth'])
-            elif old_stability is not None:
-                alpha = 0.3
-                stability = int(alpha * stability + (1 - alpha) * old_stability)
-            quality = _evaluate_quality(stability, delay, bandwidth)
-            conn.execute(
-                """UPDATE persistent_scan_results
-                   SET consecutive_failures=0, last_checked_at=%s,
-                       quality_status=%s, validated=1,
-                       stability=COALESCE(%s, stability),
-                       delay=COALESCE(%s, delay),
-                       bandwidth=COALESCE(%s, bandwidth),
-                       jitter=COALESCE(%s, jitter),
-                       resolution=COALESCE(%s, resolution),
-                       codec=COALESCE(%s, codec)
-                   WHERE url=%s AND deleted_at IS NULL""",
-                (now, quality, stability, delay, bandwidth, jitter, resolution, codec, url)
-            )
-        else:
-            conn.execute(
-                """UPDATE persistent_scan_results
-                   SET consecutive_failures=consecutive_failures+1,
-                       last_checked_at=%s, quality_status='unreachable'
-                   WHERE url=%s AND deleted_at IS NULL""",
-                (now, url)
-            )
-        conn.commit()
-        try:
+        with conn.transaction():
             name_row = conn.execute(
-                "SELECT name FROM persistent_scan_results WHERE url=%s AND deleted_at IS NULL",
+                """SELECT name, stability, delay, bandwidth, jitter
+                   FROM persistent_scan_results
+                   WHERE url=%s AND deleted_at IS NULL FOR UPDATE""",
                 (url,)
             ).fetchone()
-            name = name_row['name'] if name_row else None
+            if not name_row:
+                return False
+
+            if ok:
+                old_stability = name_row['stability']
+                stability = _int_or_none(stability)
+                delay = _numeric_or_none(delay)
+                bandwidth = _numeric_or_none(bandwidth)
+                jitter = _numeric_or_none(jitter)
+                if stability is None:
+                    stability = name_row['stability']
+                    if delay is None:
+                        delay = _numeric_or_none(name_row['delay'])
+                    if bandwidth is None:
+                        bandwidth = _numeric_or_none(name_row['bandwidth'])
+                    if jitter is None:
+                        jitter = _numeric_or_none(name_row['jitter'])
+                elif old_stability is not None:
+                    alpha = 0.3
+                    stability = int(alpha * stability + (1 - alpha) * old_stability)
+                quality = _evaluate_quality(stability, delay, bandwidth)
+                conn.execute(
+                    """UPDATE persistent_scan_results
+                       SET consecutive_failures=0, last_checked_at=%s,
+                           quality_status=%s, validated=1,
+                           stability=COALESCE(%s, stability),
+                           delay=COALESCE(%s, delay),
+                           bandwidth=COALESCE(%s, bandwidth),
+                           jitter=COALESCE(%s, jitter),
+                           resolution=COALESCE(%s, resolution),
+                           codec=COALESCE(%s, codec)
+                       WHERE url=%s AND deleted_at IS NULL""",
+                    (now, quality, stability, delay, bandwidth, jitter, resolution, codec, url)
+                )
+            else:
+                quality = 'unreachable'
+                stability = delay = bandwidth = jitter = None
+                conn.execute(
+                    """UPDATE persistent_scan_results
+                       SET consecutive_failures=consecutive_failures+1,
+                           last_checked_at=%s, quality_status='unreachable'
+                       WHERE url=%s AND deleted_at IS NULL""",
+                    (now, url)
+                )
+
             quality_for_hist = quality if ok else 'unreachable'
             conn.execute(
                 """INSERT INTO quality_history
@@ -3345,22 +3827,17 @@ def update_persistent_check(url, ok, stability=None, delay=None,
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     url,
-                    name,
+                    name_row['name'],
                     _int_or_none(stability),
                     _numeric_or_none(delay),
                     _numeric_or_none(bandwidth),
-                    None,
+                    _numeric_or_none(jitter),
                     quality_for_hist,
                     'detection',
                     now,
                 )
             )
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+        return True
 
 
 def batch_update_persistent_checks(updates):
@@ -3383,21 +3860,32 @@ def batch_update_persistent_checks(updates):
         ok_items = [u for u in updates if u.get('ok')]
         fail_items = [u for u in updates if not u.get('ok')]
 
-        if fail_items:
-            conn.executemany(
-                """UPDATE persistent_scan_results
-                   SET consecutive_failures=consecutive_failures+1,
-                       last_checked_at=%s, quality_status='unreachable'
-                   WHERE url=%s AND deleted_at IS NULL""",
-                [(now, u['url']) for u in fail_items]
-            )
+        with conn.transaction():
+            if fail_items:
+                conn.executemany(
+                    """UPDATE persistent_scan_results
+                       SET consecutive_failures=consecutive_failures+1,
+                           last_checked_at=%s, quality_status='unreachable'
+                       WHERE url=%s AND deleted_at IS NULL""",
+                    [(now, u['url']) for u in fail_items]
+                )
+                conn.executemany(
+                    """INSERT INTO quality_history
+                       (url, name, stability, delay, bandwidth, jitter,
+                        quality_status, source, recorded_at)
+                       VALUES (%s, %s, NULL, NULL, NULL, NULL,
+                               'unreachable', 'detection', %s)""",
+                    [(u['url'], u.get('name'), now) for u in fail_items]
+                )
 
-        if ok_items:
+            if not ok_items:
+                return
+
             urls = [u['url'] for u in ok_items]
             placeholders = ','.join(['%s'] * len(urls))
             old_rows = conn.execute(
                 f"SELECT url, stability, delay, bandwidth, jitter FROM persistent_scan_results "
-                f"WHERE url IN ({placeholders}) AND deleted_at IS NULL",
+                f"WHERE url IN ({placeholders}) AND deleted_at IS NULL FOR UPDATE",
                 urls
             ).fetchall()
             old_map = {row['url']: dict(row) for row in old_rows}
@@ -3459,8 +3947,6 @@ def batch_update_persistent_checks(updates):
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 history_params
             )
-
-        conn.commit()
 
 
 def get_consecutive_failures_batch(urls):

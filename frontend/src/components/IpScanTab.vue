@@ -1,7 +1,7 @@
 <template>
   <div class="ip-scan-tab">
     <!-- 输入区域 -->
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">IP扫描</div>
       <p class="section-subtitle">
         输入格式：IP:PORT 或纯IP或域名（每行一个），支持#注释
@@ -20,7 +20,7 @@
     </t-card>
 
     <!-- 配置区域 -->
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">扫描配置</div>
       
       <!-- 端口配置 -->
@@ -71,8 +71,8 @@
     </t-card>
 
     <!-- 操作按钮 -->
-    <t-card size="small" :bordered="false" class="panel-card">
-      <t-space>
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
+      <t-space class="scan-actions">
         <t-button 
           theme="success" 
           :disabled="scanRunning" 
@@ -105,7 +105,7 @@
     </t-card>
 
     <!-- 进度显示 -->
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">扫描进度</div>
       <span class="phase-text">{{ phaseText }}</span>
       <div v-if="scanRunning || progressVisible" class="progress-wrap">
@@ -118,13 +118,14 @@
       <LogPanel
         :entries="logLines"
         :show-count="false"
+        download-name="iptv-ip-scan-session.log"
         empty-text="等待扫描开始..."
         @clear="clearLogs"
       />
     </t-card>
 
     <!-- 扫描概览 -->
-    <div v-if="summary.scanId" class="summary-head">
+    <div v-if="summary.scanId" class="summary-head workspace-card">
       <div>
         <div class="section-title summary-title">扫描概览</div>
         <div class="summary-caption">{{ summaryCaption }}</div>
@@ -138,7 +139,7 @@
         :key="card.key"
         size="small"
         :bordered="false"
-        class="stat-card"
+        class="stat-card workspace-card"
         :class="card.tone"
       >
         <div class="stat-top">
@@ -150,7 +151,7 @@
     </div>
 
     <!-- 结果表格 -->
-    <t-card size="small" :bordered="false" class="panel-card">
+    <t-card size="small" :bordered="false" class="panel-card workspace-card">
       <div class="section-title">扫描结果</div>
       <div class="result-actions">
         <t-button 
@@ -162,7 +163,8 @@
           导出M3U
         </t-button>
       </div>
-      <t-table
+      <div class="data-table-shell data-table-shell--wide">
+        <t-table
         :data="results"
         :columns="columns"
         :loading="loading"
@@ -202,7 +204,8 @@
           </t-tag>
           <span v-else class="text-muted">-</span>
         </template>
-      </t-table>
+        </t-table>
+      </div>
     </t-card>
 
     <!-- 频道详情弹窗 -->
@@ -224,8 +227,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
+import { computed, inject, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
+import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import { 
   apiIpScanTrigger, 
   apiIpScanStop, 
@@ -240,7 +244,19 @@ import {
   shouldUseSse
 } from '../api.js'
 import LogPanel from './LogPanel.vue'
-import { usePolling } from '../composables/usePolling.js'
+import { useAdaptivePolling, taskIsRunning } from '../composables/useAdaptivePolling.js'
+import { normalizeTask, readTaskId } from '../utils/tasks.js'
+
+const props = defineProps({
+  active: { type: Boolean, default: true },
+  task: { type: Object, default: null },
+})
+const registerTask = inject('registerTask', () => null)
+const currentTaskId = ref(props.task?.task_id || readTaskId('ip_scan'))
+
+watch(() => props.task, (task) => {
+  if (task?.task_id) currentTaskId.value = task.task_id
+}, { immediate: true })
 
 // 输入数据
 const targets = ref('')
@@ -285,6 +301,8 @@ const pagination = ref({
 // SSE连接
 let sseSource = null
 let lastLogSeq = 0
+let handshakePending = false
+let wasRunning = false
 
 // 端口预设选项
 const portPresetOptions = [
@@ -512,10 +530,16 @@ async function startScan() {
       http_concurrent: httpConcurrent.value,
       timeout: timeout.value,
     })
+    const task = registerTask('ip_scan', result)
+    if (task?.task_id) currentTaskId.value = task.task_id
+    handshakePending = Boolean(currentTaskId.value)
+    wasRunning = true
     
     MessagePlugin.success('IP扫描已启动')
     scanRunning.value = true
     progressVisible.value = true
+    setPollingRunning(true)
+    startPolling()
     connectSse()
   } catch (e) {
     MessagePlugin.error(e.message || '启动失败')
@@ -531,7 +555,9 @@ async function stopScan() {
     await apiIpScanStop()
     scanRunning.value = false
     progressVisible.value = false
-    stopPolling()
+    handshakePending = false
+    wasRunning = false
+    setPollingRunning(false)
     if (sseSource) {
       sseSource.close()
       sseSource = null
@@ -557,7 +583,9 @@ async function forceClear() {
       await apiIpScanForceClear()
       scanRunning.value = false
       progressVisible.value = false
-      stopPolling()
+      handshakePending = false
+      wasRunning = false
+      setPollingRunning(false)
       if (sseSource) {
         sseSource.close()
         sseSource = null
@@ -617,23 +645,41 @@ async function connectSse() {
 }
 
 // 轮询状态
-const { start: startPolling, stop: stopPolling } = usePolling(pollOnce, 2000)
+const { start: startPolling, stop: stopPolling, setRunning: setPollingRunning } = useAdaptivePolling(pollOnce, {
+  active: computed(() => props.active),
+  runningDelay: 2000,
+  idleDelay: 10000,
+  getRunning: result => Boolean(result?.running),
+})
 
 async function pollOnce() {
-  const [status, logs] = await Promise.all([
-    apiIpScanStatus(),
-    apiIpScanLogs(lastLogSeq),
-  ])
-  if (status) {
-    updateStatus(status)
+  try {
+    const [status, logs] = await Promise.all([
+      apiIpScanStatus(currentTaskId.value),
+      apiIpScanLogs(lastLogSeq, 500, currentTaskId.value),
+    ])
+    if (status) updateStatus(status)
+    appendLogEntries(logs?.lines || logs || [])
+  } catch (error) {
+    if (error?.name !== 'AbortError') console.error('轮询 IP 扫描状态失败:', error)
   }
-  appendLogEntries(logs?.lines || logs || [])
+  return { running: scanRunning.value || handshakePending }
 }
 
 function updateStatus(data) {
-  if (data.running !== undefined) {
-    scanRunning.value = Boolean(data.running)
+  const statusTask = normalizeTask(data.task || (data.task_id ? data : null), 'ip_scan')
+  const statusTaskId = statusTask?.task_id || ''
+  if (currentTaskId.value && statusTaskId && statusTaskId !== currentTaskId.value) return false
+  if (handshakePending && !data.running && !taskIsRunning(statusTask) && statusTaskId !== currentTaskId.value) return false
+
+  if (statusTask) {
+    registerTask('ip_scan', statusTask)
+    if (statusTaskId) currentTaskId.value = statusTaskId
   }
+  const running = data.running != null ? Boolean(data.running) : taskIsRunning(statusTask)
+  if (running || (statusTaskId && statusTaskId === currentTaskId.value)) handshakePending = false
+  scanRunning.value = running
+  if (running) wasRunning = true
   if (data.phase) {
     phaseText.value = data.phase
   }
@@ -645,8 +691,9 @@ function updateStatus(data) {
   }
   
   // 扫描结束
-  if (!data.running && progressVisible.value) {
-    stopPolling()
+  if (!running && wasRunning && !handshakePending) {
+    wasRunning = false
+    setPollingRunning(false)
     loadResults()
     loadStats()
     
@@ -655,6 +702,7 @@ function updateStatus(data) {
       sseSource = null
     }
   }
+  return true
 }
 
 // 加载结果
@@ -701,7 +749,9 @@ async function loadLatest() {
       summary.value = normalizeSummary(latest)
       if (latest.status === 'running') {
         scanRunning.value = true
+        wasRunning = true
         progressVisible.value = true
+        setPollingRunning(true)
         connectSse()
       }
       await loadResults()
@@ -746,7 +796,21 @@ function exportM3U() {
 
 // 生命周期
 onMounted(() => {
+  startPolling()
   loadLatest()
+})
+
+onActivated(() => {
+  startPolling()
+  if (scanRunning.value) connectSse()
+})
+
+onDeactivated(() => {
+  stopPolling()
+  if (sseSource) {
+    sseSource.close()
+    sseSource = null
+  }
 })
 
 onBeforeUnmount(() => {
@@ -767,8 +831,11 @@ onBeforeUnmount(() => {
 
 .panel-card {
   background: var(--td-bg-color-container);
-  border-radius: var(--td-radius-default);
-  padding: 16px;
+  border-radius: var(--app-radius-lg, 18px);
+}
+
+.panel-card :deep(.t-card__body) {
+  padding: 20px;
 }
 
 .section-title {
@@ -791,6 +858,7 @@ onBeforeUnmount(() => {
 
 .input-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }
@@ -811,7 +879,7 @@ onBeforeUnmount(() => {
 .config-hint {
   font-size: 12px;
   color: var(--td-text-color-placeholder);
-  white-space: nowrap;
+  line-height: 1.5;
 }
 
 .params-grid {
@@ -951,6 +1019,7 @@ onBeforeUnmount(() => {
 
 .result-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -1007,5 +1076,75 @@ onBeforeUnmount(() => {
   text-align: center;
   padding: 24px;
   color: var(--td-text-color-placeholder);
+}
+
+@media (max-width: 768px) {
+  .ip-scan-tab {
+    gap: 12px;
+  }
+
+  .panel-card :deep(.t-card__body) {
+    padding: 16px;
+  }
+
+  .config-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  }
+
+  .config-row > .t-input,
+  .config-row > .t-select,
+  .config-row > .t-checkbox-group {
+    width: 100% !important;
+  }
+
+  .config-label {
+    min-width: 0;
+    font-weight: 600;
+  }
+
+  .params-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .param-item :deep(.t-input-number) {
+    width: 100%;
+  }
+
+  .scan-actions {
+    display: flex !important;
+    flex-wrap: wrap;
+  }
+
+  .summary-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .stat-card {
+    padding: 14px;
+  }
+
+  .stat-value {
+    font-size: 23px;
+  }
+}
+
+@media (max-width: 420px) {
+  .input-actions > .t-button,
+  .result-actions > .t-button {
+    flex: 1 1 auto;
+  }
 }
 </style>

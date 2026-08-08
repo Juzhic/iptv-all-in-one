@@ -5,6 +5,9 @@ web 包 — iptv-all-in-one 管理后台。
 gunicorn 入口: gunicorn web:app
 """
 import logging
+import os
+
+import pymysql
 
 from web.app import create_app, _ensure_frontend
 import database as db
@@ -22,14 +25,66 @@ _state._scanner_module = _scanner_module
 app = create_app()
 
 # 模块级初始化（兼容 uWSGI / gunicorn 等 WSGI 服务器）
-# 数据库可能暂时不可用（Docker 启动时 MySQL 未就绪），不阻止应用启动
+# 数据库暂未就绪仍沿用延迟重试策略；一旦数据库已连接，API Key
+# 解密/明文迁移失败属于安全错误，必须拒绝启动而不能降级继续。
+_db_ready = False
+
+
+def _strict_credentials_enabled():
+    return os.environ.get('IPTV_REQUIRE_STRONG_CREDENTIALS', '').strip().lower() in {
+        '1', 'true', 'yes', 'on'
+    }
+
+
+def _is_transient_connection_error(error):
+    """Recognize only connectivity failures that may recover without changes."""
+    current = error
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, pymysql.err.OperationalError):
+            code = current.args[0] if current.args else None
+            if code in {1040, 1129, 1130, 1203, 2002, 2003, 2006, 2013}:
+                return True
+            return False
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return True
+        if isinstance(current, OSError) and getattr(current, 'winerror', None) in {
+            10054, 10060, 10061, 11001
+        }:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 try:
     db.init_db()
-    db.migrate_from_json()
-except Exception as e:
-    logging.getLogger(__name__).error(
-        f"数据库初始化失败（MySQL 可能未就绪，将在首次请求时重试）: {e}"
+except Exception as error:
+    if _strict_credentials_enabled() or not _is_transient_connection_error(error):
+        logging.getLogger(__name__).exception('数据库初始化失败，拒绝启动')
+        raise
+    logging.getLogger(__name__).warning(
+        '数据库连接暂不可用，将在后续请求中重试: %s', error
     )
+else:
+    _db_ready = True
+    try:
+        db.migrate_from_json()
+    except Exception:
+        # Authentication, DDL/schema and data migration failures cannot be
+        # treated as ordinary readiness lag.
+        logging.getLogger(__name__).exception('数据库数据迁移失败，拒绝启动')
+        raise
+
+if _db_ready:
+    try:
+        from scanner_integration.config_bridge import get_scan_config
+        get_scan_config()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "扫描 API Key 解密或安全迁移失败，拒绝启动"
+        )
+        raise
 try:
     db.clear_run_progress()
 except Exception:

@@ -1,0 +1,108 @@
+:root {
+  --app-sidebar-width: 252px;
+  --app-content-max: 1600px;
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+  --app-space-5: 20px;
+  --app-space-6: 24px;
+  --app-radius-sm: 10px;
+  --app-radius-md: 14px;
+  --app-radius-lg: 18px;
+  --app-border: var(--td-component-stroke, #e5e7eb);
+  --app-surface: var(--td-bg-color-container, #ffffff);
+  --app-surface-soft: var(--td-bg-color-secondarycontainer, #f8fafc);
+  --app-text: var(--td-text-color-primary, #0f172a);
+  --app-text-muted: var(--td-text-color-secondary, #64748b);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-width: 0;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--td-bg-color-page, #f5f7fb);
+  color: var(--app-text);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+:where(
+  button,
+  a[href],
+  input,
+  textarea,
+  select,
+  [role="button"],
+  [role="switch"],
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--td-brand-color, #2563eb);
+  outline-offset: 2px;
+}
+
+.workspace-card {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--app-border) 72%, transparent);
+  border-radius: var(--app-radius-lg) !important;
+  background: var(--app-surface);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 5%);
+}
+
+.responsive-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--app-space-3);
+}
+
+.data-table-shell {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.data-table-shell > .t-table,
+.data-table-shell > .t-table__content {
+  min-width: 720px;
+}
+
+.data-table-shell--wide > .t-table,
+.data-table-shell--wide > .t-table__content {
+  min-width: 980px;
+}
+
+@media (max-width: 768px) {
+  .workspace-card {
+    border-radius: var(--app-radius-md) !important;
+  }
+
+  .responsive-toolbar {
+    align-items: stretch;
+  }
+
+  .responsive-toolbar > .t-input,
+  .responsive-toolbar > .t-select,
+  .responsive-toolbar > .t-date-picker,
+  .responsive-toolbar > .t-range-input,
+  .responsive-toolbar > .t-input-number {
+    width: 100% !important;
+  }
+}

@@ -6,6 +6,8 @@ database 包 — IPTV 测速系统的数据库层。
 from database.db import (  # noqa: F401
     # 基础设施
     _get_conn,
+    _reset_thread_conn,
+    close_thread_connection,
     init_db,
     migrate_from_json,
     now_str,
@@ -45,6 +47,16 @@ from database.db import (  # noqa: F401
     get_scheduler_state,
     update_scheduler_state,
     clear_scheduler_state,
+    # 跨进程任务租约
+    acquire_task_lease,
+    heartbeat_task_lease,
+    request_task_stop,
+    finish_task_lease,
+    get_task_lease,
+    get_task_lease_by_id,
+    list_task_leases,
+    get_tasks_snapshot,
+    clear_stale_task_lease,
     # 扫描 run
     insert_scan_run,
     update_scan_run,

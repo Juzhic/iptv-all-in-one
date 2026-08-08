@@ -5,6 +5,14 @@
 """
 import re
 import threading
+import logging
+
+try:
+    import regex as timeout_regex
+except ImportError:
+    timeout_regex = None
+
+logger = logging.getLogger('iptv_alias')
 
 # 模块级缓存，首次调用 load_aliases() 后填充
 _alias_lock = threading.RLock()
@@ -12,6 +20,15 @@ _name_to_canonical = {}
 _regex_aliases = []
 _canonical_to_aliases = {}
 _alias_cache_mtime = None
+_timed_out_regex_ids = set()
+REGEX_MATCH_TIMEOUT_SECONDS = 0.05
+MAX_CHANNEL_NAME_LENGTH = 256
+
+
+def reset_regex_timeout_rules():
+    """Re-enable rules disabled by a timeout before a new processing round."""
+    with _alias_lock:
+        _timed_out_regex_ids.clear()
 
 
 def load_aliases():
@@ -50,12 +67,16 @@ def load_aliases():
         for alias in aliases:
             if alias.startswith('re:'):
                 pattern_src = alias[3:]
-                # ReDoS protection: limit pattern length
+                # Length is a secondary guard; the regex engine enforces the
+                # actual 50 ms CPU-time budget for every match.
                 if len(pattern_src) > 200:
                     continue
+                if timeout_regex is None:
+                    logger.warning('regex 依赖未安装，已禁用正则别名规则')
+                    continue
                 try:
-                    regex_aliases.append((re.compile(pattern_src, re.IGNORECASE), canonical))
-                except re.error:
+                    regex_aliases.append((timeout_regex.compile(pattern_src, timeout_regex.IGNORECASE), canonical))
+                except timeout_regex.error:
                     continue
             else:
                 name_to_canonical[alias] = canonical
@@ -66,6 +87,7 @@ def load_aliases():
         _name_to_canonical = name_to_canonical
         _regex_aliases = regex_aliases
         _alias_cache_mtime = current_mtime
+        _timed_out_regex_ids.clear()
     
     return canonical_to_aliases, name_to_canonical, regex_aliases
 
@@ -75,7 +97,7 @@ def match_channel_name(name, name_to_canonical=None, regex_aliases=None):
     根据别名表匹配频道名称，返回主名；无匹配返回 None。
     不传 name_to_canonical/regex_aliases 时使用模块缓存。
     """
-    if not name:
+    if not name or not isinstance(name, str) or len(name) > MAX_CHANNEL_NAME_LENGTH:
         return None
     ntc = name_to_canonical if name_to_canonical is not None else _name_to_canonical
     ra = regex_aliases if regex_aliases is not None else _regex_aliases
@@ -85,8 +107,22 @@ def match_channel_name(name, name_to_canonical=None, regex_aliases=None):
     # 正则匹配（预编译）
     if ra:
         for pattern, canonical in ra:
-            if pattern.match(name):
-                return canonical
+            pattern_id = id(pattern)
+            if pattern_id in _timed_out_regex_ids:
+                continue
+            try:
+                if pattern.match(name, timeout=REGEX_MATCH_TIMEOUT_SECONDS):
+                    return canonical
+            except TimeoutError:
+                with _alias_lock:
+                    _timed_out_regex_ids.add(pattern_id)
+                logger.warning('正则别名匹配超过 50 ms，本轮已禁用规则: %s', pattern)
+            except (TypeError, re.error):
+                # Compatibility for test doubles and pre-compiled patterns;
+                # never fall back to an unbounded production match.
+                logger.warning('正则别名规则不支持超时匹配，本轮已禁用: %s', pattern)
+                with _alias_lock:
+                    _timed_out_regex_ids.add(pattern_id)
     return None
 
 

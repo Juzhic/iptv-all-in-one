@@ -1,5 +1,86 @@
 <template>
-  <div v-if="latest" class="overview-tab">
+  <div v-if="latestRun || hasDashboardData" class="overview-tab">
+    <section v-if="dashboardSignals.length" class="operations-grid" aria-label="扫描与任务状态">
+      <article v-for="signal in dashboardSignals" :key="signal.label" class="operation-cell">
+        <div class="operation-label">{{ signal.label }}</div>
+        <div class="operation-value" :class="signal.tone">{{ signal.value }}</div>
+        <div class="operation-detail">{{ signal.detail }}</div>
+      </article>
+    </section>
+
+    <section v-if="hasAggregatedDashboard" class="quality-snapshot-grid" aria-label="扫描和订阅质量趋势">
+      <article class="quality-snapshot-card">
+        <div class="panel-head quality-snapshot-head">
+          <div>
+            <div class="panel-title">频道扫描质量</div>
+            <div class="panel-subtitle">最近 {{ scanTrendRows.length }} 轮漏斗与当前持久池状态</div>
+          </div>
+          <span class="panel-badge">良好率 {{ formatPercent(scanPool.good_rate_percent) }}</span>
+        </div>
+
+        <div class="pool-status-row" aria-label="持久池质量状态">
+          <span class="pool-chip good">良好 {{ number(scanPool.good) }}</span>
+          <span class="pool-chip poor">较差 {{ number(scanPool.poor) }}</span>
+          <span class="pool-chip unreachable">不可达 {{ number(scanPool.unreachable) }}</span>
+          <span class="pool-chip pending">待定 {{ number(scanPool.pending) }}</span>
+        </div>
+        <div class="pool-averages">
+          <span>稳定性 {{ number(scanPool.avg_stability, 1) }}</span>
+          <span>延迟 {{ number(scanPool.avg_delay_ms, 1) }} ms</span>
+          <span>带宽 {{ number(scanPool.avg_bandwidth_MBps, 2) }} MB/s</span>
+        </div>
+
+        <div class="quality-table-shell">
+          <div class="quality-table quality-table-scan" role="table" aria-label="频道扫描最近趋势">
+            <div class="quality-table-row quality-table-header" role="row">
+              <span role="columnheader">轮次</span><span role="columnheader">原始</span><span role="columnheader">去重</span><span role="columnheader">快筛</span><span role="columnheader">深检</span>
+            </div>
+            <div v-for="row in scanTrendRows" :key="row.scan_id" class="quality-table-row" role="row">
+              <span role="cell" :title="row.finished_at || row.started_at">{{ formatShortTime(row.finished_at || row.started_at) }}</span>
+              <strong role="cell">{{ number(row.total_raw) }}</strong>
+              <strong role="cell">{{ number(row.total_deduped) }}</strong>
+              <strong role="cell">{{ number(row.total_fast_pass) }}</strong>
+              <strong role="cell">{{ number(row.total_deep_pass) }}</strong>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="quality-snapshot-card">
+        <div class="panel-head quality-snapshot-head">
+          <div>
+            <div class="panel-title">订阅来源质量</div>
+            <div class="panel-subtitle">来源数量、频道覆盖、带宽和质量分趋势</div>
+          </div>
+          <span class="panel-badge">通过率 {{ formatPercent(subscriptionLatest.pass_rate, true) }}</span>
+        </div>
+
+        <div class="subscription-snapshot" aria-label="最新订阅质量">
+          <span><strong>{{ number(subscriptionLatest.source_count) }}</strong><small>订阅源</small></span>
+          <span><strong>{{ number(subscriptionLatest.channels_total) }}</strong><small>频道总数</small></span>
+          <span><strong>{{ number(subscriptionLatest.channels_passed) }}</strong><small>通过频道</small></span>
+          <span><strong>{{ number(subscriptionLatest.avg_bandwidth_MBps, 2) }}</strong><small>MB/s</small></span>
+          <span><strong>{{ number(subscriptionLatest.avg_quality, 2) }}</strong><small>平均质量</small></span>
+        </div>
+
+        <div class="quality-table-shell">
+          <div class="quality-table quality-table-subscription" role="table" aria-label="订阅质量最近趋势">
+            <div class="quality-table-row quality-table-header" role="row">
+              <span role="columnheader">轮次</span><span role="columnheader">来源</span><span role="columnheader">频道</span><span role="columnheader">通过率</span><span role="columnheader">带宽</span><span role="columnheader">质量</span>
+            </div>
+            <div v-for="row in subscriptionTrendRows" :key="row.run_id" class="quality-table-row" role="row">
+              <span role="cell" :title="row.finished_at">{{ formatShortTime(row.finished_at) }}</span>
+              <strong role="cell">{{ number(row.source_count) }}</strong>
+              <strong role="cell">{{ number(row.channels_passed) }}/{{ number(row.channels_total) }}</strong>
+              <strong role="cell">{{ formatPercent(row.pass_rate, true) }}</strong>
+              <strong role="cell">{{ number(row.avg_bandwidth_MBps, 2) }}</strong>
+              <strong role="cell">{{ number(row.avg_quality, 2) }}</strong>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
     <t-row :gutter="[16, 16]" align="stretch" class="overview-row">
       <t-col :xs="12" :sm="12" :md="8" :lg="8">
         <t-card size="small" :bordered="false" class="panel-card chart-card">
@@ -27,7 +108,7 @@
               <div class="panel-title">测试规模趋势</div>
               <div class="panel-subtitle">绿色为通过地址，红色为失败地址</div>
             </div>
-            <span class="panel-badge">最新 {{ latest.summary?.total_tested || 0 }} 条</span>
+            <span class="panel-badge">最新 {{ latestRun?.summary?.total_tested || 0 }} 条</span>
           </div>
 
           <div
@@ -109,6 +190,10 @@ import { useTheme } from '../composables/useTheme.js'
 echarts.use([BarChart, LineChart, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent, CanvasRenderer])
 
 const props = defineProps({
+  dashboard: {
+    type: Object,
+    default: null,
+  },
   latest: {
     type: Object,
     default: null,
@@ -134,7 +219,90 @@ const volumeChartRef = ref(null)
 let passRateChart = null
 let volumeChart = null
 
-const chartData = computed(() => (props.runs || []).slice())
+const latestRun = computed(() => props.latest || props.dashboard?.subscriptions?.latest || null)
+const chartData = computed(() => {
+  const source = props.runs?.length ? props.runs : props.dashboard?.subscriptions?.trend
+  return Array.isArray(source) ? source.slice() : []
+})
+const hasDashboardData = computed(() => Boolean(
+  props.dashboard?.scan?.latest ||
+  props.dashboard?.scan?.pool ||
+  props.dashboard?.subscriptions?.best_source ||
+  props.dashboard?.subscriptions?.degraded_source ||
+  props.dashboard?.tasks,
+))
+
+function compactSource(source) {
+  return source?.name || source?.source_ip || source?.source || source?.source_url || source?.platform || '--'
+}
+
+function number(value, digits = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return digits ? (0).toFixed(digits) : '0'
+  return digits ? parsed.toFixed(digits) : parsed.toLocaleString()
+}
+
+function formatPercent(value, ratio = false) {
+  let parsed = Number(value)
+  if (!Number.isFinite(parsed)) parsed = 0
+  if (ratio || parsed <= 1) parsed *= 100
+  return `${Math.max(0, Math.min(100, parsed)).toFixed(1)}%`
+}
+
+const scanPool = computed(() => props.dashboard?.scan?.pool || {})
+const subscriptionLatest = computed(() => props.dashboard?.subscriptions?.latest || {})
+const scanTrendRows = computed(() => {
+  const rows = props.dashboard?.scan?.trend
+  return Array.isArray(rows) ? [...rows].slice(-10).reverse() : []
+})
+const subscriptionTrendRows = computed(() => {
+  const rows = props.dashboard?.subscriptions?.trend
+  return Array.isArray(rows) ? [...rows].slice(-10).reverse() : []
+})
+const hasAggregatedDashboard = computed(() => Boolean(
+  props.dashboard?.scan?.latest ||
+  scanTrendRows.value.length ||
+  props.dashboard?.subscriptions?.latest ||
+  subscriptionTrendRows.value.length,
+))
+
+const dashboardSignals = computed(() => {
+  if (!props.dashboard) return []
+  const pool = props.dashboard.scan?.pool || {}
+  const tasks = props.dashboard.tasks || {}
+  const running = Object.values(tasks).filter(task => task?.active || ['starting', 'queued', 'running', 'stopping'].includes(String(task?.state || '').toLowerCase())).length
+  const total = Number(
+    pool.total || pool.total_count || pool.channels ||
+    (Number(pool.good || 0) + Number(pool.poor || 0) + Number(pool.unreachable || 0) + Number(pool.pending || 0)),
+  )
+  const healthy = Number(pool.healthy || pool.good || pool.available || 0)
+  return [
+    {
+      label: '资源池',
+      value: total ? total.toLocaleString() : '--',
+      detail: total ? `${healthy.toLocaleString()} 条健康或可用` : '暂无入库记录',
+      tone: total ? 'blue' : '',
+    },
+    {
+      label: '最佳来源',
+      value: compactSource(props.dashboard.subscriptions?.best_source),
+      detail: '按最新订阅质量评估',
+      tone: 'green',
+    },
+    {
+      label: '退化来源',
+      value: compactSource(props.dashboard.subscriptions?.degraded_source),
+      detail: props.dashboard.subscriptions?.degraded_source ? '建议进入扫描结果复检' : '当前未发现明显退化',
+      tone: props.dashboard.subscriptions?.degraded_source ? 'red' : 'green',
+    },
+    {
+      label: '活动任务',
+      value: String(running),
+      detail: running ? '状态每 2 秒更新' : '当前任务队列空闲',
+      tone: running ? 'purple' : '',
+    },
+  ]
+})
 const avgPassRate = computed(() => {
   const runs = chartData.value
   if (!runs.length) return 0
@@ -546,6 +714,145 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.quality-snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.quality-snapshot-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: 14px;
+  background: var(--td-bg-color-container, #fff);
+}
+
+.quality-snapshot-head { align-items: flex-start; }
+
+.pool-status-row,
+.pool-averages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.pool-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--td-bg-color-secondarycontainer, #f3f4f6);
+  color: var(--app-text-muted, #64748b);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pool-chip.good { background: rgb(13 148 136 / 12%); color: #0f766e; }
+.pool-chip.poor { background: rgb(245 158 11 / 14%); color: #b45309; }
+.pool-chip.unreachable { background: rgb(239 68 68 / 12%); color: #dc2626; }
+.pool-chip.pending { background: rgb(59 130 246 / 10%); color: #2563eb; }
+
+.pool-averages {
+  margin-top: 9px;
+  color: var(--app-text-muted, #64748b);
+  font-size: 11px;
+}
+
+.pool-averages span + span::before { margin-right: 7px; content: '·'; }
+
+.subscription-snapshot {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.subscription-snapshot span {
+  min-width: 0;
+  padding: 8px 7px;
+  border-radius: 9px;
+  background: var(--app-surface-soft, #f8fafc);
+  text-align: center;
+}
+
+.subscription-snapshot strong,
+.subscription-snapshot small { display: block; }
+.subscription-snapshot strong { overflow: hidden; color: var(--app-text, #0f172a); font-size: 14px; text-overflow: ellipsis; }
+.subscription-snapshot small { margin-top: 3px; color: var(--app-text-muted, #64748b); font-size: 9px; }
+
+.quality-table-shell {
+  margin-top: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: 10px;
+}
+
+.quality-table { min-width: 470px; }
+.quality-table-subscription { min-width: 560px; }
+.quality-table-row {
+  display: grid;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 9px;
+  border-top: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  color: var(--app-text-muted, #64748b);
+  font-size: 10px;
+}
+.quality-table-scan .quality-table-row { grid-template-columns: 1.35fr repeat(4, .75fr); }
+.quality-table-subscription .quality-table-row { grid-template-columns: 1.25fr .6fr .9fr .75fr .7fr .65fr; }
+.quality-table-row:first-child { border-top: 0; }
+.quality-table-row strong { color: var(--app-text, #0f172a); font-weight: 650; }
+.quality-table-header { background: var(--app-surface-soft, #f8fafc); font-weight: 700; }
+
+.operations-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1px solid var(--td-border-level-1-color, #e5e7eb);
+  border-radius: 14px;
+  background: var(--td-border-level-1-color, #e5e7eb);
+}
+
+@media (max-width: 1100px) {
+  .quality-snapshot-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .quality-snapshot-card { padding: 13px; }
+  .subscription-snapshot { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pool-averages span + span::before { content: ''; margin: 0; }
+}
+
+.operation-cell {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--td-bg-color-container, #fff);
+}
+
+.operation-label,
+.operation-detail {
+  color: var(--td-text-color-placeholder, #64748b);
+  font-size: 11px;
+}
+
+.operation-value {
+  margin: 5px 0 4px;
+  overflow: hidden;
+  color: var(--td-text-color-primary, #111827);
+  font-size: 18px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-value.green { color: #16a34a; }
+.operation-value.red { color: #dc2626; }
+.operation-value.blue { color: #2563eb; }
+.operation-value.purple { color: #7c3aed; }
+
 .overview-row {
   margin-bottom: 16px;
 }
@@ -735,6 +1042,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .operations-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -756,6 +1067,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 560px) {
+  .operations-grid {
+    grid-template-columns: 1fr;
+  }
+
   .metrics-grid {
     grid-template-columns: 1fr;
   }

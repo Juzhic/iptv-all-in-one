@@ -72,6 +72,25 @@ def _evaluate_quality_safe(db_module, stability, delay, bandwidth):
     return _quality_from_metrics(stability, delay, bandwidth)
 
 
+def _append_failed_detection(updates, results, failure_cache, url, name,
+                             quality_status='unreachable', count_failure=True):
+    """Append one failed result and mutate persistence state only when counted."""
+    if count_failure:
+        updates.append({'url': url, 'ok': False, 'name': name})
+        failure_cache[url] = failure_cache.get(url, 0) + 1
+    results.append({
+        'url': url,
+        'name': name,
+        'check_ok': False,
+        'http_status': 0,
+        'response_time_ms': 0,
+        'response_size_bytes': 0,
+        'consecutive_failures': failure_cache.get(url, 0),
+        'quality_status': quality_status,
+    })
+    return 1 if count_failure else 0
+
+
 class DetectionManager:
     """定期检测管理器，运行在 AsyncBridge 的事件循环上。"""
 
@@ -251,6 +270,14 @@ class DetectionManager:
                 'status': self.status,
                 'result': self._last_cycle_result,
             })
+            # The detection loop lives on the bridge worker thread.  Do not
+            # retain its thread-local MySQL connection between cycles (or
+            # after a one-shot manual cycle).
+            try:
+                import database as _db
+                _db.close_thread_connection()
+            except Exception:
+                pass
 
     async def _run_detection_cycle_inner(self, cfg, trigger_source='auto'):
         """执行一次完整的检测周期（内部实现）。"""
@@ -331,17 +358,15 @@ class DetectionManager:
             async with get_session(limit=10, timeout=6) as session:
                 def record_failed(url, name, quality_status='unreachable', count_failure=True):
                     nonlocal fail_count
-                    updates_to_apply.append({'url': url, 'ok': False, 'name': name})
-                    cf_cache[url] = cf_cache.get(url, 0) + 1
-                    if count_failure:
-                        fail_count += 1
-                    results_list.append({
-                        'url': url, 'name': name, 'check_ok': False,
-                        'http_status': 0, 'response_time_ms': 0,
-                        'response_size_bytes': 0,
-                        'consecutive_failures': cf_cache.get(url, 0),
-                        'quality_status': quality_status,
-                    })
+                    fail_count += _append_failed_detection(
+                        updates_to_apply,
+                        results_list,
+                        cf_cache,
+                        url,
+                        name,
+                        quality_status=quality_status,
+                        count_failure=count_failure,
+                    )
 
                 async def check_one(item):
                     nonlocal ok_count, fail_count

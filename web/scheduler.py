@@ -9,7 +9,13 @@ import threading
 from datetime import datetime
 
 from engine import load_config
-from database import now_str, get_scheduler_state, update_scheduler_state, clear_scheduler_state
+from database import (
+    clear_scheduler_state,
+    close_thread_connection,
+    get_scheduler_state,
+    now_str,
+    update_scheduler_state,
+)
 
 import web.state as _state
 
@@ -242,6 +248,7 @@ def _scheduler_loop():
             clear_scheduler_state()
         except Exception:
             pass
+        close_thread_connection()
         _release_scheduler_lock()
 
 

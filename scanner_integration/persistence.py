@@ -135,4 +135,4 @@ async def _validate_pending():
 
 async def _quick_check(session, url):
     """快速检查 URL 是否可连接。"""
-    return quick_http_check(session, url)['alive']
+    return (await quick_http_check(session, url))['alive']

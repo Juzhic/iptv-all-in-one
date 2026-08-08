@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 
-from database import now_str
+from database import close_thread_connection, now_str
 import web.state as _state
 
 
@@ -169,6 +169,16 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                 except Exception:
                     pass
 
-    t = threading.Thread(target=_run, daemon=True, name=f'test-{trigger_source}')
+    def _run_with_connection_cleanup():
+        try:
+            _run()
+        finally:
+            close_thread_connection()
+
+    t = threading.Thread(
+        target=_run_with_connection_cleanup,
+        daemon=True,
+        name=f'test-{trigger_source}',
+    )
     t.start()
     return run_token
