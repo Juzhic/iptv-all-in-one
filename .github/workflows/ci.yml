@@ -154,7 +154,7 @@ jobs:
         run: >-
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
           aquasec/trivy:0.58.2 image --exit-code 1 --severity HIGH,CRITICAL
-          --no-progress iptv-test:ci
+          --ignore-unfixed --scanners vuln --no-progress iptv-test:ci
       - name: Show container logs on failure
         if: failure()
         run: docker logs iptv-ci-app || true

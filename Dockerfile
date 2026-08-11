@@ -20,6 +20,7 @@ ENV TZ=Asia/Shanghai \
 
 # Install FFmpeg only
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ffmpeg curl tzdata && \
     rm -rf /var/lib/apt/lists/*
 
