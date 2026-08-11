@@ -4,9 +4,9 @@
 
 集成 IPTV 频道扫描模块，可通过搜索引擎 API（Quake/Hunter/DayDayMap/Fofa）自动发现酒店 IPTV 服务器，提取频道列表并送入测速流水线。
 
-## 当前版本说明（v2.0.0）
+## 当前版本说明（v2.0.1）
 
-2.0.0 是安全模型、任务生命周期和管理控制台的全面升级。现有 1.x 部署必须先备份 MySQL 与根目录 `.env`，再按照 [MIGRATING-2.0.md](MIGRATING-2.0.md) 创建专用数据库用户并迁移加密 API Key。
+2.0.1 修复 Docker 发布质量门禁中的临时目录权限不确定性，并让运行时安全断言输出明确诊断。2.0.0 是安全模型、任务生命周期和管理控制台的全面升级；现有 1.x 部署必须先备份 MySQL 与根目录 `.env`，再按照 [MIGRATING-2.0.md](MIGRATING-2.0.md) 创建专用数据库用户并迁移加密 API Key。
 
 本项目当前以 MySQL 作为主要数据存储。Docker/Compose 部署优先通过 `.env` 中的 `DB_*` 环境变量连接数据库；直接运行源码时也可以使用 `DB_*` 环境变量，未设置 `DB_HOST` 时才读取 `database/db_config.json`。
 

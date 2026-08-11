@@ -97,7 +97,10 @@ jobs:
             sleep 2
           done
           docker run -d --name iptv-ci-app --network iptv-ci-network -p 58080:58080 \
-            --tmpfs /app/output:rw --tmpfs /app/data:rw \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777 \
+            --tmpfs /app/output:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
+            --tmpfs /app/data:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
             -e DB_HOST=iptv-ci-mysql -e DB_PORT=3306 -e DB_NAME=iptv_test \
             -e DB_USER=iptv_app -e DB_PASSWORD=ci-app-db-password-with-32-bytes-2.0 \
             -e IPTV_AUTH_USERNAME=ci-admin \
@@ -112,10 +115,32 @@ jobs:
           exit 1
       - name: Verify non-root and read-only runtime
         run: |
-          test "$(docker exec iptv-ci-app id -u)" != "0"
-          docker exec iptv-ci-app sh -ec 'test -w /app/output && test -w /app/data'
-          docker exec iptv-ci-app sh -ec 'test ! -w /app/web/app.py && test ! -w /app/dist'
-          docker exec iptv-ci-app sh -ec 'site=$(python -c "import site; print(site.getsitepackages()[0])"); test ! -w "$site"'
+          set -euo pipefail
+          docker inspect --format 'container={{.State.Status}} user={{.Config.User}} readonly={{.HostConfig.ReadonlyRootfs}}' iptv-ci-app
+          docker exec iptv-ci-app sh -ec '
+            fail() {
+              echo "::error::$1" >&2
+              exit 1
+            }
+
+            echo "Runtime identity: $(id)"
+            [ "$(id -u)" != "0" ] || fail "Application container is running as root"
+
+            for path in /app/output /app/data; do
+              [ -d "$path" ] || fail "Required writable directory is missing: $path"
+              stat -c "permission=%A mode=%a owner=%u:%g path=%n" "$path"
+              [ -w "$path" ] || fail "Application user cannot write required directory: $path"
+            done
+
+            site=$(python -c "import site; print(site.getsitepackages()[0])")
+            for path in /app/web/app.py /app/dist "$site"; do
+              [ -e "$path" ] || fail "Required read-only path is missing: $path"
+              stat -c "permission=%A mode=%a owner=%u:%g path=%n" "$path"
+              [ ! -w "$path" ] || fail "Application user can modify protected path: $path"
+            done
+
+            echo "Runtime permission gate passed"
+          '
       - name: Verify idempotent migration and health
         run: |
           docker restart iptv-ci-app
