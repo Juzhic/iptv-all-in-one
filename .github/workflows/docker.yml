@@ -83,9 +83,15 @@ jobs:
           with urllib.request.urlopen(login) as response:
               token = json.load(response)['token']
           readme = open('dockerhub_readme.md', encoding='utf-8').read()
+          short_description = 'IPTV 频道测速与扫描工具，支持多源聚合、FFmpeg 检测和 Docker 部署'
+          short_size = len(short_description.encode('utf-8'))
+          if short_size > 100:
+              raise SystemExit(
+                  f'Docker Hub short description is {short_size} bytes; limit is 100'
+              )
           payload = json.dumps({
               'full_description': readme,
-              'description': 'IPTV 频道测速 + 扫描发现一站式工具，支持多源聚合、FFmpeg 检测、定时运行和 Docker 部署',
+              'description': short_description,
           }, ensure_ascii=False).encode('utf-8')
           update = urllib.request.Request(
               f'https://hub.docker.com/v2/repositories/{username}/iptv-all-in-one/',
