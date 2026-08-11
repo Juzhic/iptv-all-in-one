@@ -25,8 +25,29 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
-      - name: Merge project description and changelog
-        run: cat DOCKERHUB.md CHANGELOG.md > dockerhub_readme.md
+      - name: Prepare Docker Hub description
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          base = Path('DOCKERHUB.md').read_text(encoding='utf-8').rstrip()
+          changelog = Path('CHANGELOG.md').read_text(encoding='utf-8')
+          versions = list(re.finditer(r'^## \[', changelog, re.MULTILINE))
+          if not versions:
+              raise SystemExit('No release entry found in CHANGELOG.md')
+          end = versions[1].start() if len(versions) > 1 else len(changelog)
+          latest = changelog[versions[0].start():end].strip()
+          description = f'{base}\n\n{latest}\n'
+          encoded = description.encode('utf-8')
+          limit = 24_000
+          if len(encoded) > limit:
+              raise SystemExit(
+                  f'Docker Hub description is {len(encoded)} bytes; limit is {limit}'
+              )
+          Path('dockerhub_readme.md').write_bytes(encoded)
+          print(f'Prepared Docker Hub description: {len(encoded)} bytes')
+          PY
 
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
@@ -51,7 +72,7 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           python - <<'PY'
-          import json, os, urllib.request
+          import json, os, urllib.error, urllib.request
           username = os.environ['DOCKERHUB_USERNAME']
           password = os.environ['DOCKERHUB_TOKEN']
           login = urllib.request.Request(
@@ -65,14 +86,20 @@ jobs:
           payload = json.dumps({
               'full_description': readme,
               'description': 'IPTV 频道测速 + 扫描发现一站式工具，支持多源聚合、FFmpeg 检测、定时运行和 Docker 部署',
-          }).encode()
+          }, ensure_ascii=False).encode('utf-8')
           update = urllib.request.Request(
               f'https://hub.docker.com/v2/repositories/{username}/iptv-all-in-one/',
               data=payload,
               method='PATCH',
               headers={'Authorization': f'JWT {token}', 'Content-Type': 'application/json'},
           )
-          with urllib.request.urlopen(update) as response:
-              if response.status not in (200, 201):
-                  raise SystemExit(f'Docker Hub update failed: HTTP {response.status}')
+          try:
+              with urllib.request.urlopen(update) as response:
+                  if response.status not in (200, 201):
+                      raise SystemExit(f'Docker Hub update failed: HTTP {response.status}')
+          except urllib.error.HTTPError as exc:
+              detail = exc.read().decode('utf-8', errors='replace')
+              raise SystemExit(
+                  f'Docker Hub update failed: HTTP {exc.code}: {detail}'
+              ) from exc
           PY
