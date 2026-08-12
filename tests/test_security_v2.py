@@ -140,6 +140,7 @@ def test_missing_basic_auth_uses_temporary_password_even_with_stale_strict_flag(
     missing_file = local_tmp_path / 'missing-basic-auth.json'
     monkeypatch.setattr(web_app_module, 'BASIC_AUTH_CONFIG_FILE', str(missing_file))
     monkeypatch.setenv('IPTV_REQUIRE_STRONG_CREDENTIALS', '1')
+    monkeypatch.delenv('IPTV_AUTH_USERNAME', raising=False)
     monkeypatch.delenv('IPTV_AUTH_PASSWORD', raising=False)
 
     config = web_app_module._load_basic_auth_config()
