@@ -14,8 +14,6 @@ ENV TZ=Asia/Shanghai \
     DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    IPTV_REQUIRE_STRONG_CREDENTIALS=1 \
-    DB_USER=iptv_app \
     FFMPEG_BIN=/usr/bin/ffmpeg
 
 # Install FFmpeg only
@@ -39,17 +37,24 @@ COPY generate_env.py migrate_2_0.py ./
 # Copy frontend build from stage 1
 COPY --from=frontend-builder /app/dist ./dist
 
-# Run the service without root privileges. Runtime source, dependencies and
-# frontend assets stay root-owned/read-only; only explicit data volumes are
-# writable by the application account.
+# Runtime source, dependencies and frontend assets stay root-owned/read-only.
+# UID 10001 owns the writable directories for hardened and first-2.0
+# deployments; group root can also write when the current Compose file
+# deliberately runs legacy compatibility as root. No access is granted to
+# others.
 RUN groupadd --gid 10001 iptv \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin iptv \
     && mkdir -p /app/data /app/output \
-    && chown -R iptv:iptv /app/data /app/output \
-    && chmod 0750 /app/data /app/output \
+    && chown -R iptv:root /app/data /app/output \
+    && chmod 0770 /app/data /app/output \
     && chmod -R a-w /app/engine /app/web /app/database /app/scanner_integration /app/dist \
     && chmod a-w /app/requirements.txt /app/generate_env.py /app/migrate_2_0.py
 
+# Keep the image default compatible with both the standard 1.x Compose file
+# (which had no application bind mounts) and the first 2.0 Compose release
+# (which relied on the image USER and created UID-10001-owned volumes).
+# The current Compose file can explicitly use compatibility root when an
+# operator has older root-owned custom mounts.
 USER 10001:10001
 
 EXPOSE 58080

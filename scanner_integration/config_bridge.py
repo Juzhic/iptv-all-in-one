@@ -5,9 +5,17 @@
 替代 itv_scan 原始的 config.py + config.json 方案。
 """
 import json
+import logging
 import re
 
-from .secure_keys import decrypt_api_key, encrypt_api_key, is_encrypted
+from .secure_keys import (
+    decrypt_api_key,
+    encrypt_api_key,
+    is_encrypted,
+    secret_is_configured,
+)
+
+logger = logging.getLogger(__name__)
 
 # ==================== 静态常量（不可运行时修改） ====================
 HEAD_TIMEOUT = 2
@@ -280,6 +288,88 @@ def _encrypt_persisted_keys(runtime_cfg):
     return cfg
 
 
+def _prepare_persisted_config(runtime_cfg):
+    """Return encrypted storage when possible, otherwise recoverable legacy plaintext."""
+    if secret_is_configured():
+        persisted = _encrypt_persisted_keys(runtime_cfg)
+    else:
+        persisted = dict(runtime_cfg)
+        # Normalize list/single compatibility fields even without encryption;
+        # otherwise a legacy single-key update could leave the persisted list
+        # stale and disappear after restart.
+        for platform in _API_KEY_PLATFORMS:
+            list_name = f'{platform}_api_keys'
+            single_name = f'{platform}_api_key'
+            values = persisted.get(list_name, [])
+            normalized = [
+                value.strip()
+                for value in values
+                if isinstance(value, str) and value.strip()
+            ] if isinstance(values, list) else []
+            persisted[list_name] = normalized
+            persisted[single_name] = normalized[0] if normalized else ''
+        if any(
+            persisted.get(f'{platform}_api_keys')
+            for platform in _API_KEY_PLATFORMS
+        ):
+            logger.warning(
+                '兼容模式：IPTV_SECRET_KEY 未配置，扫描 API Key 将继续以明文保存。'
+                '请尽快完成 2.0 凭据迁移。'
+            )
+    for alias in ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key'):
+        persisted.pop(alias, None)
+    return persisted
+
+
+def migrate_stored_api_keys():
+    """Encrypt legacy API keys in one explicit database transaction.
+
+    This entry point is used by the one-time 2.0 migration after the staged
+    application account has been verified. It deliberately bypasses the
+    ordinary read cache and keeps the read/transform/write unit atomic.
+    """
+    global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
+    if not secret_is_configured():
+        raise RuntimeError('IPTV_SECRET_KEY is required to migrate API keys')
+
+    from database import db as database_db
+
+    with database_db._write_lock:
+        conn = database_db._get_conn()
+        with conn.transaction():
+            row = conn.execute(
+                "SELECT content FROM config_data WHERE `key` = %s FOR UPDATE",
+                ('scan_config',),
+            ).fetchone()
+            if not row:
+                migrated = False
+            else:
+                raw = row.get('content', '') if isinstance(row, dict) else row[0]
+                try:
+                    loaded = json.loads(raw) if raw else {}
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise RuntimeError('stored scan_config is not valid JSON') from exc
+
+                decrypted, needs_migration = _decrypt_stored_keys(loaded)
+                migrated = bool(needs_migration)
+                if needs_migration:
+                    normalized = _normalize_scan_config(decrypted)
+                    persisted = _prepare_persisted_config(normalized)
+                    conn.execute(
+                        "UPDATE config_data SET content = %s, updated_at = %s "
+                        "WHERE `key` = %s",
+                        (
+                            json.dumps(persisted, ensure_ascii=False, indent=2),
+                            database_db.now_str(),
+                            'scan_config',
+                        ),
+                    )
+
+    _CONFIG_CACHE = None
+    _CONFIG_CACHE_MTIME = None
+    return migrated
+
+
 def _normalize_key_list(cfg, platform, *legacy_single_names):
     """Normalize per-platform API keys into both list and single-key fields."""
     list_key = f'{platform}_api_keys'
@@ -532,14 +622,22 @@ def get_scan_config():
     decrypted, needs_migration = _decrypt_stored_keys(loaded)
     cfg = _normalize_scan_config(decrypted)
     if needs_migration:
-        # One REPLACE statement is atomic.  If encryption or the write fails,
-        # configuration loading fails as well and startup cannot silently
-        # continue with plaintext credentials.
-        from database import set_config_data
-        migrated = _encrypt_persisted_keys(cfg)
-        for alias in ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key'):
-            migrated.pop(alias, None)
-        set_config_data('scan_config', json.dumps(migrated, ensure_ascii=False, indent=2))
+        if secret_is_configured():
+            # One REPLACE statement is atomic. If encryption or the write
+            # fails, loading fails rather than replacing recoverable data.
+            from database import set_config_data
+            migrated = _encrypt_persisted_keys(cfg)
+            for alias in ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key'):
+                migrated.pop(alias, None)
+            set_config_data('scan_config', json.dumps(migrated, ensure_ascii=False, indent=2))
+        else:
+            # A 1.x installation has recoverable plaintext keys but no stable
+            # master secret. Never encrypt them with a process-local key and
+            # never make the whole service unavailable solely for migration.
+            logger.warning(
+                '兼容模式：扫描 API Key 仍以 1.x 明文格式保存；未配置稳定的 '
+                'IPTV_SECRET_KEY，因此本次不自动迁移。设置密钥后会自动加密。'
+            )
     _CONFIG_CACHE = cfg
     _CONFIG_CACHE_MTIME = current_signature
     return cfg
@@ -556,14 +654,11 @@ def save_scan_config(cfg):
     normalized = _normalize_scan_config(merged)
 
     # Do not persist runtime-only compatibility aliases back to the database.
-    persisted = _encrypt_persisted_keys(normalized)
-    persisted.pop('quake_key', None)
-    persisted.pop('hunter_key', None)
-    persisted.pop('daydaymap_key', None)
-    persisted.pop('fofa_key', None)
+    # Preserve 1.x plaintext only when no stable master key exists. Never use
+    # a process-local secret to write ciphertext that cannot survive restart.
+    persisted = _prepare_persisted_config(normalized)
 
     set_config_data('scan_config', json.dumps(persisted, ensure_ascii=False, indent=2))
     # 清除缓存，下次读取时会重新加载
     _CONFIG_CACHE = None
     _CONFIG_CACHE_MTIME = None
-

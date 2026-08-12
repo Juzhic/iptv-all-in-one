@@ -23,14 +23,44 @@ DEFAULT_ENV_PATH = ROOT / ".env"
 _ACCOUNT_COMPONENT = re.compile(r"^[A-Za-z0-9_.:%-]{1,255}$")
 
 
-def _load_environment(path: Path) -> None:
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Missing {path}; run python generate_env.py --upgrade first"
+def _load_environment(path: Path, *, environment_only: bool = False) -> None:
+    """Load a host env file or validate the read-only Docker env contract."""
+    if path.exists() and not environment_only:
+        values = _parse_values(path.read_text(encoding="utf-8-sig"))
+        for key, value in values.items():
+            os.environ.setdefault(key, value)
+        return
+
+    base_required = (
+        "MYSQL_ROOT_PASSWORD",
+        "IPTV_AUTH_PASSWORD",
+        "IPTV_SECRET_KEY",
+    )
+    migration_pair = (
+        os.environ.get("IPTV_MIGRATION_DB_USER", "").strip(),
+        os.environ.get("IPTV_MIGRATION_DB_PASSWORD", ""),
+    )
+    active_pair = (
+        os.environ.get("DB_USER", "").strip(),
+        os.environ.get("DB_PASSWORD", ""),
+    )
+    has_base = all(os.environ.get(name) for name in base_required)
+    has_account = all(migration_pair) if environment_only else (
+        all(migration_pair) or all(active_pair)
+    )
+    if has_base and has_account:
+        return
+
+    if environment_only:
+        raise ValueError(
+            "Environment-only migration requires MYSQL_ROOT_PASSWORD, "
+            "IPTV_AUTH_PASSWORD, IPTV_SECRET_KEY and both "
+            "IPTV_MIGRATION_DB_* values"
         )
-    values = _parse_values(path.read_text(encoding="utf-8-sig"))
-    for key, value in values.items():
-        os.environ.setdefault(key, value)
+    raise FileNotFoundError(
+        f"Missing {path} and required environment values; "
+        "run python generate_env.py --upgrade first"
+    )
 
 
 def _require_strong(name: str, minimum: int) -> str:
@@ -54,15 +84,41 @@ def _database_sql(name: str) -> str:
     return "`" + name.replace("`", "``") + "`"
 
 
-def migrate(env_path: Path = DEFAULT_ENV_PATH) -> None:
-    _load_environment(env_path)
+def _application_credentials() -> tuple[str, str]:
+    """Resolve a staged upgrade account, or an already dedicated account."""
+    migration_user = os.environ.get("IPTV_MIGRATION_DB_USER", "").strip()
+    migration_password = os.environ.get("IPTV_MIGRATION_DB_PASSWORD", "")
+    if bool(migration_user) != bool(migration_password):
+        raise ValueError(
+            "IPTV_MIGRATION_DB_USER and IPTV_MIGRATION_DB_PASSWORD must be set together"
+        )
+    if migration_user:
+        return migration_user, migration_password
+    return os.environ.get("DB_USER", "").strip(), os.environ.get("DB_PASSWORD", "")
+
+
+def _restore_environment(name: str, original: str | None) -> None:
+    if original is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = original
+
+
+def migrate(
+    env_path: Path = DEFAULT_ENV_PATH,
+    *,
+    environment_only: bool = False,
+) -> None:
+    _load_environment(env_path, environment_only=environment_only)
     # The legacy root password must be used exactly as-is to reach an existing
     # MySQL volume. It may predate the v2 strength policy; the long-lived app
     # never receives it after migration.
     root_password = os.environ.get("MYSQL_ROOT_PASSWORD", "")
     if not root_password:
         raise ValueError("MYSQL_ROOT_PASSWORD is required for the one-time migration")
-    app_password = _require_strong("DB_PASSWORD", 16)
+    app_user, app_password = _application_credentials()
+    if len(app_password) < 16 or app_password != app_password.strip() or len(set(app_password)) < 4:
+        raise ValueError("application DB password must be a strong value of at least 16 characters")
     _require_strong("IPTV_AUTH_PASSWORD", 16)
     _require_strong("IPTV_SECRET_KEY", 32)
     if root_password == app_password:
@@ -72,7 +128,6 @@ def migrate(env_path: Path = DEFAULT_ENV_PATH) -> None:
     db_port = int(os.environ.get("DB_PORT", "3306"))
     db_name = os.environ.get("DB_NAME", "iptv-all-in-one")
     db_charset = os.environ.get("DB_CHARSET", "utf8mb4")
-    app_user = os.environ.get("DB_USER", "iptv_app")
     app_user_host = os.environ.get("DB_USER_HOST", "%")
 
     root_connection = None
@@ -109,9 +164,39 @@ def migrate(env_path: Path = DEFAULT_ENV_PATH) -> None:
             if not user_exists:
                 cursor.execute(f"CREATE USER {account} IDENTIFIED BY %s", (app_password,))
                 created_user = True
-                cursor.execute(
-                    f"GRANT ALL PRIVILEGES ON {database_identifier}.* TO {account}"
-                )
+            else:
+                # Never take over or rotate an account that may have been
+                # provisioned by an operator. Authenticate first, without
+                # selecting the application database (it may not be granted
+                # yet), and only grant after the staged credentials match.
+                existing_connection = None
+                try:
+                    existing_connection = pymysql.connect(
+                        host=db_host,
+                        port=db_port,
+                        user=app_user,
+                        password=app_password,
+                        charset=db_charset,
+                        autocommit=True,
+                        connect_timeout=10,
+                        read_timeout=30,
+                        write_timeout=30,
+                    )
+                except pymysql.err.OperationalError as exc:
+                    error_code = exc.args[0] if exc.args else None
+                    if error_code == 1045:
+                        raise RuntimeError(
+                            "The dedicated MySQL account already exists but its "
+                            "credentials do not match the staged password; refusing "
+                            "to alter the existing account"
+                        ) from exc
+                    raise
+                finally:
+                    if existing_connection is not None:
+                        existing_connection.close()
+            cursor.execute(
+                f"GRANT ALL PRIVILEGES ON {database_identifier}.* TO {account}"
+            )
 
         # Verify the persistent service can authenticate without the root secret
         # before touching scanner configuration.
@@ -131,13 +216,27 @@ def migrate(env_path: Path = DEFAULT_ENV_PATH) -> None:
 
         # Import only after environment setup so database and encryption modules
         # bind to the dedicated account and the persistent application secret.
-        import database.db as database_db
-        from scanner_integration.config_bridge import get_scan_config
+        original_db_user = os.environ.get("DB_USER")
+        original_db_password = os.environ.get("DB_PASSWORD")
+        database_db = None
+        previous_db_config = None
+        try:
+            os.environ["DB_USER"] = app_user
+            os.environ["DB_PASSWORD"] = app_password
+            import database.db as database_db
+            from scanner_integration import config_bridge
 
-        database_db._db_config = None
-        database_db._reset_thread_conn()
-        get_scan_config()
-        database_db._reset_thread_conn()
+            previous_db_config = database_db._db_config
+            database_db._db_config = None
+            database_db._reset_thread_conn()
+            database_db.init_db()
+            config_bridge.migrate_stored_api_keys()
+        finally:
+            if database_db is not None:
+                database_db._reset_thread_conn()
+                database_db._db_config = previous_db_config
+            _restore_environment("DB_USER", original_db_user)
+            _restore_environment("DB_PASSWORD", original_db_password)
     except BaseException:
         if created_user and root_connection is not None and account:
             try:
@@ -164,13 +263,25 @@ def main() -> int:
         default=DEFAULT_ENV_PATH,
         help="deployment env file (default: repository .env)",
     )
+    parser.add_argument(
+        "--environment-only",
+        action="store_true",
+        help=(
+            "read all values from the process environment without opening or "
+            "writing an env file (used by the read-only Compose migration service)"
+        ),
+    )
     args = parser.parse_args()
     try:
-        migrate(args.env_file.resolve())
+        migrate(
+            args.env_file.resolve(),
+            environment_only=args.environment_only,
+        )
     except Exception as exc:
         print(f"2.0 migration failed: {exc}", file=sys.stderr)
         return 1
     print("2.0 migration completed: dedicated DB user verified and API keys secured.")
+    print("Now run python generate_env.py --finalize-upgrade before starting the app.")
     return 0
 
 

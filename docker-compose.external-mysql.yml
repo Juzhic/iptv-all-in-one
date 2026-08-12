@@ -11,29 +11,39 @@ services:
     environment:
       DB_HOST: ${DB_HOST:?Set DB_HOST in .env}
       DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:?Set a dedicated non-root DB_USER in .env}
-      DB_PASSWORD: ${DB_PASSWORD:?Run python generate_env.py or set DB_PASSWORD}
+      # Preserve the 1.x defaults for existing external-MySQL deployments.
+      # New environments generated for 2.x explicitly use a dedicated user.
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: ${DB_NAME:-iptv-all-in-one}
       DB_CHARSET: ${DB_CHARSET:-utf8mb4}
       IPTV_AUTH_USERNAME: ${IPTV_AUTH_USERNAME:-admin}
-      IPTV_AUTH_PASSWORD: ${IPTV_AUTH_PASSWORD:?Run python generate_env.py first}
+      IPTV_AUTH_PASSWORD: ${IPTV_AUTH_PASSWORD:-}
       IPTV_AUTH_REALM: ${IPTV_AUTH_REALM:-iptv-all-in-one}
-      IPTV_SECRET_KEY: ${IPTV_SECRET_KEY:?Run python generate_env.py first}
+      IPTV_SECRET_KEY: ${IPTV_SECRET_KEY:-}
       IPTV_TRUSTED_ORIGINS: ${IPTV_TRUSTED_ORIGINS:-}
       IPTV_INSECURE_TLS_HOSTS: ${IPTV_INSECURE_TLS_HOSTS:-}
       IPTV_OUTPUT_DIR: /app/output
-      IPTV_REQUIRE_STRONG_CREDENTIALS: "1"
+      IPTV_REQUIRE_STRONG_CREDENTIALS: ${IPTV_REQUIRE_STRONG_CREDENTIALS:-0}
       TZ: Asia/Shanghai
     volumes:
       - app_data:/app/data
       - app_output:/app/output
-    read_only: true
+    # Preserve write access for existing 1.x bind mounts/volumes by default.
+    # Harden explicitly after changing their owner to UID/GID 10001.
+    user: ${IPTV_CONTAINER_USER:-root}
+    read_only: ${IPTV_HARDENED_CONTAINER:-false}
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777
     security_opt:
       - no-new-privileges:true
+    # Keep only the capability needed by compatibility root to reuse either
+    # root-owned 1.x mounts or UID-10001-owned early-2.0 volumes. Fresh
+    # deployments run as UID 10001, so this capability is not effective there.
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_OVERRIDE
     init: true
     restart: unless-stopped
 

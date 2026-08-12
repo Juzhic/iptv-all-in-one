@@ -45,6 +45,21 @@ def _new_secret(byte_count: int = 32) -> str:
     return secrets.token_urlsafe(byte_count)
 
 
+def _is_strong_secret(value: str, minimum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) >= minimum
+        and value == value.strip()
+        and len(set(value)) >= 4
+    )
+
+
+def _validate_account_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.:%-]{1,255}", name)) and (
+        name.casefold() != "root"
+    )
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -91,30 +106,57 @@ def generate_env_values(
 
     db_user = values.get("DB_USER", "").strip()
     existing_db_password = values.get("DB_PASSWORD", "")
+    fresh_install = not env_exists or not existing_db_password
     legacy_root_only = (
         env_exists
         and bool(existing_db_password)
         and (not db_user or db_user.casefold() == "root")
     )
-    if legacy_root_only and not upgrade:
+    pending_user = values.get("IPTV_MIGRATION_DB_USER", "").strip()
+    pending_password = values.get("IPTV_MIGRATION_DB_PASSWORD", "")
+    staged_upgrade = legacy_root_only and bool(pending_user and pending_password)
+    if legacy_root_only and not upgrade and not staged_upgrade:
+        # Pulling a new checkout must not make the historical one-argument
+        # generator destructive. Treat a plain invocation as a compatibility
+        # no-op when the legacy password is already usable; the explicit
+        # --upgrade path below stages all new 2.0 values.
+        if not force:
+            return values
         raise RuntimeError(
-            "Legacy root-only .env detected; run generate_env.py --upgrade "
-            "so the existing root password is preserved safely"
+            "Legacy root-only .env detected; use --upgrade instead of --force "
+            "so the existing root password remains usable"
         )
     if legacy_root_only:
-        # docker-compose 1.x used DB_PASSWORD as MYSQL_ROOT_PASSWORD. Preserve
-        # that exact value for the already-initialized MySQL volume, then issue
-        # a distinct new password for the dedicated application account.
+        # Stage the new account without changing the active 1.x connection.
+        # migrate_2_0.py switches DB_USER/DB_PASSWORD only after verification.
         values["MYSQL_ROOT_PASSWORD"] = existing_db_password
         text = _replace_or_append(
             text, "MYSQL_ROOT_PASSWORD", existing_db_password
         )
-        values["DB_PASSWORD"] = _new_secret()
-        text = _replace_or_append(text, "DB_PASSWORD", values["DB_PASSWORD"])
+        values["IPTV_MIGRATION_DB_USER"] = pending_user or "iptv_app"
+        text = _replace_or_append(
+            text, "IPTV_MIGRATION_DB_USER", values["IPTV_MIGRATION_DB_USER"]
+        )
+        values["IPTV_MIGRATION_DB_PASSWORD"] = pending_password or _new_secret()
+        text = _replace_or_append(
+            text,
+            "IPTV_MIGRATION_DB_PASSWORD",
+            values["IPTV_MIGRATION_DB_PASSWORD"],
+        )
+        values["IPTV_REQUIRE_STRONG_CREDENTIALS"] = "0"
+        text = _replace_or_append(text, "IPTV_REQUIRE_STRONG_CREDENTIALS", "0")
+        values["IPTV_CONTAINER_USER"] = "root"
+        text = _replace_or_append(text, "IPTV_CONTAINER_USER", "root")
+        values["IPTV_HARDENED_CONTAINER"] = "false"
+        text = _replace_or_append(text, "IPTV_HARDENED_CONTAINER", "false")
 
-    if not db_user or db_user.casefold() == "root":
+    if (not db_user or db_user.casefold() == "root") and not legacy_root_only:
         values["DB_USER"] = "iptv_app"
         text = _replace_or_append(text, "DB_USER", values["DB_USER"])
+
+    if not values.get("MYSQL_INIT_USER", "").strip():
+        values["MYSQL_INIT_USER"] = "iptv_app"
+        text = _replace_or_append(text, "MYSQL_INIT_USER", values["MYSQL_INIT_USER"])
 
     if not values.get("IPTV_AUTH_USERNAME", "").strip():
         values["IPTV_AUTH_USERNAME"] = "admin"
@@ -122,12 +164,41 @@ def generate_env_values(
             text, "IPTV_AUTH_USERNAME", values["IPTV_AUTH_USERNAME"]
         )
 
-    for key in _ROTATABLE_CREDENTIAL_KEYS:
+    credential_keys = _ROTATABLE_CREDENTIAL_KEYS
+    if legacy_root_only:
+        credential_keys = ("IPTV_AUTH_PASSWORD",)
+    for key in credential_keys:
         current = values.get(key, "")
         if force or not current:
             current = _new_secret()
             values[key] = current
             text = _replace_or_append(text, key, current)
+
+    init_password = values.get("IPTV_MIGRATION_DB_PASSWORD") or values["DB_PASSWORD"]
+    values["MYSQL_INIT_PASSWORD"] = init_password
+    text = _replace_or_append(text, "MYSQL_INIT_PASSWORD", values["MYSQL_INIT_PASSWORD"])
+
+    if not legacy_root_only:
+        # A fresh or already-migrated env can fail closed immediately.
+        values["IPTV_REQUIRE_STRONG_CREDENTIALS"] = "1"
+        text = _replace_or_append(text, "IPTV_REQUIRE_STRONG_CREDENTIALS", "1")
+        if fresh_install:
+            values["IPTV_CONTAINER_USER"] = "10001:10001"
+            values["IPTV_HARDENED_CONTAINER"] = "true"
+        else:
+            # Existing dedicated-account deployments may still use old
+            # root-owned volumes. Preserve an operator's explicit choice and
+            # default missing runtime flags to compatibility, not breakage.
+            values.setdefault("IPTV_CONTAINER_USER", "root")
+            values.setdefault("IPTV_HARDENED_CONTAINER", "false")
+        text = _replace_or_append(
+            text, "IPTV_CONTAINER_USER", values["IPTV_CONTAINER_USER"]
+        )
+        text = _replace_or_append(
+            text,
+            "IPTV_HARDENED_CONTAINER",
+            values["IPTV_HARDENED_CONTAINER"],
+        )
 
     # Never rotate this key implicitly, including under --force.
     if not values.get("IPTV_SECRET_KEY", ""):
@@ -136,7 +207,7 @@ def generate_env_values(
             text, "IPTV_SECRET_KEY", values["IPTV_SECRET_KEY"]
         )
 
-    if values["MYSQL_ROOT_PASSWORD"] == values["DB_PASSWORD"]:
+    if not legacy_root_only and values["MYSQL_ROOT_PASSWORD"] == values["DB_PASSWORD"]:
         if not force:
             raise RuntimeError(
                 "MYSQL_ROOT_PASSWORD and DB_PASSWORD must differ; use --force "
@@ -150,6 +221,136 @@ def generate_env_values(
 
     _atomic_write(ENV_PATH, text)
     return values
+
+
+def finalize_upgrade() -> dict[str, str]:
+    """Activate a verified staged DB account without rotating any secret."""
+    if not ENV_PATH.exists():
+        raise FileNotFoundError(f"Missing {ENV_PATH}; run --upgrade first")
+    text = ENV_PATH.read_text(encoding="utf-8-sig")
+    values = _parse_values(text)
+    app_user = values.get("IPTV_MIGRATION_DB_USER", "").strip()
+    app_password = values.get("IPTV_MIGRATION_DB_PASSWORD", "")
+    if (
+        not _validate_account_name(app_user)
+        or len(app_password) < 16
+        or app_password != app_password.strip()
+        or len(set(app_password)) < 4
+    ):
+        raise RuntimeError(
+            "No staged application account found; run --upgrade and the "
+            "migrate-2-0 service successfully before --finalize-upgrade"
+        )
+    required_strong = (
+        ("IPTV_AUTH_PASSWORD", 16),
+        ("IPTV_SECRET_KEY", 32),
+    )
+    missing_or_weak = [
+        name for name, minimum in required_strong
+        if not _is_strong_secret(values.get(name, ""), minimum)
+    ]
+    if missing_or_weak:
+        raise RuntimeError(
+            "Cannot enable strict mode; missing or weak staged credentials: "
+            + ", ".join(missing_or_weak)
+        )
+    root_password = values.get("MYSQL_ROOT_PASSWORD", "")
+    if root_password and root_password == app_password:
+        raise RuntimeError(
+            "Cannot enable strict mode because MYSQL_ROOT_PASSWORD and the "
+            "staged application password are identical"
+        )
+    text = _replace_or_append(text, "DB_USER", app_user)
+    text = _replace_or_append(text, "DB_PASSWORD", app_password)
+    text = _replace_or_append(text, "MYSQL_INIT_USER", app_user)
+    text = _replace_or_append(text, "MYSQL_INIT_PASSWORD", app_password)
+    text = _replace_or_append(text, "IPTV_MIGRATION_DB_USER", "")
+    text = _replace_or_append(text, "IPTV_MIGRATION_DB_PASSWORD", "")
+    text = _replace_or_append(text, "IPTV_REQUIRE_STRONG_CREDENTIALS", "1")
+    # Do not switch the container user automatically. Existing 1.x bind mounts
+    # or named volumes may still be root-owned; changing the database account
+    # must not make output/data unwritable in the same step.
+    _atomic_write(ENV_PATH, text)
+    return _parse_values(text)
+
+
+def recover_interrupted_early_upgrade() -> dict[str, str]:
+    """Restore the reversible staging layout used by fixed 2.0 upgrades.
+
+    The first 2.0 generator changed active DB_USER/DB_PASSWORD before the
+    dedicated MySQL account was proven to exist. Its output is recoverable
+    when MYSQL_ROOT_PASSWORD still contains the old 1.x root password: stage
+    the premature app pair, then reactivate root until migrate/finalize runs.
+    """
+    if not ENV_PATH.exists():
+        raise FileNotFoundError(f"Missing {ENV_PATH}; restore the 1.x backup first")
+    text = ENV_PATH.read_text(encoding="utf-8-sig")
+    values = _parse_values(text)
+    app_user = values.get("DB_USER", "").strip()
+    app_password = values.get("DB_PASSWORD", "")
+    root_password = values.get("MYSQL_ROOT_PASSWORD", "")
+    if (
+        not _validate_account_name(app_user)
+        or not _is_strong_secret(app_password, 16)
+        or not root_password
+        or root_password == app_password
+    ):
+        raise RuntimeError(
+            "Cannot recognize a recoverable early-2.0 upgrade; restore the "
+            "pre-upgrade .env backup instead"
+        )
+    pending_user = values.get("IPTV_MIGRATION_DB_USER", "").strip()
+    pending_password = values.get("IPTV_MIGRATION_DB_PASSWORD", "")
+    if (pending_user or pending_password) and (
+        pending_user != app_user or pending_password != app_password
+    ):
+        raise RuntimeError(
+            "Different staged credentials already exist; refusing to overwrite them"
+        )
+
+    text = _replace_or_append(text, "IPTV_MIGRATION_DB_USER", app_user)
+    text = _replace_or_append(text, "IPTV_MIGRATION_DB_PASSWORD", app_password)
+    text = _replace_or_append(text, "MYSQL_INIT_USER", app_user)
+    text = _replace_or_append(text, "MYSQL_INIT_PASSWORD", app_password)
+    text = _replace_or_append(text, "DB_USER", "root")
+    text = _replace_or_append(text, "DB_PASSWORD", root_password)
+    text = _replace_or_append(text, "IPTV_REQUIRE_STRONG_CREDENTIALS", "0")
+    text = _replace_or_append(text, "IPTV_CONTAINER_USER", "root")
+    text = _replace_or_append(text, "IPTV_HARDENED_CONTAINER", "false")
+    _atomic_write(ENV_PATH, text)
+    return _parse_values(text)
+
+
+def enable_container_hardening() -> dict[str, str]:
+    """Opt into the non-root/read-only runtime after volume ownership checks."""
+    if not ENV_PATH.exists():
+        raise FileNotFoundError(f"Missing {ENV_PATH}; generate deployment credentials first")
+    text = ENV_PATH.read_text(encoding="utf-8-sig")
+    values = _parse_values(text)
+    db_user = values.get("DB_USER", "").strip()
+    if not _validate_account_name(db_user):
+        raise RuntimeError(
+            "Container hardening requires an active dedicated non-root DB_USER"
+        )
+    required_strong = (
+        ("DB_PASSWORD", 16),
+        ("IPTV_AUTH_PASSWORD", 16),
+        ("IPTV_SECRET_KEY", 32),
+    )
+    missing_or_weak = [
+        name for name, minimum in required_strong
+        if not _is_strong_secret(values.get(name, ""), minimum)
+    ]
+    if missing_or_weak:
+        raise RuntimeError(
+            "Cannot harden container with missing or weak credentials: "
+            + ", ".join(missing_or_weak)
+        )
+    text = _replace_or_append(text, "IPTV_CONTAINER_USER", "10001:10001")
+    text = _replace_or_append(text, "IPTV_HARDENED_CONTAINER", "true")
+    text = _replace_or_append(text, "IPTV_REQUIRE_STRONG_CREDENTIALS", "1")
+    _atomic_write(ENV_PATH, text)
+    return _parse_values(text)
 
 
 def generate_env(force: bool = False, upgrade: bool = False) -> str:
@@ -178,13 +379,52 @@ def main() -> None:
             "MYSQL_ROOT_PASSWORD and generating a dedicated app password"
         ),
     )
+    modes.add_argument(
+        "--finalize-upgrade",
+        action="store_true",
+        help=(
+            "activate the staged application DB account after migrate-2-0 "
+            "completed successfully"
+        ),
+    )
+    modes.add_argument(
+        "--recover-interrupted-upgrade",
+        action="store_true",
+        help=(
+            "recover an .env modified by the original 2.0 --upgrade before "
+            "the dedicated database account was created"
+        ),
+    )
+    modes.add_argument(
+        "--enable-container-hardening",
+        action="store_true",
+        help=(
+            "opt into UID 10001 and a read-only root filesystem after data "
+            "and output volume ownership has been verified"
+        ),
+    )
     args = parser.parse_args()
 
-    generate_env(force=args.force, upgrade=args.upgrade)
+    if args.finalize_upgrade:
+        finalize_upgrade()
+    elif args.recover_interrupted_upgrade:
+        recover_interrupted_early_upgrade()
+    elif args.enable_container_hardening:
+        enable_container_hardening()
+    else:
+        generate_env(force=args.force, upgrade=args.upgrade)
     print(f"Generated {ENV_PATH} atomically.")
     print("Deployment credentials were written without printing their values.")
     if args.upgrade:
-        print("Next, run the one-time migrate_2_0.py command to create the app user and encrypt legacy API keys.")
+        print("Active 1.x DB credentials were preserved for rollback.")
+        print("Next, run migrate-2-0; only then run --finalize-upgrade.")
+    if args.finalize_upgrade:
+        print("The verified application DB account is now active and strict mode is enabled.")
+    if args.recover_interrupted_upgrade:
+        print("Interrupted early-2.0 credentials were restored to staged migration mode.")
+        print("Next, run migrate-2-0; only then run --finalize-upgrade.")
+    if args.enable_container_hardening:
+        print("Container hardening is enabled; rebuild the application container.")
 
 
 if __name__ == "__main__":

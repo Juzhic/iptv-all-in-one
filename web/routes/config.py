@@ -254,11 +254,19 @@ def api_config_security_status():
                 continue
         hosts.append(host)
     hosts = sorted(set(hosts))
+    from scanner_integration.secure_keys import secret_is_configured
+    from web.app import _env_flag, _runtime_credential_problems
+
+    credential_warnings = _runtime_credential_problems()
     return jsonify({
         'ok': True,
         'data': {
             'insecure_tls_hosts_enabled': bool(hosts),
             'insecure_tls_hosts': hosts,
+            'strict_credentials': _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS'),
+            'credential_warnings': credential_warnings,
+            'legacy_compatibility_mode': bool(credential_warnings),
+            'api_key_encryption_enabled': secret_is_configured(),
         },
     })
 
@@ -381,8 +389,8 @@ def _prepare_scan_config_for_storage(imported):
         DEFAULT_SCAN_CONFIG,
         _API_KEY_PLATFORMS,
         _decrypt_stored_keys,
-        _encrypt_persisted_keys,
         _normalize_scan_config,
+        _prepare_persisted_config,
         get_scan_config,
     )
     from scanner_integration.secure_keys import SecretConfigurationError
@@ -425,11 +433,9 @@ def _prepare_scan_config_for_storage(imported):
 
     normalized = _normalize_scan_config(merged)
     try:
-        persisted = _encrypt_persisted_keys(normalized)
+        persisted = _prepare_persisted_config(normalized)
     except (SecretConfigurationError, ValueError) as exc:
         raise ConfigValidationError('scan_config 中的 API Key 无法安全加密') from exc
-    for alias in legacy_aliases:
-        persisted.pop(alias, None)
     return json.dumps(persisted, ensure_ascii=False, indent=2)
 
 
