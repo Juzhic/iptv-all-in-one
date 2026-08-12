@@ -10,8 +10,8 @@
       <div class="security-copy">
         <strong>{{ securityTitle }}</strong>
         <p>{{ securityDescription }}</p>
-        <div v-if="securityRisk" class="security-hosts" aria-label="已放宽 TLS 校验的主机">
-          <code v-for="host in securityStatus.insecure_tls_hosts" :key="host">{{ host }}</code>
+        <div v-if="securityRisk" class="security-hosts" aria-label="部署安全告警">
+          <code v-for="warning in securityWarnings" :key="warning">{{ warning }}</code>
         </div>
       </div>
       <t-button size="small" variant="outline" :loading="securityLoading" @click="loadSecurityStatus">刷新状态</t-button>
@@ -43,7 +43,13 @@ const SettingsTab = defineAsyncPage(() => import('./SettingsTab.vue'))
 const ScanConfigTab = defineAsyncPage(() => import('./ScanConfigTab.vue'))
 
 const section = ref('system')
-const securityStatus = ref({ insecure_tls_hosts_enabled: false, insecure_tls_hosts: [] })
+const securityStatus = ref({
+  insecure_tls_hosts_enabled: false,
+  insecure_tls_hosts: [],
+  credential_warnings: [],
+  legacy_compatibility_mode: false,
+  api_key_encryption_enabled: true,
+})
 const securityLoading = ref(true)
 const securityError = ref('')
 let settingsInstance = null
@@ -51,16 +57,26 @@ let scanInstance = null
 
 const activeComponent = computed(() => section.value === 'system' ? SettingsTab : ScanConfigTab)
 const securityRisk = computed(() => Boolean(
-  securityStatus.value?.insecure_tls_hosts_enabled || securityStatus.value?.insecure_tls_hosts?.length,
+  securityStatus.value?.insecure_tls_hosts_enabled ||
+  securityStatus.value?.insecure_tls_hosts?.length ||
+  securityStatus.value?.legacy_compatibility_mode ||
+  securityStatus.value?.api_key_encryption_enabled === false,
 ))
+const securityWarnings = computed(() => [
+  ...(securityStatus.value?.credential_warnings || []),
+  ...(securityStatus.value?.insecure_tls_hosts || []).map(host => `TLS 例外：${host}`),
+  ...(securityStatus.value?.api_key_encryption_enabled === false ? ['扫描 API Key 尚未启用加密'] : []),
+])
 const securityTitle = computed(() => {
   if (securityError.value) return '无法确认部署安全状态'
-  return securityRisk.value ? 'TLS 证书校验已对部分主机放宽' : '外部连接安全策略正常'
+  if (securityStatus.value?.legacy_compatibility_mode) return '正在兼容旧版部署'
+  return securityRisk.value ? '部署存在安全告警' : '外部连接安全策略正常'
 })
 const securityDescription = computed(() => {
   if (securityError.value) return `${securityError.value}。请检查后端连接后重试。`
-  if (securityRisk.value) return '以下主机允许不安全 TLS 连接，存在中间人攻击风险；仅在明确受控的内网环境使用，并尽快恢复证书校验。'
-  return '未配置 IPTV_INSECURE_TLS_HOSTS；此状态只包含布尔值和过滤后的主机名，不展示任何凭据。'
+  if (securityStatus.value?.legacy_compatibility_mode) return '服务已保持可用且不会改写旧凭据。请先备份数据库和 .env，再按迁移文档补齐独立凭据；迁移完成前不要删除旧密码或扫描 Key。'
+  if (securityRisk.value) return '请检查下面的凭据或 TLS 例外。安全状态只显示问题类型和过滤后的主机名，不展示任何秘密值。'
+  return '未检测到弱凭据或 TLS 例外；此状态不会展示任何秘密值。'
 })
 
 function captureChild(instance) {

@@ -5,12 +5,14 @@ __pycache__
 *.pyc
 *.pyo
 .mimocode
+.dumate
 .idea
 .playwright-mcp
 node_modules
 frontend/node_modules
 dist
 output
+nul
 *.log
 tests
 CHANGELOG.md

@@ -102,6 +102,123 @@ def _make_app(monkeypatch):
     return app
 
 
+def test_legacy_credentials_warn_without_blocking_startup(monkeypatch, caplog):
+    monkeypatch.setenv('DB_USER', 'root')
+    monkeypatch.setenv('DB_PASSWORD', 'legacy')
+    monkeypatch.setenv('IPTV_SECRET_KEY', '')
+    monkeypatch.delenv('IPTV_REQUIRE_STRONG_CREDENTIALS', raising=False)
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_PASSWORD', 'legacy')
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_TEMPORARY_PASSWORD', False)
+
+    problems = web_app_module._validate_runtime_credentials()
+
+    assert 'DB_USER 必须是专用的非 root 用户' in problems
+    assert 'IPTV_AUTH_PASSWORD 必须是至少 16 位的强密码' in problems
+    assert 'IPTV_SECRET_KEY 必须是至少 32 位的强随机值' in problems
+    assert '服务继续启动' in caplog.text
+
+
+def test_explicit_strict_credentials_warn_without_blocking_upgrade(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv('DB_USER', 'root')
+    monkeypatch.setenv('DB_PASSWORD', 'legacy')
+    monkeypatch.setenv('IPTV_SECRET_KEY', '')
+    monkeypatch.setenv('IPTV_REQUIRE_STRONG_CREDENTIALS', '1')
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_PASSWORD', 'legacy')
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_TEMPORARY_PASSWORD', False)
+
+    problems = web_app_module._validate_runtime_credentials()
+
+    assert problems
+    assert '已请求严格凭据模式，但为避免升级中断' in caplog.text
+
+
+def test_missing_basic_auth_uses_temporary_password_even_with_stale_strict_flag(
+    monkeypatch, local_tmp_path, caplog,
+):
+    missing_file = local_tmp_path / 'missing-basic-auth.json'
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_CONFIG_FILE', str(missing_file))
+    monkeypatch.setenv('IPTV_REQUIRE_STRONG_CREDENTIALS', '1')
+    monkeypatch.delenv('IPTV_AUTH_PASSWORD', raising=False)
+
+    config = web_app_module._load_basic_auth_config()
+
+    assert config['username'] == 'admin'
+    assert len(config['password']) >= 32
+    assert config['_temporary_password'] is True
+    assert '本次进程使用临时凭据' in caplog.text
+
+
+def test_temporary_basic_auth_is_reported_as_unconfigured(monkeypatch):
+    monkeypatch.setenv('DB_USER', 'iptv_app')
+    monkeypatch.setenv('DB_PASSWORD', 'strong-app-password-1234')
+    monkeypatch.setenv('IPTV_SECRET_KEY', 'stable-secret-' + 'x' * 40)
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_PASSWORD', 'random-temporary-password-1234')
+    monkeypatch.setattr(web_app_module, 'BASIC_AUTH_TEMPORARY_PASSWORD', True)
+
+    problems = web_app_module._runtime_credential_problems()
+
+    assert problems == ['IPTV_AUTH_PASSWORD 必须是至少 16 位的强密码']
+
+
+def test_docker_defaults_do_not_block_legacy_compose_startup():
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / 'Dockerfile').read_text(encoding='utf-8')
+    compose = (root / 'docker-compose.yml').read_text(encoding='utf-8')
+    external_compose = (
+        root / 'docker-compose.external-mysql.yml'
+    ).read_text(encoding='utf-8')
+
+    assert 'IPTV_REQUIRE_STRONG_CREDENTIALS=1' not in dockerfile
+    assert 'DB_USER=iptv_app' not in dockerfile
+    assert 'USER 10001:10001' in dockerfile
+    assert 'chown -R iptv:root /app/data /app/output' in dockerfile
+    assert 'chmod 0770 /app/data /app/output' in dockerfile
+    assert (
+        'IPTV_REQUIRE_STRONG_CREDENTIALS: '
+        '${IPTV_REQUIRE_STRONG_CREDENTIALS:-0}'
+    ) in compose
+    assert (
+        'IPTV_REQUIRE_STRONG_CREDENTIALS: '
+        '${IPTV_REQUIRE_STRONG_CREDENTIALS:-0}'
+    ) in external_compose
+    assert 'DB_USER: ${DB_USER:-root}' in compose
+    assert 'DB_USER: ${DB_USER:-root}' in external_compose
+    assert 'DB_PASSWORD: ${DB_PASSWORD:-}' in external_compose
+    for compose_text in (compose, external_compose):
+        assert 'user: ${IPTV_CONTAINER_USER:-root}' in compose_text
+        assert 'read_only: ${IPTV_HARDENED_CONTAINER:-false}' in compose_text
+        application_service = compose_text.split('  iptv-all-in-one:', 1)[1]
+        if '  migrate-2-0:' in application_service:
+            application_service = application_service.split('  migrate-2-0:', 1)[0]
+        assert 'cap_drop:\n      - ALL' in application_service
+        assert 'cap_add:\n      - DAC_OVERRIDE' in application_service
+
+    legacy_optional_values = (
+        'IPTV_MIGRATION_DB_USER',
+        'IPTV_MIGRATION_DB_PASSWORD',
+        'MYSQL_ROOT_PASSWORD',
+        'IPTV_AUTH_PASSWORD',
+        'IPTV_SECRET_KEY',
+    )
+    migration_service = compose.split('  migrate-2-0:', 1)[1]
+    for name in legacy_optional_values:
+        assert f'${{{name}:-}}' in migration_service
+        assert '${' + name + ':?' not in migration_service
+
+
+def test_wsgi_startup_keeps_legacy_database_errors_non_fatal():
+    root = Path(__file__).resolve().parents[1]
+    startup = (root / 'web' / '__init__.py').read_text(encoding='utf-8')
+
+    assert 'db.init_db()' in startup
+    init_handler = startup.split('db.init_db()', 1)[1].split('else:', 1)[0]
+    assert '兼容模式继续启动' in init_handler
+    assert '\n        raise' not in init_handler
+    assert '扫描 API Key 读取或迁移未完成，兼容模式继续启动' in startup
+
+
 def test_output_paths_are_fixed_and_web_fields_are_removed(monkeypatch, local_tmp_path):
     monkeypatch.setenv('IPTV_OUTPUT_DIR', str(local_tmp_path))
     paths = test_engine.get_output_paths()
@@ -204,6 +321,25 @@ def test_scan_config_import_encrypts_keys_before_transaction(monkeypatch):
     assert 'plain-hunter-secret' not in serialized
     assert stored['quake_api_keys'][0].startswith('enc:v1:')
     assert stored['hunter_api_keys'][0].startswith('enc:v1:')
+
+
+def test_scan_config_import_preserves_legacy_keys_without_secret(monkeypatch):
+    from scanner_integration import config_bridge
+
+    monkeypatch.setenv('IPTV_SECRET_KEY', '')
+    monkeypatch.setattr(config_bridge, 'get_scan_config', lambda: {
+        'quake_api_keys': ['legacy-plain-key'],
+        'quake_api_key': 'legacy-plain-key',
+    })
+
+    entries = config_routes._prepare_import_entries({
+        'schema_version': 2,
+        'scan_config': {'quake_size': 321},
+    })
+    stored = json.loads(dict(entries)['scan_config'])
+
+    assert stored['quake_api_keys'] == ['legacy-plain-key']
+    assert stored['quake_size'] == 321
 
 
 def test_scan_config_export_contains_counts_but_no_key_material(monkeypatch):
@@ -353,10 +489,9 @@ def test_insecure_tls_status_exposes_only_filtered_hosts(monkeypatch):
         '/api/config/security-status', headers=_auth_headers()
     )
     assert response.status_code == 200
-    assert response.get_json()['data'] == {
-        'insecure_tls_hosts_enabled': True,
-        'insecure_tls_hosts': ['10.0.0.8', 'example.com'],
-    }
+    data = response.get_json()['data']
+    assert data['insecure_tls_hosts_enabled'] is True
+    assert data['insecure_tls_hosts'] == ['10.0.0.8', 'example.com']
 
 
 def test_m3u_output_cannot_inject_attributes_or_lines(local_tmp_path):
@@ -431,7 +566,9 @@ def test_each_cycle_resets_timed_out_regex_rules(monkeypatch):
     assert calls == [1]
 
 
-def test_generate_env_preserves_values_and_fills_all_secrets(monkeypatch, local_tmp_path):
+def test_generate_env_stages_legacy_upgrade_then_finalizes_atomically(
+    monkeypatch, local_tmp_path,
+):
     env_path = local_tmp_path / '.env'
     example_path = local_tmp_path / '.env.example'
     example_path.write_text(
@@ -447,8 +584,9 @@ def test_generate_env_preserves_values_and_fills_all_secrets(monkeypatch, local_
     monkeypatch.setattr(env_generator, 'EXAMPLE_PATH', example_path)
 
     original = env_path.read_text(encoding='utf-8')
-    with pytest.raises(RuntimeError, match='--upgrade'):
-        env_generator.generate_env_values()
+    untouched = env_generator.generate_env_values()
+    assert untouched['DB_USER'] == 'root'
+    assert untouched['DB_PASSWORD'] == 'existing-db-password-123'
     assert env_path.read_text(encoding='utf-8') == original
 
     first = env_generator.generate_env_values(upgrade=True)
@@ -456,17 +594,143 @@ def test_generate_env_preserves_values_and_fills_all_secrets(monkeypatch, local_
 
     assert first == second
     assert first['MYSQL_ROOT_PASSWORD'] == 'existing-db-password-123'
-    assert first['DB_PASSWORD'] != 'existing-db-password-123'
-    assert first['DB_USER'] == 'iptv_app'
-    assert first['MYSQL_ROOT_PASSWORD'] != first['DB_PASSWORD']
+    assert first['DB_PASSWORD'] == 'existing-db-password-123'
+    assert first['DB_USER'] == 'root'
+    assert first['IPTV_MIGRATION_DB_USER'] == 'iptv_app'
+    assert first['IPTV_MIGRATION_DB_PASSWORD'] != first['DB_PASSWORD']
+    assert len(first['IPTV_MIGRATION_DB_PASSWORD']) >= 32
+    assert first['MYSQL_INIT_USER'] == 'iptv_app'
+    assert first['MYSQL_INIT_PASSWORD'] == first['IPTV_MIGRATION_DB_PASSWORD']
+    assert first['IPTV_REQUIRE_STRONG_CREDENTIALS'] == '0'
+    assert first['IPTV_CONTAINER_USER'] == 'root'
+    assert first['IPTV_HARDENED_CONTAINER'] == 'false'
     assert len(first['IPTV_AUTH_PASSWORD']) >= 32
     assert len(first['IPTV_SECRET_KEY']) >= 48
     assert 'DB_HOST=db.internal' in env_path.read_text(encoding='utf-8')
     assert not list(local_tmp_path.glob('..env.*'))
 
-    original_secret = first['IPTV_SECRET_KEY']
+    finalized = env_generator.finalize_upgrade()
+    assert finalized['DB_USER'] == first['IPTV_MIGRATION_DB_USER']
+    assert finalized['DB_PASSWORD'] == first['IPTV_MIGRATION_DB_PASSWORD']
+    assert finalized['MYSQL_ROOT_PASSWORD'] == 'existing-db-password-123'
+    assert finalized['IPTV_MIGRATION_DB_USER'] == ''
+    assert finalized['IPTV_MIGRATION_DB_PASSWORD'] == ''
+    assert finalized['IPTV_REQUIRE_STRONG_CREDENTIALS'] == '1'
+    assert finalized['IPTV_CONTAINER_USER'] == 'root'
+    assert finalized['IPTV_HARDENED_CONTAINER'] == 'false'
+    assert finalized['IPTV_SECRET_KEY'] == first['IPTV_SECRET_KEY']
+
+    stable = env_generator.generate_env_values()
+    assert stable == finalized
+
     forced = env_generator.generate_env_values(force=True)
-    assert forced['IPTV_SECRET_KEY'] == original_secret
+    assert forced['IPTV_SECRET_KEY'] == first['IPTV_SECRET_KEY']
+    assert forced['DB_PASSWORD'] != finalized['DB_PASSWORD']
+    assert forced['MYSQL_ROOT_PASSWORD'] != forced['DB_PASSWORD']
 
     if os.name != 'nt':
         assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_finalize_upgrade_rejects_missing_staged_credentials_without_writing(
+    monkeypatch, local_tmp_path,
+):
+    env_path = local_tmp_path / '.env'
+    env_path.write_text(
+        'DB_USER=root\nDB_PASSWORD=legacy-root-password\n'
+        'IPTV_REQUIRE_STRONG_CREDENTIALS=0\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+    original = env_path.read_text(encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='No staged application account'):
+        env_generator.finalize_upgrade()
+
+    assert env_path.read_text(encoding='utf-8') == original
+
+
+def test_finalize_upgrade_refuses_to_enable_strict_mode_with_weak_secrets(
+    monkeypatch, local_tmp_path,
+):
+    env_path = local_tmp_path / '.env'
+    env_path.write_text(
+        'MYSQL_ROOT_PASSWORD=legacy-root-password\n'
+        'DB_USER=root\nDB_PASSWORD=legacy-root-password\n'
+        'IPTV_MIGRATION_DB_USER=iptv_app\n'
+        'IPTV_MIGRATION_DB_PASSWORD=staged-app-password-1234\n'
+        'IPTV_AUTH_PASSWORD=short\nIPTV_SECRET_KEY=short\n'
+        'IPTV_REQUIRE_STRONG_CREDENTIALS=0\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+    original = env_path.read_text(encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='Cannot enable strict mode'):
+        env_generator.finalize_upgrade()
+
+    assert env_path.read_text(encoding='utf-8') == original
+
+
+def test_recover_interrupted_early_upgrade_restages_without_rotating_secrets(
+    monkeypatch, local_tmp_path,
+):
+    env_path = local_tmp_path / '.env'
+    env_path.write_text(
+        'MYSQL_ROOT_PASSWORD=legacy-root-password\n'
+        'DB_USER=iptv_app\nDB_PASSWORD=premature-app-password-1234\n'
+        'IPTV_AUTH_PASSWORD=stable-auth-password-1234\n'
+        'IPTV_SECRET_KEY=stable-secret-' + 'x' * 40 + '\n'
+        'IPTV_REQUIRE_STRONG_CREDENTIALS=1\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+
+    recovered = env_generator.recover_interrupted_early_upgrade()
+
+    assert recovered['DB_USER'] == 'root'
+    assert recovered['DB_PASSWORD'] == 'legacy-root-password'
+    assert recovered['IPTV_MIGRATION_DB_USER'] == 'iptv_app'
+    assert recovered['IPTV_MIGRATION_DB_PASSWORD'] == 'premature-app-password-1234'
+    assert recovered['MYSQL_INIT_PASSWORD'] == 'premature-app-password-1234'
+    assert recovered['IPTV_REQUIRE_STRONG_CREDENTIALS'] == '0'
+    assert recovered['IPTV_CONTAINER_USER'] == 'root'
+    assert recovered['IPTV_HARDENED_CONTAINER'] == 'false'
+    assert recovered['IPTV_SECRET_KEY'] == 'stable-secret-' + 'x' * 40
+
+
+def test_recover_interrupted_upgrade_rejects_unrecognized_state_without_write(
+    monkeypatch, local_tmp_path,
+):
+    env_path = local_tmp_path / '.env'
+    env_path.write_text(
+        'DB_USER=root\nDB_PASSWORD=legacy-root-password\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+    original = env_path.read_text(encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='Cannot recognize'):
+        env_generator.recover_interrupted_early_upgrade()
+
+    assert env_path.read_text(encoding='utf-8') == original
+
+
+def test_enable_container_hardening_requires_migrated_credentials(
+    monkeypatch, local_tmp_path,
+):
+    env_path = local_tmp_path / '.env'
+    env_path.write_text(
+        'DB_USER=iptv_app\nDB_PASSWORD=strong-app-password-1234\n'
+        'IPTV_AUTH_PASSWORD=strong-auth-password-1234\n'
+        'IPTV_SECRET_KEY=stable-secret-' + 'x' * 40 + '\n'
+        'IPTV_CONTAINER_USER=root\nIPTV_HARDENED_CONTAINER=false\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(env_generator, 'ENV_PATH', env_path)
+
+    hardened = env_generator.enable_container_hardening()
+
+    assert hardened['IPTV_CONTAINER_USER'] == '10001:10001'
+    assert hardened['IPTV_HARDENED_CONTAINER'] == 'true'
+    assert hardened['IPTV_REQUIRE_STRONG_CREDENTIALS'] == '1'

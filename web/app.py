@@ -217,6 +217,7 @@ BASIC_AUTH_DEFAULT_CONFIG = {
     'username': 'admin',
     'password': '',
     'realm': 'iptv-all-in-one',
+    '_temporary_password': False,
 }
 
 
@@ -264,12 +265,14 @@ def _load_basic_auth_config():
         config['realm'] = env_realm
 
     if not config['password']:
-        if _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS'):
-            raise RuntimeError('IPTV_AUTH_PASSWORD 未设置，拒绝以严格模式启动')
         config['password'] = secrets.token_urlsafe(32)
+        config['_temporary_password'] = True
         logger.warning(
-            '未配置 Web 认证密码；本次进程使用临时随机密码。'
-            '请运行 python generate_env.py 生成持久凭据。'
+            '未配置 Web 认证密码，本次进程使用临时凭据：'
+            '用户名=%s 密码=%s。容器重启后密码会变化，请尽快设置稳定的 '
+            'IPTV_AUTH_PASSWORD。',
+            config['username'],
+            config['password'],
         )
 
     # 检测默认弱密码并警告
@@ -280,6 +283,9 @@ def _load_basic_auth_config():
 
 
 BASIC_AUTH_CONFIG = _load_basic_auth_config()
+BASIC_AUTH_TEMPORARY_PASSWORD = bool(
+    BASIC_AUTH_CONFIG.pop('_temporary_password', False)
+)
 BASIC_AUTH_USER = BASIC_AUTH_CONFIG['username']
 BASIC_AUTH_PASSWORD = BASIC_AUTH_CONFIG['password']
 BASIC_AUTH_REALM = BASIC_AUTH_CONFIG['realm']
@@ -298,11 +304,8 @@ def _is_weak_secret(value, minimum_length):
     return len(set(value)) < 4
 
 
-def _validate_runtime_credentials():
-    """Fail closed in container deployments that opt into strict mode."""
-    if not _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS'):
-        return
-
+def _runtime_credential_problems():
+    """Return non-secret deployment credential findings."""
     problems = []
     db_user = os.environ.get('DB_USER', '')
     db_password = os.environ.get('DB_PASSWORD', '')
@@ -311,7 +314,7 @@ def _validate_runtime_credentials():
         problems.append('DB_USER 必须是专用的非 root 用户')
     if _is_weak_secret(db_password, 16):
         problems.append('DB_PASSWORD 必须是至少 16 位的强密码')
-    if _is_weak_secret(BASIC_AUTH_PASSWORD, 16):
+    if BASIC_AUTH_TEMPORARY_PASSWORD or _is_weak_secret(BASIC_AUTH_PASSWORD, 16):
         problems.append('IPTV_AUTH_PASSWORD 必须是至少 16 位的强密码')
     if _is_weak_secret(secret_key, 32):
         problems.append('IPTV_SECRET_KEY 必须是至少 32 位的强随机值')
@@ -323,8 +326,33 @@ def _validate_runtime_credentials():
         elif db_password and hmac.compare_digest(root_password, db_password):
             problems.append('MYSQL_ROOT_PASSWORD 与 DB_PASSWORD 必须不同')
 
-    if problems:
-        raise RuntimeError('凭据安全检查失败: ' + '; '.join(problems))
+    return problems
+
+
+def _validate_runtime_credentials():
+    """Report credential problems without turning an upgrade into an outage.
+
+    ``IPTV_REQUIRE_STRONG_CREDENTIALS`` was introduced by 2.0 and was also
+    hard-coded by the first 2.0 image/Compose release.  Treating it as a boot
+    gate meant that simply pulling the image could permanently restart-loop a
+    healthy 1.x deployment before the operator had any chance to migrate it.
+    Credential generation and the explicit migration/finalization commands
+    still validate strong values; the long-running service only reports the
+    remaining work.
+    """
+    problems = _runtime_credential_problems()
+    if not problems:
+        return []
+
+    requested_strict = _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS')
+    logger.warning(
+        '%s检测到旧版或弱凭据配置，服务继续启动：%s。'
+        '请备份数据库和 .env 后依次运行 generate_env.py --upgrade、'
+        'migrate-2-0 和 generate_env.py --finalize-upgrade。',
+        '已请求严格凭据模式，但为避免升级中断，' if requested_strict else '兼容模式：',
+        '; '.join(problems),
+    )
+    return problems
 
 
 def _origin_key(value):

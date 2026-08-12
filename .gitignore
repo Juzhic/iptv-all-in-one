@@ -39,3 +39,7 @@ frontend/node_modules/
 
 # 工具生成的目录
 .mimocode/
+.dumate/
+
+# Windows 保留设备名误生成的本地占位文件
+/nul

@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -26,6 +27,7 @@ TOKEN_PREFIX = "enc:v1:"
 KEY_ID_PREFIX = "kid_"
 MIN_SECRET_BYTES = 32
 MAX_API_KEY_LENGTH = 4096
+_LEGACY_KEY_ID_SECRET = secrets.token_bytes(32)
 
 
 class SecretConfigurationError(RuntimeError):
@@ -94,9 +96,19 @@ def key_id(platform: str, value: str) -> str:
     key = (value or "").strip()
     if not platform_name or not key:
         raise ValueError("platform and API key are required")
+    secret = _secret_bytes(required=False)
+    if not secret:
+        # Compatibility mode for 1.x deployments that have not created an
+        # IPTV_SECRET_KEY yet. Use a process-local HMAC so the UI can manage
+        # legacy plaintext keys without exposing a stable cross-deployment
+        # fingerprint. IDs intentionally change after restart or migration.
+        secret = _LEGACY_KEY_ID_SECRET
+        domain = b"iptv-api-key-id-legacy-v1\0"
+    else:
+        domain = b"iptv-api-key-id-v1\0"
     digest = hmac.new(
-        _secret_bytes(),
-        b"iptv-api-key-id-v1\0" + platform_name.encode("utf-8") + b"\0" + key.encode("utf-8"),
+        secret,
+        domain + platform_name.encode("utf-8") + b"\0" + key.encode("utf-8"),
         hashlib.sha256,
     ).digest()[:18]
     return KEY_ID_PREFIX + base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
