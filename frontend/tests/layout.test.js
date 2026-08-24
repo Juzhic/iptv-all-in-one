@@ -70,7 +70,7 @@ test('data-heavy pages define narrow-screen and local overflow contracts', () =>
     ['src/components/ScanConfigTab.vue', /scan-size-item/, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/],
     ['src/components/SettingsTab.vue', /config-actions :deep\(\.t-space\)/, /@media \(max-width: 768px\)/],
     ['src/components/SourcesTab.vue', /source-table-shell/, /@media \(max-width: 768px\)/],
-    ['src/components/ConfigurationCenter.vue', /security-status/, /@media \(max-width: 768px\)/],
+    ['src/components/ConfigurationCenter.vue', /center-tabs/, /@media \(max-width: 768px\)/],
   ]
 
   for (const [path, layoutPattern, mobilePattern] of contracts) {

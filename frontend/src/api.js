@@ -155,9 +155,6 @@ export function apiGetTasks(opts = {}) {
 export function apiGetConfig(opts = {}) {
   return fetchJSON('/api/config', opts)
 }
-export function apiGetConfigSecurityStatus(opts = {}) {
-  return fetchJSON('/api/config/security-status', opts)
-}
 export function apiSaveConfig(data, opts = {}) {
   return postJSON('/api/config', data, opts)
 }
