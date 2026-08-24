@@ -1247,7 +1247,7 @@ async function deleteKey(row) {
   })
 }
 
-defineExpose({ save: saveConfig })
+defineExpose({ save: saveScanConfig })
 
 onMounted(() => {
   loadConfig()

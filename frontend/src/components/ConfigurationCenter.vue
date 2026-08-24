@@ -1,22 +1,5 @@
 <template>
   <div class="configuration-center">
-    <section
-      class="security-status"
-      :class="securityRisk ? 'is-risk' : 'is-safe'"
-      :role="securityRisk || securityError ? 'alert' : 'status'"
-      aria-live="polite"
-    >
-      <div class="security-mark" aria-hidden="true">{{ securityRisk ? '!' : '✓' }}</div>
-      <div class="security-copy">
-        <strong>{{ securityTitle }}</strong>
-        <p>{{ securityDescription }}</p>
-        <div v-if="securityRisk" class="security-hosts" aria-label="部署安全告警">
-          <code v-for="warning in securityWarnings" :key="warning">{{ warning }}</code>
-        </div>
-      </div>
-      <t-button size="small" variant="outline" :loading="securityLoading" @click="loadSecurityStatus">刷新状态</t-button>
-    </section>
-
     <t-card size="small" :bordered="false" class="center-nav workspace-card">
       <div>
         <div class="center-title">配置中心</div>
@@ -35,66 +18,22 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { apiGetConfigSecurityStatus } from '../api.js'
+import { computed, ref } from 'vue'
 import { defineAsyncPage } from '../utils/asyncPage.js'
 
 const SettingsTab = defineAsyncPage(() => import('./SettingsTab.vue'))
 const ScanConfigTab = defineAsyncPage(() => import('./ScanConfigTab.vue'))
 
 const section = ref('system')
-const securityStatus = ref({
-  insecure_tls_hosts_enabled: false,
-  insecure_tls_hosts: [],
-  credential_warnings: [],
-  legacy_compatibility_mode: false,
-  api_key_encryption_enabled: true,
-})
-const securityLoading = ref(true)
-const securityError = ref('')
 let settingsInstance = null
 let scanInstance = null
 
 const activeComponent = computed(() => section.value === 'system' ? SettingsTab : ScanConfigTab)
-const securityRisk = computed(() => Boolean(
-  securityStatus.value?.insecure_tls_hosts_enabled ||
-  securityStatus.value?.insecure_tls_hosts?.length ||
-  securityStatus.value?.legacy_compatibility_mode ||
-  securityStatus.value?.api_key_encryption_enabled === false,
-))
-const securityWarnings = computed(() => [
-  ...(securityStatus.value?.credential_warnings || []),
-  ...(securityStatus.value?.insecure_tls_hosts || []).map(host => `TLS 例外：${host}`),
-  ...(securityStatus.value?.api_key_encryption_enabled === false ? ['扫描 API Key 尚未启用加密'] : []),
-])
-const securityTitle = computed(() => {
-  if (securityError.value) return '无法确认部署安全状态'
-  if (securityStatus.value?.legacy_compatibility_mode) return '正在兼容旧版部署'
-  return securityRisk.value ? '部署存在安全告警' : '外部连接安全策略正常'
-})
-const securityDescription = computed(() => {
-  if (securityError.value) return `${securityError.value}。请检查后端连接后重试。`
-  if (securityStatus.value?.legacy_compatibility_mode) return '服务已保持可用且不会改写旧凭据。请先备份数据库和 .env，再按迁移文档补齐独立凭据；迁移完成前不要删除旧密码或扫描 Key。'
-  if (securityRisk.value) return '请检查下面的凭据或 TLS 例外。安全状态只显示问题类型和过滤后的主机名，不展示任何秘密值。'
-  return '未检测到弱凭据或 TLS 例外；此状态不会展示任何秘密值。'
-})
 
 function captureChild(instance) {
   if (!instance) return
   if (section.value === 'system') settingsInstance = instance
   else scanInstance = instance
-}
-
-async function loadSecurityStatus() {
-  securityLoading.value = true
-  securityError.value = ''
-  try {
-    securityStatus.value = await apiGetConfigSecurityStatus()
-  } catch (error) {
-    securityError.value = error?.message || '安全状态读取失败'
-  } finally {
-    securityLoading.value = false
-  }
 }
 
 async function onSectionChange(next) {
@@ -116,48 +55,16 @@ function save() {
 }
 
 defineExpose({ canLeave, save, section })
-onMounted(loadSecurityStatus)
 </script>
 
 <style scoped>
 .configuration-center { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
-.security-status {
-  display: grid;
-  grid-template-columns: 34px 1fr auto;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, #22c55e 34%, var(--app-border));
-  border-radius: 14px;
-  background: color-mix(in srgb, #22c55e 7%, var(--app-surface));
-}
-.security-status.is-risk {
-  border-color: color-mix(in srgb, #ef4444 45%, var(--app-border));
-  background: color-mix(in srgb, #ef4444 8%, var(--app-surface));
-}
-.security-mark {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: 50%;
-  background: #16a34a;
-  color: #fff;
-  font-weight: 800;
-}
-.is-risk .security-mark { background: #dc2626; }
-.security-copy strong { color: var(--app-text); font-size: 13px; }
-.security-copy p { margin: 4px 0 0; color: var(--app-text-muted); font-size: 11px; line-height: 1.55; }
-.security-hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.security-hosts code { padding: 3px 7px; border-radius: 6px; background: rgb(220 38 38 / 10%); color: #b91c1c; font-size: 11px; }
 .center-nav :deep(.t-card__body) { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 17px; }
 .center-title { color: var(--app-text); font-size: 16px; font-weight: 700; }
 .center-nav p { margin: 4px 0 0; color: var(--app-text-muted); font-size: 11px; }
 .center-tabs { flex: 0 0 auto; min-width: 240px; }
 .center-tabs :deep(.t-tabs__content) { display: none; }
 @media (max-width: 768px) {
-  .security-status { grid-template-columns: 30px 1fr; }
-  .security-status > :deep(.t-button) { grid-column: 1 / -1; }
   .center-nav :deep(.t-card__body) { align-items: stretch; flex-direction: column; }
   .center-tabs { width: 100%; min-width: 0; }
 }
