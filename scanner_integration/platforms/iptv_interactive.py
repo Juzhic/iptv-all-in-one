@@ -22,12 +22,12 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
     if session is None:
         session = get_session(limit=30, force_close=True)
     if query is None:
-        query = 'title:"首页 - IPTV互动电视系统"'
+        query = 'web.title:"首页 - IPTV互动电视系统"'
 
     collected_entries = []
     all_ips = []
     page = 1
-    page_size = 50
+    page_size = min(10, target_size)
     max_pages = 5
     while len(all_ips) < target_size and page <= max_pages:
         try:
