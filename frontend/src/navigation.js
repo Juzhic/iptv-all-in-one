@@ -11,7 +11,7 @@ export const NAV_GROUPS = [
     value: 'quality',
     items: [
       { value: 'scan-results', label: '扫描频道', short: '频', description: '筛选、复检并导出扫描发现的频道地址' },
-      { value: 'sources', label: '订阅源', short: '源', description: '按质量评分查看最新订阅来源及频道覆盖' },
+      { value: 'sources', label: '数据来源', short: '源', description: '按质量评分查看订阅源、扫描平台及频道覆盖' },
       { value: 'detection', label: '检测监控', short: '检', description: '管理定期检测策略并追踪质量变化' },
     ],
   },

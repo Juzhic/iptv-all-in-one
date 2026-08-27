@@ -85,7 +85,7 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
         progress: decided ? goodRate : null,
       },
       {
-        label: '订阅源 / 频道',
+        label: '数据来源 / 频道',
         value: subscription ? `${number(subscription.source_count)} / ${number(subscription.channels_total)}` : '--',
         sub: subscription ? `通过频道 ${number(subscription.channels_passed).toLocaleString()}` : '等待首次系统测试',
         status: subscription ? '最新一轮' : '待采集',
@@ -93,7 +93,7 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
         progress: null,
       },
       {
-        label: '订阅频道通过率',
+        label: '数据来源频道通过率',
         value: subscription ? `${subscriptionRate.toFixed(1)}%` : '--',
         sub: subscription
           ? `${number(subscription.channels_passed).toLocaleString()} / ${number(subscription.channels_total).toLocaleString()} 个频道通过`

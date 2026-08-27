@@ -19,6 +19,10 @@ SOURCE_SORT_COLUMNS = {
     'score': 'score',
 }
 
+UNKNOWN_SOURCE_LABEL = '(未知来源)'
+SCAN_SOURCE_LABEL_PREFIX = db.SCAN_SOURCE_LABEL_PREFIX
+SCAN_SOURCE_PLATFORM_FALLBACK = db.SCAN_SOURCE_PLATFORM_FALLBACK
+
 
 def _number(value, default=0.0):
     try:
@@ -32,6 +36,29 @@ def _integer(value, default=0):
         return int(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _scan_source_label_sql(platform_column):
+    """Build the SQL display label for a stream found in the scan pool."""
+    return f"""CONCAT(
+        '{SCAN_SOURCE_LABEL_PREFIX}',
+        CASE
+          WHEN NULLIF(TRIM({platform_column}), '') IS NULL
+               OR LOWER(TRIM({platform_column})) IN ('unknown', 'n/a', 'na')
+               OR TRIM({platform_column}) = '未知'
+          THEN '{SCAN_SOURCE_PLATFORM_FALLBACK}'
+          ELSE TRIM({platform_column})
+        END
+    )"""
+
+
+def _source_display_sql():
+    """Resolve a stored subscription URL or the scan-pool provenance label."""
+    return f"""COALESCE(
+        NULLIF(TRIM(rr.source_url), ''),
+        CASE WHEN psr.url IS NOT NULL THEN {_scan_source_label_sql('psr.platform')}
+             ELSE '{UNKNOWN_SOURCE_LABEL}' END
+    )"""
 
 
 def calculate_source_score(
@@ -55,8 +82,10 @@ def calculate_source_score(
 def mask_source_url(value):
     """Mask credentials, path and query while retaining a useful source host."""
     raw = (value or '').strip()
-    if not raw or raw == '(未知来源)':
-        return '(未知来源)'
+    if raw.startswith(SCAN_SOURCE_LABEL_PREFIX):
+        return raw
+    if not raw or raw == UNKNOWN_SOURCE_LABEL:
+        return UNKNOWN_SOURCE_LABEL
     try:
         parsed = urlsplit(raw)
         if not parsed.scheme or not parsed.hostname:
@@ -82,15 +111,18 @@ def _template_channel_count():
 
 
 def _source_aggregate_rows(conn, run_id):
+    source_sql = _source_display_sql()
     rows = conn.execute(
-        """SELECT COALESCE(NULLIF(TRIM(source_url), ''), '(未知来源)') AS source_url,
+        f"""SELECT {source_sql} AS source_url,
                   COUNT(DISTINCT channel) AS channels_total,
                   COUNT(DISTINCT CASE WHEN passed=1 THEN channel END) AS channels_passed,
                   AVG(CASE WHEN passed=1 AND bandwidth_MBps > 0 THEN bandwidth_MBps END) AS avg_bandwidth,
                   AVG(CASE WHEN passed=1 AND quality_score > 0 THEN quality_score END) AS avg_quality,
                   AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END) AS h265_ratio
-           FROM run_results WHERE run_id=%s
-           GROUP BY COALESCE(NULLIF(TRIM(source_url), ''), '(未知来源)')""",
+           FROM run_results rr
+           LEFT JOIN persistent_scan_results psr ON psr.url = rr.url
+           WHERE rr.run_id=%s
+           GROUP BY {source_sql}""",
         (run_id,),
     ).fetchall()
     return [dict(row) for row in rows]
@@ -101,7 +133,7 @@ def _decorate_source(row, template_total, reveal_url=False):
     passed = _integer(row.get('channels_passed'))
     avg_bandwidth = round(_number(row.get('avg_bandwidth')), 2)
     avg_quality = round(_number(row.get('avg_quality')), 2)
-    source_url = row.get('source_url') or '(未知来源)'
+    source_url = row.get('source_url') or UNKNOWN_SOURCE_LABEL
     return {
         'source_url': source_url if reveal_url else mask_source_url(source_url),
         'channels_total': total,
@@ -145,8 +177,9 @@ def get_sources_page(
         search_where = "WHERE source_url LIKE %s"
         search_params.append(f'%{search}%')
 
-    aggregate_sql = """SELECT
-            COALESCE(NULLIF(TRIM(source_url), ''), '(未知来源)') AS source_url,
+    source_sql = _source_display_sql()
+    aggregate_sql = f"""SELECT
+            {source_sql} AS source_url,
             COUNT(DISTINCT channel) AS channels_total,
             COUNT(DISTINCT CASE WHEN passed=1 THEN channel END) AS channels_passed,
             CASE WHEN COUNT(DISTINCT channel) > 0
@@ -155,9 +188,10 @@ def get_sources_page(
             COALESCE(AVG(CASE WHEN passed=1 AND bandwidth_MBps > 0 THEN bandwidth_MBps END), 0) AS avg_bandwidth,
             COALESCE(AVG(CASE WHEN passed=1 AND quality_score > 0 THEN quality_score END), 0) AS avg_quality
             ,COALESCE(AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END), 0) AS h265_ratio
-        FROM run_results
-        WHERE run_id=%s
-        GROUP BY COALESCE(NULLIF(TRIM(source_url), ''), '(未知来源)')"""
+        FROM run_results rr
+        LEFT JOIN persistent_scan_results psr ON psr.url = rr.url
+        WHERE rr.run_id=%s
+        GROUP BY {source_sql}"""
     # Score is calculated in SQL so LIMIT/OFFSET apply after score sorting.
     template_denominator = max(template_total, 1)
     score_sql = """(
@@ -241,16 +275,18 @@ def _scan_dashboard(conn, trend_limit):
 
 
 def _subscription_trend(conn, trend_limit):
+    source_sql = _source_display_sql()
     rows = conn.execute(
-        """SELECT recent.run_id, recent.finished_at,
+        f"""SELECT recent.run_id, recent.finished_at,
                   COUNT(DISTINCT CASE WHEN rr.id IS NOT NULL
-                        THEN COALESCE(NULLIF(TRIM(rr.source_url), ''), '(未知来源)') END) AS source_count,
+                        THEN {source_sql} END) AS source_count,
                   COUNT(DISTINCT rr.channel) AS channels_total,
                   COUNT(DISTINCT CASE WHEN rr.passed=1 THEN rr.channel END) AS channels_passed,
                   AVG(CASE WHEN rr.passed=1 AND rr.bandwidth_MBps>0 THEN rr.bandwidth_MBps END) AS avg_bandwidth_MBps,
                   AVG(CASE WHEN rr.passed=1 AND rr.quality_score>0 THEN rr.quality_score END) AS avg_quality
            FROM (SELECT id, run_id, finished_at FROM runs ORDER BY id DESC LIMIT %s) recent
            LEFT JOIN run_results rr ON rr.run_id=recent.run_id
+           LEFT JOIN persistent_scan_results psr ON psr.url=rr.url
            GROUP BY recent.id, recent.run_id, recent.finished_at
            ORDER BY recent.id ASC""",
         (trend_limit,),

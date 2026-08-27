@@ -2,7 +2,7 @@
 
 IPTV 频道测速、扫描与订阅管理工具，支持多 M3U 聚合、FFmpeg 质量检测、频道/IP 扫描、定期复检，以及桌面和移动端 Web 控制台。
 
-当前版本：**2.0.6**。从 1.x 升级请先阅读 [MIGRATING-2.0.md](MIGRATING-2.0.md)，完整版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**2.1.0**。从 1.x 升级请先阅读 [MIGRATING-2.0.md](MIGRATING-2.0.md)，完整版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要功能
 

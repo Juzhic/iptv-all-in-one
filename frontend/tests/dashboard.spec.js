@@ -34,7 +34,7 @@ describe('2.0 dashboard metrics', () => {
     const cards = buildDashboardCards(dashboard, null, 2)
     expect(cards.map(card => card.label)).toEqual([
       '扫描原始数', '扫描去重数', '快速通过数', '深检通过数',
-      '持久池良好率', '订阅源 / 频道', '订阅频道通过率', '订阅平均质量',
+      '持久池良好率', '数据来源 / 频道', '数据来源频道通过率', '订阅平均质量',
     ])
     expect(cards[0]).toMatchObject({ value: '120', sub: '较上轮 +10' })
     expect(cards[1]).toMatchObject({ value: '80', sub: '较上轮 -2' })

@@ -3,8 +3,8 @@
     <t-card size="small" :bordered="false" class="sources-card workspace-card">
       <div class="sources-head">
         <div>
-          <div class="section-title">订阅源质量</div>
-          <p>基于最近一轮测试聚合频道覆盖、通过率、带宽与质量评分。</p>
+          <div class="section-title">数据来源质量</div>
+          <p>基于最近一轮测试，按订阅源或扫描测绘平台聚合频道覆盖、通过率、带宽与质量评分。</p>
         </div>
         <div class="source-meta">
           <t-tag variant="light">共 {{ total }} 个来源</t-tag>
@@ -17,8 +17,8 @@
           v-model="search"
           class="search-input"
           clearable
-          placeholder="搜索订阅源"
-          aria-label="搜索订阅源"
+          placeholder="搜索数据来源"
+          aria-label="搜索数据来源"
           @enter="applyFilters"
           @clear="applyFilters"
         />
@@ -40,7 +40,7 @@
         :loading="loading"
         :error="error"
         :empty="!items.length"
-        empty-title="没有匹配的订阅源"
+        empty-title="没有匹配的数据来源"
         empty-description="调整搜索条件，或先运行一次系统测试。"
         :retry="loadSources"
       >
@@ -98,7 +98,7 @@ let requestController = null
 let requestSeq = 0
 
 const columns = [
-  { colKey: 'source_url', title: '订阅源', width: 300, ellipsis: true },
+  { colKey: 'source_url', title: '数据来源', width: 300, ellipsis: true },
   { colKey: 'channels', title: '通过 / 总频道', width: 130 },
   { colKey: 'pass_rate', title: '通过率', width: 160 },
   { colKey: 'avg_bandwidth', title: '平均带宽', width: 120 },

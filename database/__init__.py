@@ -14,6 +14,9 @@ from database.db import (  # noqa: F401
     timestamp_str,
     LOCAL_TZ,
     DEFAULT_DEMO,
+    SCAN_SOURCE_LABEL_PREFIX,
+    SCAN_SOURCE_PLATFORM_FALLBACK,
+    scan_source_label,
     # 配置
     get_config_data,
     get_config_data_with_mtime,
