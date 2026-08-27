@@ -580,7 +580,7 @@ def api_discover():
         result = discover_channels()
         return jsonify({'ok': True, 'data': result})
     except Exception as e:
-        return jsonify({'ok': False, 'error': f'扫描失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'频道发现失败: {e}'}), 500
 
 
 @config_bp.route('/api/discover/merge', methods=['POST'])

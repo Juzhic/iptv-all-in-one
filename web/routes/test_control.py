@@ -72,7 +72,7 @@ def _monitor_test_task(task_id, owner):
     try:
         _db.heartbeat_task_lease(
             'test', task_id, owner, state='running',
-            lease_seconds=_TEST_LEASE_SECONDS, message='测速进行中',
+            lease_seconds=_TEST_LEASE_SECONDS, message='全量测速进行中',
         )
         while True:
             task = _db.get_task_lease('test')
@@ -103,15 +103,15 @@ def _monitor_test_task(task_id, owner):
             error = _state._test_progress.get('error') or ''
         if task.get('state') == 'stopping':
             _db.finish_task_lease(
-                'test', task_id, state='cancelled', message='测速已停止', error=error
+                'test', task_id, state='cancelled', message='全量测速已停止', error=error
             )
         elif error:
             _db.finish_task_lease(
-                'test', task_id, state='failed', message='测速失败', error=error
+                'test', task_id, state='failed', message='全量测速失败', error=error
             )
         else:
             _db.finish_task_lease(
-                'test', task_id, state='completed', message='测速完成'
+                'test', task_id, state='completed', message='全量测速完成'
             )
     except Exception as exc:
         with _state._test_lock:
@@ -120,7 +120,7 @@ def _monitor_test_task(task_id, owner):
         try:
             _db.finish_task_lease(
                 'test', task_id, state='failed',
-                message='测速监控异常', error=str(exc),
+                message='全量测速监控异常', error=str(exc),
             )
         except Exception:
             pass
@@ -137,23 +137,23 @@ def api_trigger():
     task_id = f"test-{uuid.uuid4().hex}"
     acquired, task = _db.acquire_task_lease(
         'test', task_id, _TEST_TASK_OWNER,
-        lease_seconds=_TEST_LEASE_SECONDS, message='测速等待启动',
+        lease_seconds=_TEST_LEASE_SECONDS, message='全量测速等待启动',
     )
     if not acquired:
         return jsonify({
             'ok': False,
-            'error': '测试正在运行中，请等待完成',
+            'error': '全量测速正在运行中，请等待完成',
             'data': task,
         }), 409
 
     if _start_test_background(trigger_source='web') is None:
         _db.finish_task_lease(
             'test', task_id, state='failed',
-            message='本进程已有测速任务', error='本进程已有测速任务',
+            message='本进程已有全量测速任务', error='本进程已有全量测速任务',
         )
         return jsonify({
             'ok': False,
-            'error': '测试正在运行中，请等待完成',
+            'error': '全量测速正在运行中，请等待完成',
             'data': _db.get_task_lease('test'),
         }), 409
 
@@ -170,16 +170,16 @@ def api_trigger():
             _state._test_stop_event.set()
         _db.finish_task_lease(
             'test', task_id, state='failed',
-            message='测速监控启动失败', error=str(exc),
+            message='全量测速监控启动失败', error=str(exc),
         )
         return jsonify({
             'ok': False,
-            'error': f'测试启动失败: {exc}',
+            'error': f'全量测速启动失败: {exc}',
             'data': _db.get_task_lease('test'),
         }), 500
     return jsonify({
         'ok': True,
-        'message': '测试已启动',
+        'message': '全量测速已启动',
         'task_id': task_id,
         'state': 'starting',
         'data': _db.get_task_lease('test'),
@@ -190,12 +190,12 @@ def api_trigger():
 def api_stop():
     """请求终止当前测试运行。"""
     data = request.get_json(silent=True) or {}
-    msg = data.get('message', '用户手动终止')
+    msg = data.get('message', '用户手动停止全量测速')
     accepted, task = _db.request_task_stop('test', message=msg)
     if not accepted:
         return jsonify({
             'ok': False,
-            'error': '当前没有正在运行的测试',
+            'error': '当前没有正在运行的全量测速',
             'data': task,
         }), 409
     with _state._test_lock:

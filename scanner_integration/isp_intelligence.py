@@ -245,7 +245,7 @@ async def scan_hot_segments(session, limit=None):
     ips_per_segment = max(1, limit // len(hot_segments))
     total_budget = min(limit, ips_per_segment * len(hot_segments))
 
-    logger.info(f"[ISP] 开始扫描 {len(hot_segments)} 个热点段，"
+    logger.info(f"[ISP] 开始探测 {len(hot_segments)} 个热点段，"
                 f"每段 {ips_per_segment} 个 IP，总预算 {total_budget}")
 
     # 生成采样 IP 列表
@@ -297,7 +297,7 @@ async def scan_hot_segments(session, limit=None):
                 ch['scan_source'] = 'ISP Intelligence'
                 discovered.append(ch)
 
-    logger.info(f"[ISP] 扫描完成，检查 {len(sample_ips)} 个 IP，"
+    logger.info(f"[ISP] 探测完成，检查 {len(sample_ips)} 个 IP，"
                 f"发现 {len(discovered)} 个频道")
     return discovered
 

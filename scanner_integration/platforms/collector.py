@@ -427,7 +427,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
             _log(f"[采集] 独立平台完成，本轮获得 {sum(len(r) for r in results)} 条，累计 {len(all_raw)} 条")
 
         # 域名/IP 扫描
-        _log(f"[采集] ({len(all_raw)}条) 开始域名/IP扫描...")
+        _log(f"[采集] ({len(all_raw)}条) 开始域名/IP补探测...")
         try:
             from ..domain_ip_scanner import domain_ip_scan
             domain_entries = await domain_ip_scan(session=scan_session)
@@ -442,9 +442,9 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                             c['platform'] = '域名/IP'
                         all_raw.extend(ch)
                         break
-            _log(f"[采集] 域名/IP扫描 完成，累计 {len(all_raw)} 条")
+            _log(f"[采集] 域名/IP补探测完成，累计 {len(all_raw)} 条")
         except Exception as e:
-            _log(f"[采集] 域名/IP扫描 失败: {e}")
+            _log(f"[采集] 域名/IP补探测失败: {e}")
 
     clean = []
     invalid_url_count = 0
@@ -489,6 +489,6 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     for row in yield_stats:
         stat_key = row.get('stat_key')
         row['cleaned_channels'] = clean_counts.get(stat_key, 0)
-    _log(f"[采集] 全部平台扫描完成，原始 {len(all_raw)} 条，清洗后 {len(clean)} 条")
+    _log(f"[采集] 全部平台采集完成，原始 {len(all_raw)} 条，清洗后 {len(clean)} 条")
     end_c_segment_budget(c_segment_budget_token)
     return clean, actual_platforms, yield_stats

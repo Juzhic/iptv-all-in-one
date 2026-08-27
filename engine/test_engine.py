@@ -516,10 +516,10 @@ def filter_and_save_playlist(
 
     logger = setup_logging(run_id)
 
-    logger.info(f"开始测试任务")
+    logger.info("开始测速任务")
     logger.info(f"总频道数: {total}")
     logger.info(f"并发线程数: {max_workers}")
-    logger.info(f"单个频道测试时长: {duration}秒")
+    logger.info(f"单频道测速时长: {duration}秒")
     channel_timeout = max(duration + 15, int(duration * 1.5))
     logger.info(f"单频道最大等待时间: {channel_timeout}秒")
     download_limiter = SystemDownloadLimiter(bandwidth_limit_mbps)
@@ -899,14 +899,14 @@ def filter_and_save_playlist(
                 memory_limiter.log_pause_if_needed(logger)
                 if not allow_idle_start:
                     break
-                logger.info("当前没有活跃频道测试，忽略内存启动保护并串行启动 1 个频道，避免进度空转")
+                logger.info("当前没有活跃频道测速，忽略内存启动保护并串行启动 1 个频道，避免进度空转")
                 bypass_limiter = True
 
             if download_limiter.should_pause():
                 download_limiter.log_pause_if_needed(logger)
                 if not allow_idle_start:
                     break
-                logger.info("当前没有活跃频道测试，忽略总下行启动限速并串行启动 1 个频道，避免进度空转")
+                logger.info("当前没有活跃频道测速，忽略总下行启动限速并串行启动 1 个频道，避免进度空转")
                 bypass_limiter = True
 
             future = submit_next()
@@ -989,7 +989,7 @@ def filter_and_save_playlist(
                     'channel_info': info['channel_info'],
                     'url': url,
                     'pass': False,
-                    'reason': f'单频道测试超时({channel_timeout}秒)',
+                    'reason': f'单频道测速超时({channel_timeout}秒)',
                     'duration': elapsed
                 }
                 handle_channel_result(timeout_result)
@@ -1216,8 +1216,8 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     # 如果外部传入了 test_list（来自扫描结果），跳过 M3U 获取和匹配
     if test_list:
         sub_count = len(test_list)
-        _log(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
-        print(f"使用扫描结果直接测速，共 {len(test_list)} 个频道地址")
+        _log(f"使用候选源池直接测速，共 {len(test_list)} 个频道地址")
+        print(f"使用候选源池直接测速，共 {len(test_list)} 个频道地址")
         # 扫描模式下也需要 demo_structure 用于输出文件生成
         if not demo_structure:
             demo_structure = [('', [])]  # 空模板，仅用于输出
@@ -1230,14 +1230,14 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
             _log("订阅源为空，请先配置订阅源地址")
             return
 
-        _log(f"开始测试任务，共 {len(m3u_urls)} 个数据源")
+        _log(f"开始全量测速，共 {len(m3u_urls)} 个数据源")
         print(f"数据源数量：{len(m3u_urls)}")
-        print(f"测试时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS} | FFmpeg并发：{MAX_FFMPEG_WORKERS}")
+        print(f"测速时长：{TEST_DURATION}秒/频道 | 并发线程：{MAX_WORKERS} | FFmpeg并发：{MAX_FFMPEG_WORKERS}")
         print(f"最低分辨率：{cfg['min_width']}x{cfg['min_height']} | 最低带宽：{cfg['min_bandwidth_MBps']}MB/s")
         print(f"系统限速：{cfg['system_bandwidth_limit_MBps']}MB/s")
         print(f"每频道输出数量：{MAX_URLS_PER_CHANNEL if MAX_URLS_PER_CHANNEL > 0 else '不限制'}")
         print("=" * 60)
-        _log(f"并发设置：测试线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
+        _log(f"并发设置：测速线程 {MAX_WORKERS}，FFmpeg 子进程 {MAX_FFMPEG_WORKERS}")
 
         # 获取并解析所有 M3U 数据源
         all_iptv_list = []
@@ -1294,8 +1294,8 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     _log(f"开始测速，共 {len(test_list)} 个频道地址")
 
     if not test_list:
-        print("没有可测试的频道地址")
-        _log("没有可测试的频道地址")
+        print("没有可测速的频道地址")
+        _log("没有可测速的频道地址")
         return
 
     # 输出路径只由运维环境变量控制，文件名固定。
@@ -1407,7 +1407,7 @@ def run_test_cycle(progress_callback=None, log_callback=None, stop_event=None,
     print(f"结果已保存到 {output_paths['txt']} 和 {output_paths['m3u']}")
     print(f"历史记录已保存到 {history_path}")
     print(f"{'=' * 60}")
-    _log(f"测试完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址，耗时 {run_elapsed:.0f} 秒")
+    _log(f"全量测速完成！通过 {passed_count} 个频道（{passed_urls} 个地址），输出 {output_urls} 个地址，耗时 {run_elapsed:.0f} 秒")
 
 
 def _next_run_datetime(run_mode, run_times, run_interval_minutes):

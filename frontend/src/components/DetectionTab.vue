@@ -1,11 +1,11 @@
 <template>
   <div class="detection-tab" :class="{ 'is-dark-theme': isDarkTheme }">
-    <!-- 概览卡：检测轮次记录（置顶） -->
+    <!-- 概览卡：复检轮次记录（置顶） -->
     <t-card size="small" :bordered="false" class="detection-card workspace-card">
       <div class="config-header">
         <div>
-          <div class="section-title section-title--flush">检测概览</div>
-          <p class="section-desc">每次定期检测的执行记录，按时间倒序排列。点击"日志"查看该轮每个频道的检测明细。</p>
+          <div class="section-title section-title--flush">复检概览</div>
+          <p class="section-desc">每次定期复检的执行记录，按时间倒序排列。点击“日志”查看该轮每个频道的复检明细。</p>
           <p v-if="nextCheckCountdown" class="next-check-countdown">{{ nextCheckCountdown }}</p>
         </div>
       </div>
@@ -57,28 +57,28 @@
       </div>
     </t-card>
 
-    <!-- 配置卡：检测维护 + 运行日志 + 保存按钮 -->
+    <!-- 配置卡：复检维护 + 运行日志 + 保存按钮 -->
     <t-card size="small" :bordered="false" class="detection-card detection-card--spaced workspace-card">
       <div class="config-header">
         <div>
-          <div class="section-title section-title--flush">检测监控</div>
-          <p class="section-desc">管理定期检测策略与实时运行日志。</p>
+          <div class="section-title section-title--flush">健康复检</div>
+          <p class="section-desc">管理候选源池的定期复检策略与实时运行日志。</p>
         </div>
       </div>
 
       <div class="config-panel-grid">
         <section class="config-panel">
           <div class="config-panel-head">
-            <div class="config-panel-eyebrow">检测维护</div>
-            <h3>定期检测与淘汰</h3>
-            <p>扫描结果会定期检测可用性，连续失败达到阈值的源自动删除，保持结果池质量。</p>
+            <div class="config-panel-eyebrow">源池维护</div>
+            <h3>定期复检与淘汰</h3>
+            <p>候选源池会定期复检可用性，连续失败达到阈值的源自动删除，保持源池质量。</p>
           </div>
 
           <div class="config-field-list">
             <div class="config-field">
               <div class="config-field-meta">
-                <label>检测间隔（分钟）</label>
-                <span>每隔多久对持久化结果执行一轮健康检查。设为 0 暂停检测。</span>
+                <label>复检间隔（分钟）</label>
+                <span>每隔多久对候选源池执行一轮健康检查。设为 0 暂停复检。</span>
               </div>
               <t-input-number v-model="detCfg.detection_interval_minutes" :min="0" :max="10080" :step="10" class="field-control" />
             </div>
@@ -86,15 +86,15 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>连续失败删除阈值</label>
-                <span>源连续检测失败几次后自动从结果池中删除。</span>
+                <span>源连续复检失败几次后自动从候选源池中删除。</span>
               </div>
               <t-input-number v-model="detCfg.deletion_threshold" :min="1" :max="100" :step="1" class="field-control" />
             </div>
 
             <div class="config-field">
               <div class="config-field-meta">
-                <label>稳定频道检测倍数</label>
-                <span>stability≥80 的稳定频道检测间隔 = 检测间隔 × 此倍数。设为 3 表示每 3 个周期检测一次。</span>
+                <label>稳定频道复检倍数</label>
+                <span>stability≥80 的稳定频道复检间隔 = 复检间隔 × 此倍数。设为 3 表示每 3 个周期复检一次。</span>
               </div>
               <t-input-number v-model="detCfg.stable_channel_multiplier" :min="1" :max="10" :step="1" class="field-control" />
             </div>
@@ -104,8 +104,8 @@
         <section class="config-panel config-panel--log">
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">运行日志</div>
-            <h3>定期检测日志</h3>
-            <p>最近一轮检测的执行记录，自动刷新。</p>
+            <h3>定期复检日志</h3>
+            <p>最近一轮复检的执行记录，自动刷新。</p>
           </div>
 
           <div class="detection-log-toolbar">
@@ -126,7 +126,7 @@
       </div>
 
       <div class="config-actions">
-        <div class="config-actions-tip">修改检测间隔或淘汰阈值后需点击保存生效。</div>
+        <div class="config-actions-tip">修改复检间隔或淘汰阈值后需点击保存生效。</div>
         <t-space>
           <t-button theme="primary" :loading="saving" @click="saveDetConfig">保存配置</t-button>
           <t-button variant="outline" @click="loadConfig">重新加载</t-button>
@@ -136,7 +136,7 @@
 
     <t-dialog
       v-model:visible="detDetailVisible"
-      :header="'检测明细 — ' + detDetailCycleId"
+      :header="'复检明细 — ' + detDetailCycleId"
       :footer="false"
       width="90%"
       destroy-on-close
@@ -144,7 +144,7 @@
     >
       <div class="det-detail-toolbar responsive-toolbar">
         <t-input v-model="detDetailSearch" placeholder="搜索频道名/URL..." clearable size="small" style="width:200px" />
-        <t-select v-model="detDetailCheckFilter" size="small" style="width:120px" clearable placeholder="检测结果">
+        <t-select v-model="detDetailCheckFilter" size="small" style="width:120px" clearable placeholder="复检结果">
           <t-option value="" label="全部结果" />
           <t-option value="pass" label="通过" />
           <t-option value="fail" label="失败" />
@@ -189,7 +189,7 @@
           </t-tag>
         </template>
         <template #op="{ row }">
-          <t-button size="small" variant="outline" theme="primary" @click="recheckChannel(row.url)">重新检测</t-button>
+          <t-button size="small" variant="outline" theme="primary" @click="recheckChannel(row.url)">立即复检</t-button>
         </template>
         <template #http_status="{ row }">
           <span :class="row.http_status === 200 ? 'det-val-ok' : 'det-val-fail'">{{ row.http_status || '-' }}</span>
@@ -256,20 +256,20 @@ async function loadConfig() {
     detCfg.deletion_threshold = typeof cfg.deletion_threshold === 'number' ? cfg.deletion_threshold : 3
     detCfg.stable_channel_multiplier = typeof cfg.stable_channel_multiplier === 'number' ? cfg.stable_channel_multiplier : 3
   } catch (_) {
-    MessagePlugin.error('加载检测配置失败')
+    MessagePlugin.error('加载复检配置失败')
   }
 }
 
 function validateDetConfig() {
   const errors = []
   if (detCfg.detection_interval_minutes < 0 || detCfg.detection_interval_minutes > 10080) {
-    errors.push('检测间隔需在 0-10080 分钟之间')
+    errors.push('复检间隔需在 0-10080 分钟之间')
   }
   if (detCfg.deletion_threshold < 1 || detCfg.deletion_threshold > 100) {
     errors.push('连续失败删除阈值需在 1-100 之间')
   }
   if (detCfg.stable_channel_multiplier < 1 || detCfg.stable_channel_multiplier > 10) {
-    errors.push('稳定频道检测倍数需在 1-10 之间')
+    errors.push('稳定频道复检倍数需在 1-10 之间')
   }
   return errors
 }
@@ -283,7 +283,7 @@ async function saveDetConfig() {
   saving.value = true
   try {
     const res = await apiSaveScanConfig({ ...detCfg })
-    MessagePlugin.success('检测配置已保存')
+    MessagePlugin.success('复检配置已保存')
     detCfg.detection_interval_minutes = typeof res.detection_interval_minutes === 'number' ? res.detection_interval_minutes : detCfg.detection_interval_minutes
     detCfg.deletion_threshold = typeof res.deletion_threshold === 'number' ? res.deletion_threshold : detCfg.deletion_threshold
     detCfg.stable_channel_multiplier = typeof res.stable_channel_multiplier === 'number' ? res.stable_channel_multiplier : detCfg.stable_channel_multiplier
@@ -383,11 +383,11 @@ function updateDetectionCountdown() {
     return
   }
   if (detStatus.value?.cycle_running) {
-    nextCheckCountdown.value = '检测正在执行'
+    nextCheckCountdown.value = '复检正在执行'
     return
   }
   if (detStatus.value?.running === false && !detStatus.value?.next_cycle_at) {
-    nextCheckCountdown.value = '检测调度未启动'
+    nextCheckCountdown.value = '复检调度未启动'
     return
   }
 
@@ -410,7 +410,7 @@ function updateDetectionCountdown() {
   const totalMin = Math.floor(diffMs / 60000)
   const hours = Math.floor(totalMin / 60)
   const mins = totalMin % 60
-  let text = '下次检测：'
+  let text = '下次复检：'
   if (hours > 0) text += hours + '小时'
   if (mins > 0 || hours === 0) text += mins + '分钟后'
   nextCheckCountdown.value = text
@@ -419,9 +419,9 @@ function updateDetectionCountdown() {
 async function recheckChannel(url) {
   try {
     const res = await apiPersistentRecheck(url)
-    MessagePlugin.success('已触发重新检测')
+    MessagePlugin.success('已触发复检')
   } catch (_) {
-    MessagePlugin.error('重新检测失败')
+    MessagePlugin.error('复检失败')
   }
 }
 
@@ -493,7 +493,7 @@ const detRunColumns = [
   { colKey: 'started_at', title: '开始时间', width: 170 },
   { colKey: 'trigger_source', title: '触发', width: 80 },
   { colKey: 'run_status', title: '状态', width: 80, align: 'center' },
-  { colKey: 'total_checked', title: '检测数', width: 80, align: 'center' },
+  { colKey: 'total_checked', title: '复检数', width: 80, align: 'center' },
   { colKey: 'ok_count', title: '通过', width: 70, align: 'center' },
   { colKey: 'failed_count', title: '失败', width: 70, align: 'center' },
   { colKey: 'deleted_count', title: '删除', width: 70, align: 'center' },
@@ -533,7 +533,7 @@ async function loadDetRuns(options = {}) {
     updateDetectionCountdown()
   } catch (e) {
     if (!silent) {
-      MessagePlugin.error('查询检测轮次失败: ' + (e?.message || ''))
+      MessagePlugin.error('查询复检轮次失败: ' + (e?.message || ''))
     }
   }
 }
@@ -561,7 +561,7 @@ const filteredDetDetails = computed(() => detRunDetails.value)
 const detDetailColumns = [
   { colKey: 'name', title: '频道名称', width: 160, ellipsis: true },
   { colKey: 'url', title: 'URL', width: 280, ellipsis: true },
-  { colKey: 'check_ok', title: '检测结果', width: 90, align: 'center' },
+  { colKey: 'check_ok', title: '复检结果', width: 90, align: 'center' },
   { colKey: 'http_status', title: 'HTTP', width: 70, align: 'center' },
   { colKey: 'response_time_ms', title: '响应时间', width: 100, align: 'center', sorter: true },
   { colKey: 'response_size_bytes', title: '大小', width: 80, align: 'center' },
@@ -605,7 +605,7 @@ async function loadDetDetail() {
     if (e?.name === 'AbortError' || seq !== detDetailRequestSeq) return
     detRunDetails.value = []
     detDetailTotal.value = 0
-    MessagePlugin.error('加载检测明细失败: ' + (e?.message || ''))
+    MessagePlugin.error('加载复检明细失败: ' + (e?.message || ''))
   }
 }
 

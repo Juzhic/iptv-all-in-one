@@ -227,7 +227,7 @@ def _scheduler_loop():
                 logger.info(f"{'#' * 60}")
                 run_token = _start_test_background(trigger_source='scheduler')
                 if run_token is None:
-                    logger.warning("已有测试正在运行，本次定时任务跳过，等待下一个设定时间点")
+                    logger.warning("已有全量测速正在运行，本次定时任务跳过，等待下一个设定时间点")
                     continue
 
                 # 等待测试完成后再计算下一个时间点

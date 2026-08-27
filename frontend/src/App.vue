@@ -87,7 +87,7 @@
           <div class="workspace-actions" aria-label="页面工具栏">
             <t-tag v-if="testRunning" theme="warning" variant="light" shape="round" aria-live="polite">
               <template #icon><t-loading size="12px" /></template>
-              测试运行中 {{ progressText }}
+              全量测速中 {{ progressText }}
             </t-tag>
             <div class="mode-chip">
               <span class="mode-chip-dot" :class="{ 'is-dark': isDark }"></span>
@@ -126,7 +126,7 @@
               :error="dashboardState.error"
               :empty="dashboardIsEmpty"
               empty-title="还没有质量数据"
-              empty-description="可前往“系统测试”或“频道扫描”启动第一轮任务。"
+              empty-description="可前往“全量测速”或“测绘采集”启动第一轮任务。"
               :retry="() => loadDashboard()"
             >
               <OverviewTab
@@ -456,7 +456,7 @@ const headerFacts = computed(() => {
   const updated = latestRun.value?.finished_at || latestScan.value?.finished_at || latestScan.value?.started_at
   if (updated) facts.push({ label: '最近数据', value: updated, tone: '' })
   const nextRun = dashboard.value?.subscriptions?.next_scheduled_run
-  if (nextRun) facts.push({ label: '下次测试', value: nextRun, tone: '' })
+  if (nextRun) facts.push({ label: '下次测速', value: nextRun, tone: '' })
   return facts
 })
 

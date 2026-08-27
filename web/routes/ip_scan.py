@@ -29,7 +29,7 @@ def _ensure_ip_scan_bridge():
     """确保IP扫描桥接层已初始化。"""
     scanner = _get_ip_scanner()
     if scanner is None:
-        return None, jsonify({'ok': False, 'error': '扫描模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
+        return None, jsonify({'ok': False, 'error': 'IP 探测模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
     return scanner, None, None
 
 
@@ -88,11 +88,11 @@ def api_ip_scan_trigger():
     # 参数验证
     targets = str(data.get('targets', '')).strip()
     if not targets or not targets.strip():
-        return jsonify({'ok': False, 'error': '请输入扫描目标'}), 400
+        return jsonify({'ok': False, 'error': '请输入探测目标'}), 400
     
     scan_types = _normalize_scan_types(data.get('scan_types', ['ALL']))
     if not scan_types:
-        return jsonify({'ok': False, 'error': '请选择至少一种扫描类型'}), 400
+        return jsonify({'ok': False, 'error': '请选择至少一种探测类型'}), 400
     
     try:
         ports = _normalize_ports(data.get('ports', [8080, 80, 443]))
@@ -124,7 +124,7 @@ def api_ip_scan_trigger():
     task = result.get('task') or {}
     return jsonify({
         'ok': True,
-        'message': 'IP扫描已启动',
+        'message': 'IP 探测已启动',
         'task_id': task.get('task_id'),
         'state': 'starting',
         'data': result.get('task'),
@@ -148,7 +148,7 @@ def api_ip_scan_stop():
     task = result.get('task') or {}
     return jsonify({
         'ok': True,
-        'message': result.get('message', '已请求停止'),
+        'message': result.get('message', '已请求停止 IP 探测'),
         'task_id': task.get('task_id'),
         'state': 'stopping',
         'data': result.get('task'),

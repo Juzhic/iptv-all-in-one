@@ -1,14 +1,14 @@
 <template>
   <div class="scanner-tab">
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">频道扫描</div>
-      <p class="section-subtitle">先在“扫描配置”里设置 API Key 和扫描参数，再启动采集和过滤流程。</p>
+      <div class="section-title">测绘采集</div>
+      <p class="section-subtitle">从测绘平台、搜索引擎及补探测流程发现候选地址，验证后写入候选源池。</p>
       <t-space class="scan-actions">
         <t-button theme="success" :disabled="scanRunning" :loading="scanStarting" @click="triggerScan">
           {{ startButtonText }}
         </t-button>
         <t-button v-if="scanRunning" theme="danger" :disabled="scanStopping" @click="stopScan">
-          {{ scanStopping ? '终止中...' : '停止扫描' }}
+          {{ scanStopping ? '停止中...' : '停止采集' }}
         </t-button>
         <t-button variant="outline" theme="warning" :disabled="scanClearing" @click="forceClear">
           {{ scanClearing ? '重置中...' : '重置卡死状态' }}
@@ -18,7 +18,7 @@
     </t-card>
 
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">扫描进度</div>
+      <div class="section-title">采集进度</div>
       <span class="phase-text">{{ phaseText }}</span>
       <div v-if="scanRunning || progressVisible" class="progress-wrap">
         <div class="progress-head">
@@ -31,24 +31,24 @@
         :entries="scanLogLines"
         :show-count="false"
         download-name="iptv-channel-scan-session.log"
-        empty-text="等待扫描开始..."
+        empty-text="等待采集开始..."
         @clear="clearScanLogLines"
       />
     </t-card>
 
     <div v-if="showScanError" class="scan-error" role="alert">
       <div class="scan-error-main">
-        <span class="scan-error-label">最近一次扫描失败</span>
+        <span class="scan-error-label">最近一次采集失败</span>
         <span class="scan-error-message">{{ scanSummary.error }}</span>
       </div>
       <t-button size="small" theme="danger" variant="outline" :disabled="scanRunning || scanStarting" @click="triggerScan">
-        重新扫描
+        重新采集
       </t-button>
     </div>
 
     <div class="summary-head" :class="{ 'is-failed': showScanError }">
       <div>
-        <div class="section-title summary-title">扫描概览</div>
+        <div class="section-title summary-title">采集概览</div>
         <div class="summary-caption">{{ summaryCaption }}</div>
       </div>
       <div class="summary-status" :class="summaryStatusTone">{{ summaryStatusText }}</div>
@@ -250,8 +250,8 @@ function applyStatus(data = {}) {
     if (statusTask.task_id) currentTaskId.value = statusTask.task_id
   }
   const running = data.running != null ? Boolean(data.running) : taskIsRunning(statusTask)
-  // 刚点“开始扫描”后，后端可能还没把 running 翻成 true。
-  // triggerPending 期间（10s 内）忽略 running=false，避免把刚启动的扫描误判为已完成。
+  // 刚点“开始采集”后，后端可能还没把 running 翻成 true。
+  // triggerPending 期间（10s 内）忽略 running=false，避免把刚启动的采集误判为已完成。
   if (!running && triggerPending) return
 
   const nextSummary = normalizeSummary(data.summary)
@@ -271,7 +271,7 @@ function applyStatus(data = {}) {
     : (total > 0 ? Math.min(100, Math.round(processed / total * 100)) : 0)
   progressLabel.value = total > 0
     ? `进度 ${Math.min(total, processed)} / ${total}`
-    : (statusMessage || (running ? '准备中...' : '暂无进行中的扫描任务'))
+    : (statusMessage || (running ? '准备中...' : '暂无进行中的采集任务'))
   progressVisible.value = running || progressPct.value > 0 || scanLogLines.value.length > 0
 
   scanSummary.value = nextSummary
@@ -286,8 +286,8 @@ function applyStatus(data = {}) {
   if (wasRunning) {
     wasRunning = false
     const terminalError = data.error || (nextSummary.status === 'failed' ? nextSummary.error : '')
-    if (terminalError) MessagePlugin.error(`扫描异常: ${terminalError}`)
-    else MessagePlugin.success(data.message || (currentPhase.value === 'health_check' ? '健康检查已完成' : '扫描已完成'))
+    if (terminalError) MessagePlugin.error(`采集异常: ${terminalError}`)
+    else MessagePlugin.success(data.message || (currentPhase.value === 'health_check' ? '健康检查已完成' : '采集已完成'))
     disconnectScanStream()
     return
   }
@@ -318,23 +318,23 @@ const showScanError = computed(() => (
 
 const startButtonText = computed(() => {
   if (scanStarting.value) return '启动中...'
-  if (scanRunning.value) return '扫描中...'
-  return '开始扫描'
+  if (scanRunning.value) return '采集中...'
+  return '开始采集'
 })
 
 const summaryCaption = computed(() => {
-  if (!hasSummary.value) return '还没有扫描记录，启动一次扫描后这里会显示最近一次摘要。'
+  if (!hasSummary.value) return '还没有采集记录，启动一次采集后这里会显示最近一次摘要。'
   if (scanSummary.value.status === 'failed' && scanSummary.value.error) {
     const time = scanSummary.value.finishedAt || scanSummary.value.startedAt
-    return time ? `最近一次扫描失败时间：${time}` : '最近一次扫描失败，已保留阶段统计。'
+    return time ? `最近一次采集失败时间：${time}` : '最近一次采集失败，已保留阶段统计。'
   }
   const time = scanSummary.value.finishedAt || scanSummary.value.startedAt
-  return time ? `最近一次扫描时间：${time}` : '最近一次扫描摘要'
+  return time ? `最近一次采集时间：${time}` : '最近一次采集摘要'
 })
 
 const summaryStatusText = computed(() => {
   if (scanRunning.value) return phaseName(currentPhase.value)
-  if (!hasSummary.value) return '等待扫描'
+  if (!hasSummary.value) return '等待采集'
   return ({
     running: '进行中',
     completed: '已完成',
@@ -362,7 +362,7 @@ const statCards = computed(() => [
     value: scanSummary.value.totalRaw,
     label: '原始结果',
     sub: '平台采集返回的频道地址总数',
-    foot: hasSummary.value ? `去重候选 ${scanSummary.value.totalDeduped} 条` : '等待扫描生成数据',
+    foot: hasSummary.value ? `去重候选 ${scanSummary.value.totalDeduped} 条` : '等待采集生成数据',
   },
   {
     key: 'fast',
@@ -371,7 +371,7 @@ const statCards = computed(() => [
     value: scanSummary.value.totalFastPass,
     label: '快速过滤',
     sub: '通过去重和基础连通性校验的频道数量',
-    foot: hasSummary.value ? '适合进入深度检测阶段' : '运行扫描后自动更新',
+    foot: hasSummary.value ? '适合进入深度检测阶段' : '运行采集后自动更新',
   },
   {
     key: 'deep',
@@ -379,8 +379,8 @@ const statCards = computed(() => [
     tone: 'purple',
     value: scanSummary.value.totalDeepPass,
     label: '深度可用',
-    sub: '通过深度可用性检测并写入结果页的数量',
-    foot: hasSummary.value ? '可直接用于后续测速或导出' : '深度检测完成后显示',
+    sub: '通过深度可用性检测的候选频道数量',
+    foot: hasSummary.value ? '可用于后续全量测速或候选导出' : '深度检测完成后显示',
   },
 ])
 
@@ -403,13 +403,13 @@ async function triggerScan() {
     const res = await apiScanTrigger()
     const task = registerTask('scan', res)
     if (task?.task_id) currentTaskId.value = task.task_id
-    MessagePlugin.success('扫描已启动')
+    MessagePlugin.success('测绘采集已启动')
     scanLogLines.value = []
     lastLogSeq = 0
     wasRunning = true
     progressVisible.value = true
-    phaseText.value = '扫描启动中...'
-    progressLabel.value = '正在连接扫描任务...'
+    phaseText.value = '采集启动中...'
+    progressLabel.value = '正在连接采集任务...'
     connectScanStream()
     setPollRunning(true)
     startPoll()
@@ -425,7 +425,7 @@ async function triggerScan() {
 async function stopScan() {
   const confirmed = await DialogPlugin.confirm({
     header: '确认停止',
-    body: '停止后当前扫描进度将丢失，确认停止？',
+    body: '停止后当前采集进度将丢失，确认停止？',
     theme: 'warning',
     confirmBtn: { theme: 'danger' }
   })
@@ -445,7 +445,7 @@ async function stopScan() {
 async function forceClear() {
   const confirmed = await DialogPlugin.confirm({
     header: '确认清除',
-    body: '强制清除将重置扫描状态，确认继续？',
+    body: '强制清除将重置采集状态，确认继续？',
     theme: 'warning',
     confirmBtn: { theme: 'danger' }
   })
@@ -453,7 +453,7 @@ async function forceClear() {
   scanClearing.value = true
   try {
     const res = await apiScanForceClear()
-    MessagePlugin.success(res.message || '扫描状态已清除')
+    MessagePlugin.success(res.message || '采集状态已清除')
     // 清除残留状态：复位本地标志并停止轮询，避免守卫继续吞掉状态
     triggerPending = false
     wasRunning = false

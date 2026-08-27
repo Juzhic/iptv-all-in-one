@@ -129,7 +129,7 @@
           <div class="config-field-list">
             <div class="config-field">
               <div class="config-field-meta">
-                <label>单频道测试时长 (秒)</label>
+                <label>单频道测速时长 (秒)</label>
                 <span>每个频道地址的采样时长，越长越稳但整体更慢。</span>
               </div>
               <t-input-number v-model="config.test_duration" :min="1" :step="1" class="field-control" :status="fieldErrors.test_duration ? 'error' : ''" :tips="fieldErrors.test_duration || ''" @change="onFieldChange('test_duration')" />
@@ -138,7 +138,7 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>最大并发线程数</label>
-                <span>控制同时测试的频道数量。</span>
+                <span>控制同时测速的频道数量。</span>
               </div>
               <t-input-number v-model="config.max_workers" :min="1" :step="1" class="field-control" :status="fieldErrors.max_workers ? 'error' : ''" :tips="fieldErrors.max_workers || ''" @change="onFieldChange('max_workers')" />
             </div>
@@ -214,8 +214,8 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
-                <label>融合扫描源参与测速</label>
-                <span>开启后，池中所有扫描结果会作为额外的本地订阅源，自动参与常规测速流程。</span>
+                <label>候选源池参与全量测速</label>
+                <span>开启后，候选源池中的全部地址会作为额外数据源，参与后续全量测速。</span>
               </div>
               <div class="field-stack field-stack--switch">
                 <div class="switch-row">
@@ -408,7 +408,7 @@ function validateConfig() {
   if (config.min_width < 0) errors.push('最低分辨率宽度不能为负数')
   if (config.min_height < 0) errors.push('最低分辨率高度不能为负数')
   if (config.min_bandwidth_MBps < 0) errors.push('最低带宽不能为负数')
-  if (config.test_duration < 1) errors.push('测试时长至少为 1 秒')
+  if (config.test_duration < 1) errors.push('测速时长至少为 1 秒')
   if (config.max_workers < 1) errors.push('最大并发数至少为 1')
   if (config.max_workers > 100) errors.push('最大并发数不建议超过 100')
   if (config.max_ffmpeg_workers < 1) errors.push('FFmpeg 并发数至少为 1')

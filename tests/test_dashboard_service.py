@@ -31,14 +31,18 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertNotIn('secret', masked)
         self.assertNotIn('token', masked)
 
-    def test_scan_source_label_is_not_masked(self):
+    def test_candidate_pool_label_is_not_masked_and_legacy_label_is_normalized(self):
         self.assertEqual(
-            '扫描结果池 · Quake 360',
-            _MODULE.mask_source_url('扫描结果池 · Quake 360'),
+            '候选源池 · Quake 360',
+            _MODULE.mask_source_url('候选源池 · Quake 360'),
         )
         self.assertEqual(
-            '扫描结果池 · 未标注平台',
-            _MODULE.mask_source_url('扫描结果池 · 未标注平台'),
+            '候选源池 · 未标注平台',
+            _MODULE.mask_source_url('候选源池 · 未标注平台'),
+        )
+        self.assertEqual(
+            '候选源池 · Quake 360',
+            _MODULE.mask_source_url('扫描结果池 · Quake 360'),
         )
 
     def test_sources_page_uses_bound_parameters_for_score_sort(self):

@@ -4,7 +4,7 @@
       <div class="section-header">
         <div>
           <div class="section-title section-title--flush">API Key 管理</div>
-          <p class="section-desc">统一管理 Quake、Hunter、DayDayMap 和 Fofa 的扫描 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
+          <p class="section-desc">统一管理 Quake、Hunter、DayDayMap 和 Fofa 的测绘平台 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
         </div>
 
         <t-space>
@@ -41,11 +41,11 @@
       </div>
     </t-card>
 
-    <div class="scan-config-toolbar" aria-label="扫描配置操作">
+    <div class="scan-config-toolbar" aria-label="采集配置操作">
       <div class="toolbar-copy">
         <div class="toolbar-title-row">
-          <span class="toolbar-title">扫描配置</span>
-          <span class="toolbar-note">保存一次会提交下面所有扫描参数和高级策略</span>
+          <span class="toolbar-title">采集配置</span>
+          <span class="toolbar-note">保存一次会提交下面所有采集参数和高级策略</span>
         </div>
         <div class="toolbar-pills">
           <span class="toolbar-pill">{{ provinceBadgeText }}</span>
@@ -71,7 +71,7 @@
     <t-card size="small" :bordered="false" class="config-card">
       <div class="config-header">
         <div>
-          <div class="section-title section-title--flush">扫描参数</div>
+          <div class="section-title section-title--flush">采集参数</div>
           <p class="section-desc">常用参数集中在这里：范围、平台采集量、C 段扩展和定时执行，调整后用上方按钮统一保存。</p>
         </div>
 
@@ -86,7 +86,7 @@
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">范围与来源</div>
             <h3>省份与运营商</h3>
-            <p>控制扫描覆盖的地区范围。留空时按全国跑，适合第一次摸底；限定省份时更聚焦，也更省额度。</p>
+            <p>控制测绘采集覆盖的地区范围。留空时按全国跑，适合第一次摸底；限定省份时更聚焦，也更省额度。</p>
           </div>
 
           <div class="config-field-list">
@@ -143,7 +143,7 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>C 段全局 IP 上限</label>
-                <span>单轮所有扩展扫描共享的 IP 总预算。</span>
+                <span>单轮所有扩展探测共享的 IP 总预算。</span>
               </div>
               <t-input-number v-model="scanCfg.c_segment_max_total_ips" :min="1" :max="5000" :step="10" class="field-control" />
             </div>
@@ -178,13 +178,13 @@
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">策略与调度</div>
             <h3>采集规模与定时</h3>
-            <p>这里控制每轮采集量、是否启用 C 段扩展扫描，以及后台自动执行的时间安排。</p>
+            <p>这里控制每轮采集量、是否启用 C 段扩展探测，以及后台自动执行的时间安排。</p>
           </div>
 
           <div class="config-field-list">
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
-                <label>扫描数量</label>
+                <label>采集数量</label>
                 <span>各平台每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
               </div>
 
@@ -229,7 +229,7 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
-                <label>C 段扫描</label>
+                <label>C 段探测</label>
                 <span>开启后会围绕已命中的可用 IP 扩展同网段探测，能补量，但会增加请求数。</span>
               </div>
 
@@ -267,8 +267,8 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
-                <label>定时扫描</label>
-                <span>设置自动扫描的星期和时间，适合夜间低峰期定时补源。</span>
+                <label>定时采集</label>
+                <span>设置自动采集的星期和时间，适合夜间低峰期定时补源。</span>
               </div>
 
               <div class="schedule-card">
@@ -292,7 +292,7 @@
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">搜索关键词</div>
-          <p class="section-desc">关键词保存在数据库扫描配置中，每次新扫描都会读取最新内容，并自动转换为 Quake、Hunter、DayDayMap 和 Fofa 各自的查询语法。</p>
+          <p class="section-desc">关键词保存在数据库采集配置中，每次新采集都会读取最新内容，并自动转换为 Quake、Hunter、DayDayMap 和 Fofa 各自的查询语法。</p>
         </div>
 
         <div class="config-header-pills">
@@ -304,7 +304,7 @@
       <section class="config-panel search-keywords-panel">
         <div class="config-field config-field--stack">
           <div class="config-field-meta">
-            <label>主扫描搜索规则</label>
+            <label>主采集搜索规则</label>
             <span>每行一条，默认搜索正文；用 <code>&amp;&amp;</code> 连接表示同一页面必须同时包含多个关键词，用 <code>title:</code> 前缀可改为标题搜索。空行、重复项和以 # 开头的注释会自动忽略。</span>
           </div>
           <t-textarea
@@ -323,8 +323,8 @@
     <t-card size="small" :bordered="false" class="config-card">
       <div class="config-header">
         <div>
-          <div class="section-title section-title--flush">高级扫描策略</div>
-          <p class="section-desc">补源和智能发现放在这一块。它们和基础参数共用同一份扫描配置，保存入口保持一致。</p>
+          <div class="section-title section-title--flush">高级采集策略</div>
+          <p class="section-desc">补源和智能发现放在这一块。它们和基础参数共用同一份采集配置，保存入口保持一致。</p>
         </div>
 
         <div class="config-header-pills">
@@ -338,7 +338,7 @@
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">ISP 智能分析</div>
             <h3>质量优先发现</h3>
-            <p>优先使用高价值查询和历史高质量网段，把扫描预算更多花在稳定源附近。</p>
+            <p>优先使用高价值查询和历史高质量网段，把采集预算更多花在稳定源附近。</p>
           </div>
 
           <div class="config-field-list">
@@ -401,7 +401,7 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>最低带宽 (MB/s)</label>
-                <span>深度检测的硬性准入线；低于此值的频道不会进入有效扫描结果。</span>
+                <span>深度检测的硬性准入线；低于此值的频道不会通过深度检测。</span>
               </div>
               <t-input-number v-model="scanCfg.quality_thresholds.min_bandwidth_MBps" :min="0.001" :max="1000" :step="0.05" :decimal-places="3" class="field-control" />
             </div>
@@ -425,7 +425,7 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>深测时长</label>
-                <span>扫描板块统一深度检测的单源采样时长，手动重检和定时检测共用。</span>
+                <span>采集流程统一深度检测的单源采样时长，手动复检和定时复检共用。</span>
               </div>
               <t-input-number v-model="scanCfg.deep_check_duration" :min="1" :max="120" :step="1" class="field-control" />
             </div>
@@ -433,7 +433,7 @@
             <div class="config-field">
               <div class="config-field-meta">
                 <label>深测采样</label>
-                <span>单源深度检测至少读取的字节数，增大后更能暴露短时断流但扫描更慢。</span>
+                <span>单源深度检测至少读取的字节数，增大后更能暴露短时断流但采集更慢。</span>
               </div>
               <t-input-number v-model="scanCfg.deep_check_min_bytes" :min="4096" :max="10485760" :step="65536" class="field-control" />
             </div>
@@ -460,7 +460,7 @@
                   </t-tag>
                 </div>
                 <div class="field-inline-hint">
-                  {{ scanCfg.isp_intelligence_enabled ? '将分析 ISP 数据识别热门网段，优先扫描高价值区域。' : '当前使用标准扫描模式，不进行 ISP 智能分析。' }}
+                  {{ scanCfg.isp_intelligence_enabled ? '将分析 ISP 数据识别热门网段，优先探测高价值区域。' : '当前使用标准采集模式，不进行 ISP 智能分析。' }}
                 </div>
               </div>
             </div>
@@ -475,8 +475,8 @@
 
             <div class="config-field">
               <div class="config-field-meta">
-                <label>热点段扫描限制</label>
-                <span>最多扫描的热点段数量。</span>
+                <label>热点段探测上限</label>
+                <span>最多探测的热点段数量。</span>
               </div>
               <t-input-number v-model="scanCfg.hot_segment_scan_limit" :min="1" :max="500" :step="10" class="field-control" />
             </div>
@@ -487,7 +487,7 @@
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">社区源配置</div>
             <h3>Community Sources</h3>
-            <p>从社区维护的源列表中获取 IPTV 数据，扩展扫描覆盖面。</p>
+            <p>从社区维护的源列表中获取 IPTV 数据，扩展采集覆盖面。</p>
           </div>
 
           <div class="config-field-list">
@@ -736,7 +736,7 @@ const provinceBadgeText = computed(() => {
 })
 
 const cScanStatusLabel = computed(() => (
-  scanCfg.enable_c_scan ? 'C段扫描：已启用' : 'C段扫描：已关闭'
+  scanCfg.enable_c_scan ? 'C段探测：已启用' : 'C段探测：已关闭'
 ))
 
 const scheduleBadgeText = computed(() => {
@@ -769,7 +769,7 @@ const cScanHint = computed(() => (
 
 const costSaverHint = computed(() => (
   scanCfg.cost_saver_mode
-    ? '当前会优先保留 Quake、TXIPTV 和直播接口画像；Hunter、DayDayMap 需要手动指定平台才会参与扫描。'
+    ? '当前会优先保留 Quake、TXIPTV 和直播接口画像；Hunter、DayDayMap 需要手动指定平台才会参与采集。'
     : '当前会按已配置 Key 自动启用所有可用 API 平台，覆盖更广；适合每日免费额度充足时使用。'
 ))
 
@@ -784,7 +784,7 @@ const scheduleSummary = computed(() => {
     .filter(Boolean)
 
   if (!labels.length) {
-    return '执行计划：未选择扫描日'
+    return '执行计划：未选择采集日'
   }
   return `执行计划：${labels.join('、')} ${time}（北京时间）`
 })
@@ -866,7 +866,7 @@ function updateCountdown() {
   const days = scanCfg.daily_full_update ? [0, 1, 2, 3, 4, 5, 6] : scanCfg.update_days
 
   if (!days?.length) {
-    countdownText.value = '未设置扫描日'
+    countdownText.value = '未设置采集日'
     return
   }
 
@@ -901,8 +901,8 @@ function updateCountdown() {
   const pad = (value) => (value < 10 ? `0${value}` : `${value}`)
 
   countdownText.value = daysLeft > 0
-    ? `下次扫描：${daysLeft}天 ${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
-    : `下次扫描：${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
+    ? `下次采集：${daysLeft}天 ${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
+    : `下次采集：${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
 }
 
 async function loadConfig() {
@@ -954,7 +954,7 @@ async function loadConfig() {
     scanCfg.fofa_size = typeof cfg.fofa_size === 'number' ? cfg.fofa_size : 200
     updateCountdown()
   } catch (_) {
-    MessagePlugin.error('加载扫描配置失败')
+    MessagePlugin.error('加载采集配置失败')
   }
 }
 
@@ -973,16 +973,16 @@ function validateScanConfig() {
     errors.push('单条搜索关键词不能超过 256 个字符')
   }
   if (scanCfg.quake_size > 10000) {
-    errors.push('Quake 扫描数量不能超过 10000')
+    errors.push('Quake 采集数量不能超过 10000')
   }
   if (scanCfg.hunter_size > 10000) {
-    errors.push('Hunter 扫描数量不能超过 10000')
+    errors.push('Hunter 采集数量不能超过 10000')
   }
   if (scanCfg.daydaymap_size > 10000) {
-    errors.push('DayDayMap 扫描数量不能超过 10000')
+    errors.push('DayDayMap 采集数量不能超过 10000')
   }
   if (scanCfg.fofa_size > 10000) {
-    errors.push('Fofa 扫描数量不能超过 10000')
+    errors.push('Fofa 采集数量不能超过 10000')
   }
   if (scanCfg.quality_query_profile_size < 10 || scanCfg.quality_query_profile_size > 2000) {
     errors.push('画像查询预算需要在 10 到 2000 之间')
@@ -1039,10 +1039,10 @@ function validateScanConfig() {
     || minute < 0
     || minute > 59
   ) {
-    errors.push('定时扫描时间格式不正确')
+    errors.push('定时采集时间格式不正确')
   }
   if (!scanCfg.daily_full_update && !scanCfg.update_days?.length) {
-    errors.push('请至少选择一个定时扫描日期')
+    errors.push('请至少选择一个定时采集日期')
   }
   if (scanCfg.github_proxy && !/^https?:\/\/.+/.test(scanCfg.github_proxy)) {
     errors.push('GitHub 代理地址格式不正确，需以 http:// 或 https:// 开头')
@@ -1091,7 +1091,7 @@ async function saveScanConfig() {
 
     const res = await apiSaveScanConfig(data)
     // unwrap() 返回 json.data，成功时是配置对象
-    MessagePlugin.success('扫描配置已保存')
+    MessagePlugin.success('采集配置已保存')
     if (res && typeof res === 'object') {
       // 保持 community_source_urls 为字符串格式（textarea 需要）
       const saved = { ...res }

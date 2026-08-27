@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from scanner_integration import config_bridge, scan_state
+from scanner_integration.platforms import scan_state as platform_scan_state
 from scanner_integration.platforms.daydaymap import daydaymap_scan
 from scanner_integration.platforms.fofa import fofa_scan
 from scanner_integration.platforms.hunter import hunter_scan
@@ -23,6 +24,9 @@ class ScanStopStateTests(unittest.TestCase):
         scan_state.request_stop()
 
         self.assertTrue(_is_stop_requested())
+
+    def test_platform_package_reexports_global_scan_state(self):
+        self.assertIs(platform_scan_state, scan_state)
 
     def test_enabled_api_scanners_honor_stop_before_network_access(self):
         scanners = (

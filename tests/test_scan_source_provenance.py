@@ -32,11 +32,17 @@ class ScanSourceProvenanceTests(unittest.TestCase):
         self.assertIn('SELECT name, url, platform', connection.query)
         self.assertEqual(
             [
-                ({'name': 'CCTV-1', 'source_url': '扫描结果池 · Quake 360'}, 'http://quake.example/live'),
-                ({'name': 'CCTV-2', 'source_url': '扫描结果池 · 未标注平台'}, 'http://unknown.example/live'),
-                ({'name': 'CCTV-3', 'source_url': '扫描结果池 · 未标注平台'}, 'http://blank.example/live'),
+                ({'name': 'CCTV-1', 'source_url': '候选源池 · Quake 360'}, 'http://quake.example/live'),
+                ({'name': 'CCTV-2', 'source_url': '候选源池 · 未标注平台'}, 'http://unknown.example/live'),
+                ({'name': 'CCTV-3', 'source_url': '候选源池 · 未标注平台'}, 'http://blank.example/live'),
             ],
             items,
+        )
+
+    def test_legacy_scan_pool_label_is_normalized_for_display(self):
+        self.assertEqual(
+            '候选源池 · Hunter',
+            db.normalize_scan_source_label('扫描结果池 · Hunter'),
         )
 
 

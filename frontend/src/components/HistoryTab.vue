@@ -234,7 +234,7 @@
     <!-- 对比弹窗 -->
     <t-dialog
       v-model:visible="compareVisible"
-      header="测试结果对比"
+      header="测速结果对比"
       :footer="false"
       width="1200px"
       destroy-on-close
@@ -375,7 +375,7 @@ endDate.value = fmt(today)
 
 const columns = [
   { colKey: 'finished_at', title: '执行时间', width: 180 },
-  { colKey: 'summary.total_tested', title: '测试数', width: 80 },
+  { colKey: 'summary.total_tested', title: '测速地址数', width: 100 },
   { colKey: 'summary.total_passed', title: '通过数', width: 80 },
   { colKey: 'summary.total_failed', title: '失败数', width: 80 },
   { colKey: 'summary_pass_rate', title: '通过率', width: 140 },
@@ -386,8 +386,8 @@ const columns = [
 
 const urlColumns = [
   { colKey: 'url', title: 'URL', width: 280, ellipsis: true },
-  { colKey: 'platform', title: '扫描来源', width: 100 },
-  { colKey: 'source_url', title: '订阅源', width: 200, ellipsis: true },
+  { colKey: 'platform', title: '采集来源', width: 100 },
+  { colKey: 'source_url', title: '数据来源', width: 200, ellipsis: true },
   { colKey: 'resolution', title: '分辨率', width: 100 },
   { colKey: 'bandwidth_MBps', title: '带宽(MB/s)', width: 100 },
   { colKey: 'connection_latency_ms', title: '延迟', width: 90 },

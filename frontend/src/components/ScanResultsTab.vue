@@ -4,10 +4,10 @@
     <div class="view-tabs-row">
       <t-tabs v-model="viewMode" theme="normal" size="medium" :destroy-on-hide="false">
         <t-tab-panel value="grouped" label="按来源分组" />
-        <t-tab-panel value="legacy" label="历史模式" />
+        <t-tab-panel value="legacy" label="按采集轮次" />
       </t-tabs>
       <t-button v-if="viewMode === 'grouped'" variant="outline" size="small" :loading="manualChecking" @click="triggerManualCheck">
-        手动检测一轮
+        立即复检
       </t-button>
     </div>
 
@@ -79,10 +79,10 @@
           </t-select>
           <div style="flex:1"></div>
           <t-button variant="outline" size="small" @click="selectAllDetail">{{ isAllDetailSelected ? '取消本页' : '选择本页' }}</t-button>
-          <t-button v-if="selectedDetailKeys.length" variant="outline" size="small" @click="exportSelectedDetailM3U">导出选中 ({{ selectedDetailKeys.length }})</t-button>
-          <t-button theme="primary" size="small" variant="outline" @click="exportCurrentDetailM3U">导出本页 M3U</t-button>
-          <t-button theme="primary" size="small" :loading="exportingAll" @click="exportAllDetailM3U">导出全部筛选结果</t-button>
-          <t-button variant="outline" size="small" :loading="exportingAll" @click="exportAllDetailCSV">全部筛选 CSV</t-button>
+          <t-button v-if="selectedDetailKeys.length" variant="outline" size="small" @click="exportSelectedDetailM3U">导出选中候选 ({{ selectedDetailKeys.length }})</t-button>
+          <t-button theme="primary" size="small" variant="outline" @click="exportCurrentDetailM3U">导出本页候选 M3U</t-button>
+          <t-button theme="primary" size="small" :loading="exportingAll" @click="exportAllDetailM3U">导出筛选候选 M3U</t-button>
+          <t-button variant="outline" size="small" :loading="exportingAll" @click="exportAllDetailCSV">导出筛选候选 CSV</t-button>
         </div>
         <div class="detail-table-shell">
           <t-table
@@ -134,7 +134,7 @@
               </t-select>
             </template>
             <template #op="{ row }">
-              <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">重新检测</t-button>
+              <t-button size="small" variant="outline" theme="primary" @click.stop="recheckChannel(row.url)">立即复检</t-button>
             </template>
           </t-table>
         </div>
@@ -146,7 +146,7 @@
         :error="groupedError"
         :empty="!filteredGroupedData.length"
         empty-title="暂无数据"
-        empty-description="暂无持久化扫描结果"
+        empty-description="候选源池暂无数据"
         :retry="loadGrouped"
         :rows="3"
       >
@@ -206,18 +206,18 @@
       </AsyncState>
     </template>
 
-    <!-- ==================== 历史模式视图（原按扫描记录功能） ==================== -->
+    <!-- ==================== 按采集轮次视图 ==================== -->
     <template v-else>
       <div class="legacy-toolbar">
         <t-select
           v-model="selectedScanId"
-          placeholder="选择扫描记录"
+          placeholder="选择采集记录"
           clearable
           class="scan-record-select"
           :loading="historyLoading"
           @change="onScanSelectionChange"
         >
-          <t-option value="" label="全部扫描记录" />
+          <t-option value="" label="全部采集记录" />
           <t-option v-for="r in scanHistory" :key="scanRunId(r)" :value="scanRunId(r)" :label="formatScanOptionLabel(r)" />
         </t-select>
         <t-button variant="outline" size="small" :disabled="!latestScanId || isLatestScanSelected" @click="selectLatestScan">
@@ -239,13 +239,13 @@
         <t-tag v-if="selectedScan" :theme="scanStatusTheme(selectedScan.status)" variant="light">
           {{ scanStatusLabel(selectedScan.status) }}
         </t-tag>
-        <t-tag variant="light">{{ scanHistory.length }} 次扫描</t-tag>
+        <t-tag variant="light">{{ scanHistory.length }} 次采集</t-tag>
         <t-tag theme="primary" variant="light">{{ total }} 条结果</t-tag>
       </div>
       <div class="legacy-actions-row">
         <t-button variant="outline" size="small" @click="selectAllLegacy">{{ isAllLegacySelected ? '取消本页' : '选择本页' }}</t-button>
-        <t-button variant="outline" size="small" @click="exportLegacyCurrent">导出本页 M3U</t-button>
-        <t-button theme="primary" size="small" :loading="exportingAll" @click="exportLegacyAll">导出全部筛选结果</t-button>
+        <t-button variant="outline" size="small" @click="exportLegacyCurrent">导出本页候选 M3U</t-button>
+        <t-button theme="primary" size="small" :loading="exportingAll" @click="exportLegacyAll">导出筛选候选 M3U</t-button>
       </div>
       <div class="data-table-shell data-table-shell--wide legacy-table-shell">
         <t-table
@@ -748,12 +748,12 @@ async function triggerManualCheck() {
   try {
     const beforeStatus = await apiDetectionStatus().catch(() => null)
     const res = await apiPersistentManualCheck()
-    MessagePlugin.success('已触发手动检测，完成后会自动刷新')
+    MessagePlugin.success('已触发健康复检，完成后会自动刷新')
     const completed = await waitForManualCheckCompletion(beforeStatus, token)
     if (completed) {
-      MessagePlugin.success('手动检测完成，结果已刷新')
+      MessagePlugin.success('健康复检完成，结果已刷新')
     } else if (token === manualCheckPollToken) {
-      MessagePlugin.warning('手动检测时间较长，请稍后手动刷新')
+      MessagePlugin.warning('健康复检时间较长，请稍后手动刷新')
     }
   } catch (_) {
     MessagePlugin.error('触发失败')
@@ -767,9 +767,9 @@ async function triggerManualCheck() {
 async function recheckChannel(url) {
   try {
     const res = await apiPersistentRecheck(url)
-    MessagePlugin.success('已触发重新检测')
+    MessagePlugin.success('已触发复检')
   } catch (_) {
-    MessagePlugin.error('重新检测失败')
+    MessagePlugin.error('复检失败')
   }
 }
 
@@ -803,7 +803,7 @@ function scanStatusLabel(status) {
     failed: '失败',
     error: '失败',
     stopped: '已停止',
-  })[status] || '扫描记录'
+  })[status] || '采集记录'
 }
 
 function scanStatusTheme(status) {
@@ -832,7 +832,7 @@ async function loadHistory() {
     const data = await apiScanHistory()
     scanHistory.value = scanHistoryFromResponse(data)
   } catch (e) {
-    console.error('加载扫描历史失败', e)
+    console.error('加载采集历史失败', e)
     scanHistory.value = []
   } finally {
     historyLoading.value = false

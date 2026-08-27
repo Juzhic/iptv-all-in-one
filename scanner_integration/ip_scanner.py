@@ -60,7 +60,7 @@ class IPScanner:
     def request_stop(self):
         """请求停止扫描"""
         self._stop_requested = True
-        logger.info("[IP扫描] 收到停止请求")
+        logger.info("[IP扫描] 收到停止探测请求")
         
     def clear_stop(self):
         """清除停止标志"""
@@ -85,7 +85,7 @@ class IPScanner:
         
         if not targets:
             if log_fn:
-                log_fn("[IP扫描] 没有有效目标，扫描结束")
+                log_fn("[IP扫描] 没有有效目标，探测结束")
             return []
         
         # 2. 端口展开
@@ -99,7 +99,7 @@ class IPScanner:
         alive_count = sum(1 for r in results if r['alive'])
         channel_count = sum(r['channel_count'] for r in results)
         if log_fn:
-            log_fn(f"[IP扫描] 完成！存活: {alive_count}/{len(results)}, 频道: {channel_count}")
+            log_fn(f"[IP扫描] 探测完成！存活: {alive_count}/{len(results)}, 频道: {channel_count}")
         
         return results
 
@@ -282,7 +282,7 @@ class IPScanner:
                         seen.add(key)
                         if len(expanded) > MAX_EXPANDED_TARGETS:
                             raise IPScanInputError(
-                                f"端口展开后的扫描任务最多允许 {MAX_EXPANDED_TARGETS} 个"
+                                f"端口展开后的 IP 探测任务最多允许 {MAX_EXPANDED_TARGETS} 个"
                             )
         
         return expanded
@@ -303,7 +303,7 @@ class IPScanner:
         for i in range(0, total, batch_size):
             if self._stop_requested:
                 if log_fn:
-                    log_fn(f"[IP扫描] 已停止，已完成 {processed}/{total}")
+                    log_fn(f"[IP扫描] 探测已停止，已完成 {processed}/{total}")
                 break
                 
             batch = targets[i:i+batch_size]
@@ -336,7 +336,7 @@ class IPScanner:
                 
             # 进度日志
             if log_fn and (i + batch_size) % 200 == 0:
-                log_fn(f"[IP扫描] 进度: {processed}/{total}, 存活: {alive_count}")
+                log_fn(f"[IP扫描] 探测进度: {processed}/{total}, 存活: {alive_count}")
                 
             # 限流控制
             if self.rate_limit < 10000:

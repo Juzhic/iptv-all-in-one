@@ -4,7 +4,7 @@
       <div class="sources-head">
         <div>
           <div class="section-title">数据来源质量</div>
-          <p>基于最近一轮测试，按订阅源或扫描测绘平台聚合频道覆盖、通过率、带宽与质量评分。</p>
+          <p>基于最近一轮测速，按订阅源或测绘平台聚合频道覆盖、通过率、带宽与质量评分。</p>
         </div>
         <div class="source-meta">
           <t-tag variant="light">共 {{ total }} 个来源</t-tag>
@@ -22,14 +22,14 @@
           @enter="applyFilters"
           @clear="applyFilters"
         />
-        <t-select v-model="sortBy" class="sort-select" aria-label="订阅源排序字段" @change="applyFilters">
+        <t-select v-model="sortBy" class="sort-select" aria-label="数据来源排序字段" @change="applyFilters">
           <t-option value="score" label="综合评分" />
           <t-option value="channels_passed" label="通过频道" />
           <t-option value="pass_rate" label="通过率" />
           <t-option value="avg_bandwidth" label="平均带宽" />
           <t-option value="avg_quality" label="平均质量" />
         </t-select>
-        <t-select v-model="sortOrder" class="order-select" aria-label="订阅源排序方向" @change="applyFilters">
+        <t-select v-model="sortOrder" class="order-select" aria-label="数据来源排序方向" @change="applyFilters">
           <t-option value="desc" label="降序" />
           <t-option value="asc" label="升序" />
         </t-select>
@@ -41,7 +41,7 @@
         :error="error"
         :empty="!items.length"
         empty-title="没有匹配的数据来源"
-        empty-description="调整搜索条件，或先运行一次系统测试。"
+        empty-description="调整搜索条件，或先运行一次全量测速。"
         :retry="loadSources"
       >
         <div class="data-table-shell data-table-shell--wide source-table-shell">
@@ -157,7 +157,7 @@ async function loadSources() {
     if (reason?.name === 'AbortError' || seq !== requestSeq) return
     items.value = []
     total.value = 0
-    error.value = reason?.message || '订阅源加载失败'
+    error.value = reason?.message || '数据来源加载失败'
   } finally {
     if (seq === requestSeq) loading.value = false
   }
