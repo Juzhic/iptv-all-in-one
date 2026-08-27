@@ -2,7 +2,7 @@
   <div class="ip-scan-tab">
     <!-- 输入区域 -->
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">IP扫描</div>
+      <div class="section-title">IP 探测</div>
       <p class="section-subtitle">
         输入格式：IP:PORT 或纯IP或域名（每行一个），支持#注释
       </p>
@@ -21,11 +21,11 @@
 
     <!-- 配置区域 -->
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">扫描配置</div>
+      <div class="section-title">探测配置</div>
       
       <!-- 端口配置 -->
       <div class="config-row">
-        <label class="config-label">测试端口类别：</label>
+        <label class="config-label">探测端口预设：</label>
         <t-select 
           v-model="portPreset" 
           :options="portPresetOptions"
@@ -34,7 +34,7 @@
         />
       </div>
       <div class="config-row">
-        <label class="config-label">测试端口：</label>
+        <label class="config-label">探测端口：</label>
         <t-input 
           v-model="portsInput" 
           placeholder="4022,7088,5140,8888,2380"
@@ -45,22 +45,22 @@
 
       <!-- 扫描类型 -->
       <div class="config-row">
-        <label class="config-label">扫描选项：</label>
+        <label class="config-label">探测选项：</label>
         <t-checkbox-group v-model="scanTypes" :options="scanTypeOptions" />
       </div>
 
       <!-- 扫描参数 -->
       <div class="params-grid">
         <div class="param-item">
-          <label>扫描工作进程数</label>
+          <label>探测工作进程数</label>
           <t-input-number v-model="workers" :min="1" :max="100" theme="column" />
         </div>
         <div class="param-item">
-          <label>扫描速率</label>
+          <label>探测速率</label>
           <t-input-number v-model="rateLimit" :min="100" :max="50000" step="1000" theme="column" />
         </div>
         <div class="param-item">
-          <label>HTTP测试并发数</label>
+          <label>HTTP 验证并发数</label>
           <t-input-number v-model="httpConcurrent" :min="1" :max="500" theme="column" />
         </div>
         <div class="param-item">
@@ -79,7 +79,7 @@
           :loading="scanStarting" 
           @click="startScan"
         >
-          开始扫描
+          开始探测
         </t-button>
         <t-button 
           v-if="scanRunning" 
@@ -87,7 +87,7 @@
           :disabled="scanStopping" 
           @click="stopScan"
         >
-          {{ scanStopping ? '终止中...' : '停止扫描' }}
+          {{ scanStopping ? '停止中...' : '停止探测' }}
         </t-button>
         <t-button 
           v-if="scanRunning" 
@@ -100,13 +100,13 @@
         </t-button>
       </t-space>
       <p class="section-subtitle clear-hint">
-        扫描卡死、点"开始"却提示"正在进行中"时，用此按钮强制清除残留状态。
+        探测卡死、点“开始”却提示“正在进行中”时，用此按钮强制清除残留状态。
       </p>
     </t-card>
 
     <!-- 进度显示 -->
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">扫描进度</div>
+      <div class="section-title">探测进度</div>
       <span class="phase-text">{{ phaseText }}</span>
       <div v-if="scanRunning || progressVisible" class="progress-wrap">
         <div class="progress-head">
@@ -119,15 +119,15 @@
         :entries="logLines"
         :show-count="false"
         download-name="iptv-ip-scan-session.log"
-        empty-text="等待扫描开始..."
+        empty-text="等待探测开始..."
         @clear="clearLogs"
       />
     </t-card>
 
-    <!-- 扫描概览 -->
+    <!-- 探测概览 -->
     <div v-if="summary.scanId" class="summary-head workspace-card">
       <div>
-        <div class="section-title summary-title">扫描概览</div>
+        <div class="section-title summary-title">探测概览</div>
         <div class="summary-caption">{{ summaryCaption }}</div>
       </div>
       <div class="summary-status" :class="summaryStatusTone">{{ summaryStatusText }}</div>
@@ -152,7 +152,7 @@
 
     <!-- 结果表格 -->
     <t-card size="small" :bordered="false" class="panel-card workspace-card">
-      <div class="section-title">扫描结果</div>
+      <div class="section-title">探测结果</div>
       <div class="result-actions">
         <t-button 
           variant="outline" 
@@ -160,7 +160,7 @@
           :disabled="!summary.scanId"
           @click="exportM3U"
         >
-          导出M3U
+          导出候选 M3U
         </t-button>
       </div>
       <div class="data-table-shell data-table-shell--wide">
@@ -349,7 +349,7 @@ const hasSelectedRows = computed(() => {
 
 const summaryCaption = computed(() => {
   if (!summary.value.scanId) return ''
-  return `扫描ID: ${summary.value.scanId.substring(0, 8)}... | 耗时: ${formatDuration(summary.value.durationSeconds)}`
+  return `探测 ID: ${summary.value.scanId.substring(0, 8)}... | 耗时: ${formatDuration(summary.value.durationSeconds)}`
 })
 
 const summaryStatusTone = computed(() => {
@@ -362,7 +362,7 @@ const summaryStatusTone = computed(() => {
 const summaryStatusText = computed(() => {
   const statusMap = {
     'completed': '已完成',
-    'running': '扫描中',
+    'running': '探测中',
     'stopped': '已停止',
     'error': '出错',
   }
@@ -502,20 +502,20 @@ function appendLogEntries(entries) {
   }
 }
 
-// 开始扫描
+// 开始探测
 async function startScan() {
   if (!targets.value.trim()) {
-    MessagePlugin.warning('请输入扫描目标')
+    MessagePlugin.warning('请输入探测目标')
     return
   }
   
   if (scanTypes.value.length === 0) {
-    MessagePlugin.warning('请选择至少一种扫描类型')
+    MessagePlugin.warning('请选择至少一种探测类型')
     return
   }
   
   if (parsedPorts.value.length === 0) {
-    MessagePlugin.warning('请配置至少一个测试端口')
+    MessagePlugin.warning('请配置至少一个探测端口')
     return
   }
   
@@ -535,7 +535,7 @@ async function startScan() {
     handshakePending = Boolean(currentTaskId.value)
     wasRunning = true
     
-    MessagePlugin.success('IP扫描已启动')
+    MessagePlugin.success('IP 探测已启动')
     scanRunning.value = true
     progressVisible.value = true
     setPollingRunning(true)
@@ -548,7 +548,7 @@ async function startScan() {
   }
 }
 
-// 停止扫描
+// 停止探测
 async function stopScan() {
   scanStopping.value = true
   try {
@@ -574,7 +574,7 @@ async function stopScan() {
 async function forceClear() {
   const confirm = await DialogPlugin.confirm({
     header: '确认强制清除',
-    body: '确定要强制清除扫描状态吗？这可能导致正在进行的扫描任务异常。',
+    body: '确定要强制清除探测状态吗？这可能导致正在进行的探测任务异常。',
   })
   
   if (confirm) {
@@ -661,7 +661,7 @@ async function pollOnce() {
     if (status) updateStatus(status)
     appendLogEntries(logs?.lines || logs || [])
   } catch (error) {
-    if (error?.name !== 'AbortError') console.error('轮询 IP 扫描状态失败:', error)
+    if (error?.name !== 'AbortError') console.error('轮询 IP 探测状态失败:', error)
   }
   return { running: scanRunning.value || handshakePending }
 }
@@ -786,7 +786,7 @@ function viewChannels(row) {
 // 导出M3U
 function exportM3U() {
   if (!summary.value.scanId) {
-    MessagePlugin.warning('没有可导出的扫描结果')
+    MessagePlugin.warning('没有可导出的探测结果')
     return
   }
   

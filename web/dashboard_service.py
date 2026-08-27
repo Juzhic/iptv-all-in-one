@@ -81,7 +81,7 @@ def calculate_source_score(
 
 def mask_source_url(value):
     """Mask credentials, path and query while retaining a useful source host."""
-    raw = (value or '').strip()
+    raw = db.normalize_scan_source_label((value or '').strip())
     if raw.startswith(SCAN_SOURCE_LABEL_PREFIX):
         return raw
     if not raw or raw == UNKNOWN_SOURCE_LABEL:

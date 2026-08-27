@@ -525,7 +525,7 @@ async def _run_leased_scan(task_id, owner, operation):
     try:
         _db.heartbeat_task_lease(
             'scan', task_id, owner, state='running',
-            lease_seconds=_TASK_LEASE_SECONDS, message='扫描进行中',
+            lease_seconds=_TASK_LEASE_SECONDS, message='测绘采集进行中',
         )
         scan_id = await operation
         lease = _db.get_task_lease('scan') or {}
@@ -533,27 +533,27 @@ async def _run_leased_scan(task_id, owner, operation):
         run_status = run.get('status')
         if lease.get('state') == 'stopping' or run_status == 'stopped':
             _db.finish_task_lease(
-                'scan', task_id, state='cancelled', message='扫描已停止'
+                'scan', task_id, state='cancelled', message='测绘采集已停止'
             )
         elif run_status == 'failed':
-            error = run.get('error') or '扫描失败'
+            error = run.get('error') or '测绘采集失败'
             _db.finish_task_lease(
-                'scan', task_id, state='failed', message='扫描失败', error=error
+                'scan', task_id, state='failed', message='测绘采集失败', error=error
             )
         else:
             _db.finish_task_lease(
-                'scan', task_id, state='completed', message='扫描完成'
+                'scan', task_id, state='completed', message='测绘采集完成'
             )
         return scan_id
     except asyncio.CancelledError:
         scan_state.request_stop()
         _db.finish_task_lease(
-            'scan', task_id, state='cancelled', message='扫描任务已取消'
+            'scan', task_id, state='cancelled', message='测绘采集任务已取消'
         )
         raise
     except Exception as exc:
         _db.finish_task_lease(
-            'scan', task_id, state='failed', message='扫描失败', error=str(exc)
+            'scan', task_id, state='failed', message='测绘采集失败', error=str(exc)
         )
         raise
     finally:
@@ -573,16 +573,16 @@ def _start_scan_task(mode, operation):
         bridge.start()
     except Exception as exc:
         _close_unsubmitted_coroutine(operation)
-        return {'ok': False, 'error': f'扫描启动失败: {exc}', 'task': None}
+        return {'ok': False, 'error': f'测绘采集启动失败: {exc}', 'task': None}
     task_id = f"scan-{uuid.uuid4().hex}"
     acquired, task = _db.acquire_task_lease(
         'scan', task_id, _TASK_OWNER,
         lease_seconds=_TASK_LEASE_SECONDS,
-        message='增量扫描等待启动' if mode == 'incremental' else '扫描等待启动',
+        message='增量采集等待启动' if mode == 'incremental' else '测绘采集等待启动',
     )
     if not acquired:
         _close_unsubmitted_coroutine(operation)
-        return {'ok': False, 'error': '扫描正在进行中', 'task': task}
+        return {'ok': False, 'error': '测绘采集正在进行中', 'task': task}
     try:
         _submit_managed_background(
             task_id,
@@ -591,9 +591,9 @@ def _start_scan_task(mode, operation):
     except Exception as exc:
         _close_unsubmitted_coroutine(operation)
         _db.finish_task_lease(
-            'scan', task_id, state='failed', message='扫描启动失败', error=str(exc)
+            'scan', task_id, state='failed', message='测绘采集启动失败', error=str(exc)
         )
-        return {'ok': False, 'error': f'扫描启动失败: {exc}', 'task': _db.get_task_lease('scan')}
+        return {'ok': False, 'error': f'测绘采集启动失败: {exc}', 'task': _db.get_task_lease('scan')}
     return {'ok': True, 'mode': mode, 'task': _db.get_task_lease('scan')}
 
 
@@ -604,7 +604,7 @@ async def _run_scheduled_scan():
     task_id = f"scan-{uuid.uuid4().hex}"
     acquired, task = _db.acquire_task_lease(
         'scan', task_id, _TASK_OWNER,
-        lease_seconds=_TASK_LEASE_SECONDS, message='定时扫描等待启动',
+        lease_seconds=_TASK_LEASE_SECONDS, message='定时采集等待启动',
     )
     if not acquired:
         logger.info(
@@ -673,7 +673,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
             _broadcast_scan_status()
-            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '扫描已停止'})
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '测绘采集已停止'})
             return scan_id
 
         if not raw:
@@ -689,7 +689,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         if cfg.get('quality_hotspot_enabled', True):
             try:
                 from .isp_intelligence import scan_quality_hotspots
-                _scan_log(f"[Scan:{scan_id}] 质量热点：正在根据历史高质量源补充扫描...")
+                _scan_log(f"[Scan:{scan_id}] 质量热点：正在根据历史高质量源补充探测...")
                 async with get_session(limit=30, force_close=True) as quality_session:
                     quality_channels = await scan_quality_hotspots(quality_session)
                 if quality_channels:
@@ -739,8 +739,8 @@ async def _do_scan(platforms_override=None, provinces_override=None):
                 else:
                     _scan_log(f"[Scan:{scan_id}] 社区源：未发现新频道")
             except Exception as e:
-                _scan_log(f"[Scan:{scan_id}] 社区源扫描异常: {e}")
-                logger.warning(f"[Scan:{scan_id}] 社区源扫描异常: {e}")
+                _scan_log(f"[Scan:{scan_id}] 社区源采集异常: {e}")
+                logger.warning(f"[Scan:{scan_id}] 社区源采集异常: {e}")
 
         if not uniq:
             _scan_log(f"[Scan:{scan_id}] 采集完成，未获取到任何频道。请检查 API Key、历史高质量源或社区源配置。")
@@ -772,7 +772,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
             _broadcast_scan_status()
-            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '扫描已停止'})
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '测绘采集已停止'})
             return scan_id
 
         # 补充分类
@@ -833,10 +833,10 @@ async def _do_scan(platforms_override=None, provinces_override=None):
         _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
                             duration_seconds=round(duration, 1))
         _db.update_scan_progress(running=False, phase='idle', percent=100,
-                                 message=f'扫描完成，{len(quick)} 个频道。')
-        _scan_log(f"[Scan:{scan_id}] 扫描完成，耗时 {duration:.1f}s，共 {len(quick)} 个频道。")
+                                 message=f'测绘采集完成，获得 {len(quick)} 个候选频道。')
+        _scan_log(f"[Scan:{scan_id}] 测绘采集完成，耗时 {duration:.1f}s，共 {len(quick)} 个候选频道。")
         _broadcast_scan_status()
-        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'扫描完成，{len(quick)} 个频道。'})
+        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'测绘采集完成，获得 {len(quick)} 个候选频道。'})
 
         # 合并到持久化结果集
         try:
@@ -848,12 +848,12 @@ async def _do_scan(platforms_override=None, provinces_override=None):
             logger.warning(f"[Scan:{scan_id}] 合并到持久化结果集失败: {type(e).__name__}: {e}")
 
     except Exception as e:
-        _scan_log(f"[Scan:{scan_id}] 扫描异常: {e}")
+        _scan_log(f"[Scan:{scan_id}] 测绘采集异常: {e}")
         try:
             _db.update_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e))
         except Exception:
             pass
-        _db.update_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
+        _db.update_scan_progress(running=False, phase='idle', message=f'测绘采集失败: {e}')
         _broadcast_scan_status()
         _broadcast_sse('scan_complete', {'ok': False, 'error': str(e)})
 
@@ -915,7 +915,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
                 _scan_log(f"[Incremental:{scan_id}] 现有 {len(existing_urls)} 个频道，开始健康检查...")
                 await health_check_persistent(existing, log_fn=_scan_log)
         except Exception as e:
-            _scan_log(f"[Incremental:{scan_id}] 健康检查异常（继续扫描）: {e}")
+            _scan_log(f"[Incremental:{scan_id}] 健康检查异常（继续采集）: {e}")
 
         # 阶段2：采集新源
         _scan_log(f"[Incremental:{scan_id}] 开始采集新源...")
@@ -930,7 +930,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
             _broadcast_scan_status()
-            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量扫描已停止'})
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量采集已停止'})
             return scan_id
 
         if not raw:
@@ -946,7 +946,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         if cfg.get('quality_hotspot_enabled', True):
             try:
                 from .isp_intelligence import scan_quality_hotspots
-                _scan_log(f"[Incremental:{scan_id}] 质量热点：正在补充扫描历史高质量网段...")
+                _scan_log(f"[Incremental:{scan_id}] 质量热点：正在补充探测历史高质量网段...")
                 async with get_session(limit=30, force_close=True) as quality_session:
                     quality_channels = await scan_quality_hotspots(quality_session)
                 if quality_channels:
@@ -971,9 +971,9 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         if not new_channels:
             _scan_log(f"[Incremental:{scan_id}] 无新频道，跳过过滤。")
             _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str())
-            _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量扫描完成，无新频道。')
+            _db.update_scan_progress(running=False, phase='idle', percent=100, message='增量采集完成，无新频道。')
             _broadcast_scan_status()
-            _broadcast_sse('scan_complete', {'ok': True, 'total': 0, 'message': '增量扫描完成，无新频道。'})
+            _broadcast_sse('scan_complete', {'ok': True, 'total': 0, 'message': '增量采集完成，无新频道。'})
             return scan_id
 
         # 阶段3：仅对新频道做快速过滤
@@ -990,7 +990,7 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
             _db.update_scan_run(scan_id, status='stopped', finished_at=_db.now_str())
             _db.clear_scan_progress()
             _broadcast_scan_status()
-            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量扫描已停止'})
+            _broadcast_sse('scan_complete', {'ok': True, 'stopped': True, 'message': '增量采集已停止'})
             return scan_id
 
         for ch in quick:
@@ -1032,10 +1032,10 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         _db.update_scan_run(scan_id, status='completed', finished_at=_db.now_str(),
                             duration_seconds=round(duration, 1))
         _db.update_scan_progress(running=False, phase='idle', percent=100,
-                                 message=f'增量扫描完成，新频道 {len(quick)} 个。')
-        _scan_log(f"[Incremental:{scan_id}] 增量扫描完成，耗时 {duration:.1f}s，新频道 {len(quick)} 个。")
+                                 message=f'增量采集完成，新候选频道 {len(quick)} 个。')
+        _scan_log(f"[Incremental:{scan_id}] 增量采集完成，耗时 {duration:.1f}s，新候选频道 {len(quick)} 个。")
         _broadcast_scan_status()
-        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'增量扫描完成，新频道 {len(quick)} 个。'})
+        _broadcast_sse('scan_complete', {'ok': True, 'total': len(quick), 'message': f'增量采集完成，新候选频道 {len(quick)} 个。'})
 
         # 合并到持久化结果集
         try:
@@ -1049,12 +1049,12 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
         scan_state.last_update_time = _local_now().strftime('%Y-%m-%d %H:%M:%S')
 
     except Exception as e:
-        _scan_log(f"[Incremental:{scan_id}] 增量扫描异常: {e}")
+        _scan_log(f"[Incremental:{scan_id}] 增量采集异常: {e}")
         try:
             _db.update_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e))
         except Exception:
             pass
-        _db.update_scan_progress(running=False, phase='idle', message=f'增量扫描失败: {e}')
+        _db.update_scan_progress(running=False, phase='idle', message=f'增量采集失败: {e}')
         _broadcast_scan_status()
         _broadcast_sse('scan_complete', {'ok': False, 'error': str(e)})
 
@@ -1077,11 +1077,11 @@ def trigger_stop():
     """请求停止扫描。"""
     import database as _db
 
-    accepted, task = _db.request_task_stop('scan', message='停止扫描请求已接受')
+    accepted, task = _db.request_task_stop('scan', message='停止采集请求已接受')
     if not accepted:
-        return {'ok': False, 'error': '当前没有正在运行的扫描', 'task': task}
+        return {'ok': False, 'error': '当前没有正在运行的测绘采集', 'task': task}
     scan_state.request_stop()
-    return {'ok': True, 'message': '已请求停止扫描', 'task': task}
+    return {'ok': True, 'message': '已请求停止采集', 'task': task}
 
 
 def force_clear_scan():
@@ -1090,10 +1090,10 @@ def force_clear_scan():
 
     cleared, task = _db.clear_stale_task_lease('scan')
     if not cleared:
-        return {'ok': False, 'error': '扫描仍在运行，不能强制清除', 'task': task}
+        return {'ok': False, 'error': '测绘采集仍在运行，不能强制清除', 'task': task}
     _db.clear_scan_progress()
     scan_state.clear_stop()
-    return {'ok': True, 'message': '扫描状态已清除'}
+    return {'ok': True, 'message': '采集状态已清除'}
 
 
 def trigger_incremental_scan(platforms_override=None, provinces_override=None):
@@ -1587,7 +1587,7 @@ async def _run_leased_ip_scan(task_id, owner, operation):
     try:
         _db.heartbeat_task_lease(
             'ip_scan', task_id, owner, state='running',
-            lease_seconds=_TASK_LEASE_SECONDS, message='IP 扫描进行中',
+            lease_seconds=_TASK_LEASE_SECONDS, message='IP 探测进行中',
         )
         scan_id = await operation
         lease = _db.get_task_lease('ip_scan') or {}
@@ -1595,27 +1595,27 @@ async def _run_leased_ip_scan(task_id, owner, operation):
         run_status = latest.get('status') if latest.get('scan_id') == scan_id else ''
         if lease.get('state') == 'stopping' or run_status == 'stopped':
             _db.finish_task_lease(
-                'ip_scan', task_id, state='cancelled', message='IP 扫描已停止'
+                'ip_scan', task_id, state='cancelled', message='IP 探测已停止'
             )
         elif run_status == 'failed':
-            error = latest.get('error') or 'IP 扫描失败'
+            error = latest.get('error') or 'IP 探测失败'
             _db.finish_task_lease(
-                'ip_scan', task_id, state='failed', message='IP 扫描失败', error=error
+                'ip_scan', task_id, state='failed', message='IP 探测失败', error=error
             )
         else:
             _db.finish_task_lease(
-                'ip_scan', task_id, state='completed', message='IP 扫描完成'
+                'ip_scan', task_id, state='completed', message='IP 探测完成'
             )
         return scan_id
     except asyncio.CancelledError:
         _signal_active_ip_scan_stop(task_id)
         _db.finish_task_lease(
-            'ip_scan', task_id, state='cancelled', message='IP 扫描任务已取消'
+            'ip_scan', task_id, state='cancelled', message='IP 探测任务已取消'
         )
         raise
     except Exception as exc:
         _db.finish_task_lease(
-            'ip_scan', task_id, state='failed', message='IP 扫描失败', error=str(exc)
+            'ip_scan', task_id, state='failed', message='IP 探测失败', error=str(exc)
         )
         raise
     finally:
@@ -1662,11 +1662,11 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
     _db.update_ip_scan_progress(
         running=True, started_at=started_at, phase='scanning',
         total=0, processed=0, alive=0, channels=0, percent=0,
-        message='正在扫描...'
+        message='正在探测...'
     )
-    _broadcast_ip_scan_sse('status', {'running': True, 'phase': 'scanning', 'percent': 0, 'message': '正在扫描...'})
+    _broadcast_ip_scan_sse('status', {'running': True, 'phase': 'scanning', 'percent': 0, 'message': '正在探测...'})
     
-    _ip_scan_log(f"[IP扫描:{scan_id}] 开始扫描，目标: {input_count} 个，类型: {', '.join(scan_types)}")
+    _ip_scan_log(f"[IP扫描:{scan_id}] 开始探测，目标: {input_count} 个，类型: {', '.join(scan_types)}")
     
     start_time = time.time()
     
@@ -1715,11 +1715,11 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
         
         # 检查停止标志（同时检查全局和scanner实例）
         if _ip_scan_stop_requested or scanner._stop_requested:
-            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描已停止")
+            _ip_scan_log(f"[IP扫描:{scan_id}] 探测已停止")
             _db.update_ip_scan_run(scan_id, status='stopped', finished_at=_db.now_str(),
                                    duration_seconds=time.time() - start_time)
-            _db.update_ip_scan_progress(running=False, phase='idle', message='扫描已停止')
-            _broadcast_ip_scan_sse('status', {'running': False, 'message': '扫描已停止'})
+            _db.update_ip_scan_progress(running=False, phase='idle', message='探测已停止')
+            _broadcast_ip_scan_sse('status', {'running': False, 'message': '探测已停止'})
             return scan_id
         
         # 保存结果
@@ -1741,7 +1741,7 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
                 duration_seconds=time.time() - start_time
             )
             
-            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描完成！存活: {alive_count}/{len(results)}, 频道: {channel_count}")
+            _ip_scan_log(f"[IP扫描:{scan_id}] 探测完成！存活: {alive_count}/{len(results)}, 频道: {channel_count}")
         else:
             _db.update_ip_scan_run(
                 scan_id,
@@ -1749,17 +1749,17 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
                 finished_at=_db.now_str(),
                 duration_seconds=time.time() - start_time
             )
-            _ip_scan_log(f"[IP扫描:{scan_id}] 扫描完成，未发现存活目标")
+            _ip_scan_log(f"[IP扫描:{scan_id}] 探测完成，未发现存活目标")
         
         _db.update_ip_scan_progress(
             running=False, phase='idle', percent=100,
-            message=f'扫描完成，存活: {alive_count}, 频道: {channel_count}'
+            message=f'探测完成，存活: {alive_count}, 频道: {channel_count}'
         )
         _broadcast_ip_scan_sse('status', {
             'running': False,
             'phase': 'idle',
             'percent': 100,
-            'message': '扫描完成'
+            'message': '探测完成'
         })
         
     except asyncio.CancelledError:
@@ -1770,20 +1770,20 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
                 duration_seconds=time.time() - start_time,
             )
             _db.update_ip_scan_progress(
-                running=False, phase='idle', message='扫描任务已取消'
+                running=False, phase='idle', message='探测任务已取消'
             )
         except Exception:
             pass
         raise
     except Exception as e:
-        _ip_scan_log(f"[IP扫描:{scan_id}] 扫描异常: {e}")
+        _ip_scan_log(f"[IP扫描:{scan_id}] 探测异常: {e}")
         try:
             _db.update_ip_scan_run(scan_id, status='failed', finished_at=_db.now_str(), error=str(e),
                                    duration_seconds=time.time() - start_time)
         except Exception:
             pass
-        _db.update_ip_scan_progress(running=False, phase='idle', message=f'扫描失败: {e}')
-        _broadcast_ip_scan_sse('status', {'running': False, 'message': f'扫描失败: {e}'})
+        _db.update_ip_scan_progress(running=False, phase='idle', message=f'探测失败: {e}')
+        _broadcast_ip_scan_sse('status', {'running': False, 'message': f'探测失败: {e}'})
     finally:
         if scanner is not None:
             _clear_active_ip_scanner(scanner)
@@ -1815,14 +1815,14 @@ def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000,
     try:
         bridge.start()
     except Exception as exc:
-        return {'ok': False, 'error': f'IP 扫描启动失败: {exc}', 'task': None}
+        return {'ok': False, 'error': f'IP 探测启动失败: {exc}', 'task': None}
     task_id = f"ipscan-{uuid.uuid4().hex}"
     acquired, task = _db.acquire_task_lease(
         'ip_scan', task_id, _TASK_OWNER,
-        lease_seconds=_TASK_LEASE_SECONDS, message='IP 扫描等待启动',
+        lease_seconds=_TASK_LEASE_SECONDS, message='IP 探测等待启动',
     )
     if not acquired:
-        return {'ok': False, 'error': 'IP扫描正在进行中', 'task': task}
+        return {'ok': False, 'error': 'IP 探测正在进行中', 'task': task}
 
     operation = _do_ip_scan(
         targets=targets,
@@ -1843,11 +1843,11 @@ def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000,
         _close_unsubmitted_coroutine(operation)
         _db.finish_task_lease(
             'ip_scan', task_id, state='failed',
-            message='IP 扫描启动失败', error=str(exc),
+            message='IP 探测启动失败', error=str(exc),
         )
         return {
             'ok': False,
-            'error': f'IP 扫描启动失败: {exc}',
+            'error': f'IP 探测启动失败: {exc}',
             'task': _db.get_task_lease('ip_scan'),
         }
     return {'ok': True, 'task': _db.get_task_lease('ip_scan')}
@@ -1858,12 +1858,12 @@ def request_stop_ip_scan():
     import database as _db
 
     accepted, task = _db.request_task_stop(
-        'ip_scan', message='停止 IP 扫描请求已接受'
+        'ip_scan', message='停止 IP 探测请求已接受'
     )
     if not accepted:
-        return {'ok': False, 'error': '当前没有正在运行的 IP 扫描', 'task': task}
+        return {'ok': False, 'error': '当前没有正在运行的 IP 探测', 'task': task}
     _signal_active_ip_scan_stop(task.get('task_id') if task else None)
-    return {'ok': True, 'message': '已请求停止', 'task': task}
+    return {'ok': True, 'message': '已请求停止 IP 探测', 'task': task}
 
 
 def force_clear_ip_scan():
@@ -1872,9 +1872,9 @@ def force_clear_ip_scan():
 
     cleared, task = _db.clear_stale_task_lease('ip_scan')
     if not cleared:
-        return {'ok': False, 'error': 'IP 扫描仍在运行，不能强制清除', 'task': task}
+        return {'ok': False, 'error': 'IP 探测仍在运行，不能强制清除', 'task': task}
     _db.reset_ip_scan_progress()
-    return {'ok': True, 'message': 'IP 扫描状态已清除'}
+    return {'ok': True, 'message': 'IP 探测状态已清除'}
 
 
 def get_ip_scan_status():

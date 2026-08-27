@@ -1,17 +1,17 @@
 <template>
   <div class="testing-tab">
-    <!-- 测试控制 -->
+    <!-- 全量测速控制 -->
     <t-card size="small" :bordered="false" class="panel-card">
       <div class="section-header">
-        <div class="section-title">测试控制</div>
-        <p class="section-subtitle">启动一次完整测速，并在当前页面持续查看执行进度。</p>
+        <div class="section-title">全量测速</div>
+        <p class="section-subtitle">对当前启用的数据源完成筛选与测速，并更新 TXT/M3U 播放列表。</p>
       </div>
       <div class="control-toolbar">
         <t-button theme="success" :disabled="running" :loading="starting" @click="triggerTest">
-          {{ running ? '运行中...' : '立即测试' }}
+          {{ running ? '测速中...' : '开始全量测速' }}
         </t-button>
         <t-button v-if="running" theme="danger" :disabled="stopping" @click="stopTest">
-          {{ stopping ? '终止中...' : '终止测试' }}
+          {{ stopping ? '停止中...' : '停止测速' }}
         </t-button>
         <span class="status-text">{{ statusText }}</span>
       </div>
@@ -40,7 +40,7 @@
         :entries="logLines"
         :show-count="false"
         download-name="iptv-test-session.log"
-        empty-text="等待测试开始..."
+        empty-text="等待测速开始..."
         @clear="clearLogLines"
       />
     </t-card>
@@ -48,7 +48,7 @@
     <!-- 下载链接 -->
     <t-card size="small" :bordered="false" class="panel-card panel-card--last">
       <div class="section-header section-header--compact">
-        <div class="section-title">结果订阅地址</div>
+        <div class="section-title">播放列表订阅地址</div>
         <p class="section-subtitle">复制以下地址到播放器，可自动获取最新测速通过的频道列表。</p>
       </div>
       <div v-for="fmt in ['txt', 'm3u']" :key="fmt" class="download-row">
@@ -130,7 +130,7 @@ const progressVisible = ref(false)
 const wasRunning = ref(false)
 const testFinished = ref(false)
 const progressLabel = computed(() => {
-  if (testFinished.value) return '测试完成'
+  if (testFinished.value) return '测速完成'
   const t = testProgress.total || 0
   return t > 0 ? `${testProgress.processed} / ${t}` : '准备中...'
 })
@@ -174,7 +174,7 @@ async function triggerTest() {
   try {
     const res = await apiTriggerTest()
     registerTask('test', res)
-    MessagePlugin.success('测试已启动')
+    MessagePlugin.success('全量测速已启动')
     clearTestLogs()
     testProgress.running = true
     testFinished.value = false
@@ -247,7 +247,7 @@ function copyPreview() {
     .catch(() => MessagePlugin.error('复制失败'))
 }
 
-// 监听全局测试状态变化
+// 监听全局测速状态变化
 watch(() => testProgress.running, (isRunning) => {
   if (isRunning) {
     wasRunning.value = true
@@ -259,7 +259,7 @@ watch(() => testProgress.running, (isRunning) => {
     testFinished.value = true
     statusText.value = '已完成'
     emit('test-finished')
-    MessagePlugin.success('测试已完成')
+    MessagePlugin.success('全量测速已完成')
   }
 }, { immediate: true })
 

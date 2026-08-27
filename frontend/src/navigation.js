@@ -10,18 +10,18 @@ export const NAV_GROUPS = [
     label: '质量',
     value: 'quality',
     items: [
-      { value: 'scan-results', label: '扫描频道', short: '频', description: '筛选、复检并导出扫描发现的频道地址' },
-      { value: 'sources', label: '数据来源', short: '源', description: '按质量评分查看订阅源、扫描平台及频道覆盖' },
-      { value: 'detection', label: '检测监控', short: '检', description: '管理定期检测策略并追踪质量变化' },
+      { value: 'scan-results', label: '候选源池', short: '池', description: '筛选、复检并导出测绘采集得到的频道地址' },
+      { value: 'sources', label: '数据来源', short: '源', description: '按质量评分查看订阅源、测绘平台及频道覆盖' },
+      { value: 'detection', label: '健康复检', short: '检', description: '管理候选源池复检策略并追踪质量变化' },
     ],
   },
   {
     label: '任务',
     value: 'tasks',
     items: [
-      { value: 'testing', label: '系统测试', short: '测', description: '启动测速任务并跟踪实时进度' },
-      { value: 'scanner', label: '频道扫描', short: '扫', description: '执行测绘平台扫描并观察运行日志' },
-      { value: 'ip-scan', label: 'IP 扫描', short: 'IP', description: '批量探测指定 IP、域名与端口' },
+      { value: 'testing', label: '全量测速', short: '测', description: '对启用的数据源执行测速并更新播放列表' },
+      { value: 'scanner', label: '测绘采集', short: '采', description: '从测绘平台、搜索引擎及补探测流程采集候选源' },
+      { value: 'ip-scan', label: 'IP 探测', short: 'IP', description: '批量探测指定 IP、域名与端口' },
     ],
   },
   {
@@ -29,7 +29,7 @@ export const NAV_GROUPS = [
     value: 'configuration',
     items: [
       { value: 'history', label: '历史记录', short: '史', description: '按日期查询、展开并对比历次测速结果' },
-      { value: 'configuration', label: '配置中心', short: '配', description: '集中维护系统参数、文本文件与扫描策略' },
+      { value: 'configuration', label: '配置中心', short: '配', description: '集中维护系统参数、文本文件与采集策略' },
     ],
   },
 ]

@@ -3,11 +3,11 @@
     <t-card size="small" :bordered="false" class="center-nav workspace-card">
       <div>
         <div class="center-title">配置中心</div>
-        <p>系统参数与文本文件、扫描策略与平台 Key 分开维护，保存动作只作用于当前子页。</p>
+        <p>系统参数与文本文件、采集策略与平台 Key 分开维护，保存动作只作用于当前子页。</p>
       </div>
       <t-tabs :model-value="section" class="center-tabs" @change="onSectionChange">
         <t-tab-panel value="system" label="系统配置" />
-        <t-tab-panel value="scan" label="扫描配置" />
+        <t-tab-panel value="scan" label="采集配置" />
       </t-tabs>
     </t-card>
 

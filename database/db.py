@@ -29,7 +29,8 @@ PERSISTENT_RETENTION_DAYS = 90
 QUALITY_HISTORY_RETENTION_DAYS = 90
 SCANNER_BANDWIDTH_UNIT_MARKER = 'scanner_bandwidth_unit'
 SCANNER_BANDWIDTH_UNIT_MBPS = 'MB/s'
-SCAN_SOURCE_LABEL_PREFIX = '扫描结果池 · '
+SCAN_SOURCE_LABEL_PREFIX = '候选源池 · '
+LEGACY_SCAN_SOURCE_LABEL_PREFIXES = ('扫描结果池 · ',)
 SCAN_SOURCE_PLATFORM_FALLBACK = '未标注平台'
 
 # 全局写入锁
@@ -42,6 +43,23 @@ def scan_source_label(platform):
     if name.casefold() in {'未知', 'unknown', 'n/a', 'na'}:
         name = ''
     return f"{SCAN_SOURCE_LABEL_PREFIX}{name or SCAN_SOURCE_PLATFORM_FALLBACK}"
+
+
+def normalize_scan_source_label(value):
+    """Map persisted legacy scan-pool labels to the current display wording."""
+    if not isinstance(value, str):
+        return value
+    for prefix in LEGACY_SCAN_SOURCE_LABEL_PREFIXES:
+        if value.startswith(prefix):
+            return f"{SCAN_SOURCE_LABEL_PREFIX}{value[len(prefix):]}"
+    return value
+
+
+def _run_result_dict(row):
+    item = dict(row)
+    if 'source_url' in item:
+        item['source_url'] = normalize_scan_source_label(item.get('source_url'))
+    return item
 
 
 class MySQLConnection:
@@ -1754,7 +1772,7 @@ def get_latest_run():
             'unique_channels_passed': run['unique_channels_passed'],
             'unique_channels_total': run['unique_channels_total'],
         },
-        'results': [dict(r) for r in results],
+        'results': [_run_result_dict(r) for r in results],
     }
 
 
@@ -1857,7 +1875,7 @@ def get_run_detail(run_id, page=None, size=50):
             f"SELECT * FROM run_results WHERE run_id = %s {order} LIMIT %s OFFSET %s",
             (run_id, size, offset)
         ).fetchall()
-        base['results'] = [dict(r) for r in results]
+        base['results'] = [_run_result_dict(r) for r in results]
         base['total_results'] = total
         base['page'] = page
         base['page_size'] = size
@@ -1866,7 +1884,7 @@ def get_run_detail(run_id, page=None, size=50):
             f"SELECT * FROM run_results WHERE run_id = %s {order}",
             (run_id,)
         ).fetchall()
-        base['results'] = [dict(r) for r in results]
+        base['results'] = [_run_result_dict(r) for r in results]
 
     return base
 
@@ -1899,7 +1917,7 @@ def get_channel_summary(run_id):
         ch = r['channel']
         if ch not in details_by_channel:
             details_by_channel[ch] = []
-        details_by_channel[ch].append(dict(r))
+        details_by_channel[ch].append(_run_result_dict(r))
 
     summary = {}
     for r in rows:
@@ -1986,7 +2004,7 @@ def get_channel_summary_with_source(run_id, page=None, size=20):
         if ch not in details_by_channel:
             details_by_channel[ch] = []
             sources_by_channel[ch] = set()
-        row_dict = dict(r)
+        row_dict = _run_result_dict(r)
         platform = url_platform.get(r['url'])
         row_dict['platform'] = platform or ''
         details_by_channel[ch].append(row_dict)

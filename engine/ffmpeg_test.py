@@ -36,7 +36,7 @@ def request_timeout(deadline, connect_timeout=3, read_timeout=3):
     """根据单频道截止时间动态收紧 requests 超时。"""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise TimeoutError("单频道测试超时")
+        raise TimeoutError("单频道测速超时")
 
     timeout = max(0.5, remaining)
     return min(connect_timeout, timeout), min(read_timeout, timeout)
@@ -639,7 +639,7 @@ def test_direct_bandwidth(url, width, height, duration):
         elapsed_time = time.monotonic() - data_start
         return build_bandwidth_result(width, height, total_bytes, elapsed_time, connection_latency_ms=connection_latency_ms)
     except Exception as e:
-        return {'success': False, 'error': f"直链 测试失败: {str(e)}"}
+        return {'success': False, 'error': f"直链测速失败: {str(e)}"}
 
 
 def test_hls_bandwidth(url, width, height, duration):
@@ -747,7 +747,7 @@ def test_hls_bandwidth(url, width, height, duration):
             result['download_speed_mbps'] = round(((total_bytes / (1024 * 1024)) / download_seconds) * 8, 2)
         return result
     except Exception as e:
-        return {'success': False, 'error': f"HLS 测试失败: {str(e)}"}
+        return {'success': False, 'error': f"HLS 测速失败: {str(e)}"}
 
 
 def load_urls_from_file(filepath='subscribe.txt'):

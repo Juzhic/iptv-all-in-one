@@ -16,6 +16,7 @@ from database.db import (  # noqa: F401
     DEFAULT_DEMO,
     SCAN_SOURCE_LABEL_PREFIX,
     SCAN_SOURCE_PLATFORM_FALLBACK,
+    normalize_scan_source_label,
     scan_source_label,
     # 配置
     get_config_data,

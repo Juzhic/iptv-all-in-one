@@ -48,7 +48,7 @@ function countCard(label, key, latest, status) {
   return {
     label,
     value: latest ? value.toLocaleString() : '--',
-    sub: latest ? deltaText(latest.deltas?.[key]) : '等待首次频道扫描',
+    sub: latest ? deltaText(latest.deltas?.[key]) : '等待首次测绘采集',
     status: latest ? status : '待采集',
     tone: latest ? 'info' : 'muted',
     progress: null,
@@ -72,12 +72,12 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
     const subscriptionRate = percentRate(subscription?.pass_rate)
 
     return [
-      countCard('扫描原始数', 'total_raw', scanLatest, '已采集'),
-      countCard('扫描去重数', 'total_deduped', scanLatest, '已归并'),
+      countCard('采集原始数', 'total_raw', scanLatest, '已采集'),
+      countCard('采集去重数', 'total_deduped', scanLatest, '已归并'),
       countCard('快速通过数', 'total_fast_pass', scanLatest, '已快筛'),
       countCard('深检通过数', 'total_deep_pass', scanLatest, '已验证'),
       {
-        label: '持久池良好率',
+        label: '候选源池良好率',
         value: decided ? `${goodRate.toFixed(1)}%` : '--',
         sub: `良好 ${poolGood} · 较差 ${poolPoor} · 不可达 ${poolUnreachable} · 待定 ${poolPending}`,
         status: decided ? (goodRate >= 80 ? '健康' : '需关注') : '待采集',
@@ -87,8 +87,8 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
       {
         label: '数据来源 / 频道',
         value: subscription ? `${number(subscription.source_count)} / ${number(subscription.channels_total)}` : '--',
-        sub: subscription ? `通过频道 ${number(subscription.channels_passed).toLocaleString()}` : '等待首次系统测试',
-        status: subscription ? '最新一轮' : '待采集',
+        sub: subscription ? `通过频道 ${number(subscription.channels_passed).toLocaleString()}` : '等待首次全量测速',
+        status: subscription ? '最新一轮' : '待测速',
         tone: subscription ? 'info' : 'muted',
         progress: null,
       },
@@ -97,18 +97,18 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
         value: subscription ? `${subscriptionRate.toFixed(1)}%` : '--',
         sub: subscription
           ? `${number(subscription.channels_passed).toLocaleString()} / ${number(subscription.channels_total).toLocaleString()} 个频道通过`
-          : '等待首次系统测试',
-        status: subscription ? (subscriptionRate >= 80 ? '健康' : '需关注') : '待采集',
+          : '等待首次全量测速',
+        status: subscription ? (subscriptionRate >= 80 ? '健康' : '需关注') : '待测速',
         tone: subscription ? (subscriptionRate >= 80 ? 'good' : 'warn') : 'muted',
         progress: subscription ? subscriptionRate : null,
       },
       {
-        label: '订阅平均质量',
+        label: '数据来源平均质量',
         value: subscription ? `${number(subscription.avg_bandwidth_MBps).toFixed(2)} MB/s` : '--',
         sub: subscription
           ? `平均质量 ${number(subscription.avg_quality).toFixed(2)} · ${runningTaskCount} 个任务活动`
           : '等待带宽和质量样本',
-        status: subscription ? '已聚合' : '待采集',
+        status: subscription ? '已聚合' : '待测速',
         tone: subscription ? 'good' : 'muted',
         progress: null,
       },
@@ -123,8 +123,8 @@ export function buildDashboardCards(dashboard, latestRun, runningTaskCount = 0) 
       value: latestRun ? `${passRate.toFixed(1)}%` : '--',
       sub: latestRun
         ? `${number(summary.total_passed).toLocaleString()} / ${number(summary.total_tested).toLocaleString()} 个地址通过`
-        : '等待首次系统测试',
-      status: passRate >= 80 ? '健康' : (latestRun ? '需关注' : '待采集'),
+        : '等待首次全量测速',
+      status: passRate >= 80 ? '健康' : (latestRun ? '需关注' : '待测速'),
       tone: passRate >= 80 ? 'good' : (latestRun ? 'warn' : 'muted'),
       progress: latestRun ? percentRate(passRate) : null,
     },

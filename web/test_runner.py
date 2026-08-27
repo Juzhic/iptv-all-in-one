@@ -100,15 +100,15 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
             )
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"测试失败: {e}")
-            _on_log(f"测试异常终止: {e}")
+            logging.getLogger(__name__).error(f"全量测速失败: {e}")
+            _on_log(f"全量测速异常终止: {e}")
             with _state._progress_lock:
                 _state._test_progress['error'] = str(e)
         finally:
             with _state._test_lock:
                 is_current_run = _state._test_active_token is run_token
             if is_current_run:
-                _on_log("后台测试任务已结束")
+                _on_log("后台全量测速任务已结束")
                 with _state._test_lock, _state._progress_lock:
                     total = _state._test_progress.get('total', 0)
                     processed = _state._test_progress.get('processed', 0)
@@ -140,11 +140,11 @@ def _start_test_background(trigger_source='web', test_list=None, scan_id=None):
                         content = (
                             f"通过率: **{pr}%**\n"
                             f"频道覆盖: **{s.get('unique_channels_passed', 0)}/{s.get('unique_channels_total', 0)}**\n"
-                            f"测试数: {s.get('total_tested', 0)}, 通过: {s.get('total_passed', 0)}, 失败: {s.get('total_failed', 0)}\n"
+                            f"测速数: {s.get('total_tested', 0)}, 通过: {s.get('total_passed', 0)}, 失败: {s.get('total_failed', 0)}\n"
                             f"耗时: {round(s.get('duration_seconds', 0) / 60, 1)} 分钟"
                             f"{alert}"
                         )
-                        send_webhook('test', '📊 IPTV 测速完成', content)
+                        send_webhook('test', '📊 IPTV 全量测速完成', content)
                 except Exception:
                     pass
             if is_current_run:

@@ -53,7 +53,7 @@ class KeyDepletedError(Exception):
 # ==================== 重试和限流工具 ====================
 
 def _is_stop_requested():
-    from . import scan_state
+    from .. import scan_state
     return scan_state.stop_requested
 
 

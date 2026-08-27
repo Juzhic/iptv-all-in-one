@@ -4,6 +4,8 @@
 Re-exports public API for backward compatibility.
 """
 
+from .. import scan_state
+
 from .shared import (
     QUALITY_QUERY_PROFILES,
     is_valid_stream_url,

@@ -1,6 +1,6 @@
 <template>
   <div v-if="latestRun || hasDashboardData" class="overview-tab">
-    <section v-if="dashboardSignals.length" class="operations-grid" aria-label="扫描与任务状态">
+    <section v-if="dashboardSignals.length" class="operations-grid" aria-label="采集与任务状态">
       <article v-for="signal in dashboardSignals" :key="signal.label" class="operation-cell">
         <div class="operation-label">{{ signal.label }}</div>
         <div class="operation-value" :class="signal.tone">{{ signal.value }}</div>
@@ -8,17 +8,17 @@
       </article>
     </section>
 
-    <section v-if="hasAggregatedDashboard" class="quality-snapshot-grid" aria-label="扫描和数据来源质量趋势">
+    <section v-if="hasAggregatedDashboard" class="quality-snapshot-grid" aria-label="采集和数据来源质量趋势">
       <article class="quality-snapshot-card">
         <div class="panel-head quality-snapshot-head">
           <div>
-            <div class="panel-title">频道扫描质量</div>
-            <div class="panel-subtitle">最近 {{ scanTrendRows.length }} 轮漏斗与当前持久池状态</div>
+            <div class="panel-title">测绘采集质量</div>
+            <div class="panel-subtitle">最近 {{ scanTrendRows.length }} 轮漏斗与当前候选源池状态</div>
           </div>
           <span class="panel-badge">良好率 {{ formatPercent(scanPool.good_rate_percent) }}</span>
         </div>
 
-        <div class="pool-status-row" aria-label="持久池质量状态">
+        <div class="pool-status-row" aria-label="候选源池质量状态">
           <span class="pool-chip good">良好 {{ number(scanPool.good) }}</span>
           <span class="pool-chip poor">较差 {{ number(scanPool.poor) }}</span>
           <span class="pool-chip unreachable">不可达 {{ number(scanPool.unreachable) }}</span>
@@ -31,7 +31,7 @@
         </div>
 
         <div class="quality-table-shell">
-          <div class="quality-table quality-table-scan" role="table" aria-label="频道扫描最近趋势">
+          <div class="quality-table quality-table-scan" role="table" aria-label="测绘采集最近趋势">
             <div class="quality-table-row quality-table-header" role="row">
               <span role="columnheader">轮次</span><span role="columnheader">原始</span><span role="columnheader">去重</span><span role="columnheader">快筛</span><span role="columnheader">深检</span>
             </div>
@@ -105,7 +105,7 @@
         <t-card size="small" :bordered="false" class="panel-card chart-card">
           <div class="panel-head">
             <div>
-              <div class="panel-title">测试规模趋势</div>
+              <div class="panel-title">测速规模趋势</div>
               <div class="panel-subtitle">绿色为通过地址，红色为失败地址</div>
             </div>
             <span class="panel-badge">最新 {{ latestRun?.summary?.total_tested || 0 }} 条</span>
@@ -174,7 +174,7 @@
   <div v-else class="empty-state">
     <ChartIcon size="48px" />
     <p>暂无测速数据</p>
-    <p class="empty-state-sub">请前往“系统测试”页，点击“立即测试”发起首次检测</p>
+    <p class="empty-state-sub">请前往“全量测速”页，点击“开始全量测速”发起首次测速</p>
   </div>
 </template>
 
@@ -292,7 +292,7 @@ const dashboardSignals = computed(() => {
     {
       label: '退化来源',
       value: compactSource(props.dashboard.subscriptions?.degraded_source),
-      detail: props.dashboard.subscriptions?.degraded_source ? '建议进入扫描结果复检' : '当前未发现明显退化',
+      detail: props.dashboard.subscriptions?.degraded_source ? '建议复核该数据来源' : '当前未发现明显退化',
       tone: props.dashboard.subscriptions?.degraded_source ? 'red' : 'green',
     },
     {
@@ -402,7 +402,7 @@ const highlights = computed(() => {
 
   return [
     {
-      name: '最近一次测试',
+      name: '最近一次测速',
       desc: `${latestRun.finished_at}，覆盖 ${latestRun.summary?.unique_channels_passed || 0}/${latestRun.summary?.unique_channels_total || 0} 个频道`,
       value: `${Number(latestRun.summary?.pass_rate || 0).toFixed(1)}%`,
       klass: Number(latestRun.summary?.pass_rate || 0) >= 50 ? 'good' : 'warn',

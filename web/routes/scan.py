@@ -82,7 +82,7 @@ def _ensure_scan_bridge():
     """确保扫描桥接层已初始化。"""
     scanner = _get_scanner()
     if scanner is None:
-        return None, jsonify({'ok': False, 'error': '扫描模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
+        return None, jsonify({'ok': False, 'error': '测绘采集模块依赖未安装，请先安装 aiohttp: pip install aiohttp'}), 503
     if scanner.bridge._loop is None or not scanner.bridge._loop.is_running():
         scanner.init_bridge()
     return scanner, None, None
@@ -127,7 +127,7 @@ def api_scan_trigger():
     task = result.get('task') or {}
     return jsonify({
         'ok': True,
-        'message': '扫描已启动',
+        'message': '测绘采集已启动',
         'task_id': task.get('task_id'),
         'state': 'starting',
         'data': result.get('task'),
@@ -150,7 +150,7 @@ def api_scan_trigger_incremental():
     task = result.get('task') or {}
     return jsonify({
         'ok': True,
-        'message': '增量扫描已启动',
+        'message': '增量测绘采集已启动',
         'mode': 'incremental',
         'task_id': task.get('task_id'),
         'state': 'starting',
@@ -183,7 +183,7 @@ def api_scan_force_clear():
     scanner = _get_scanner()
     if scanner is None:
         db.clear_scan_progress()
-        return jsonify({'ok': True, 'message': '扫描状态已清除'})
+        return jsonify({'ok': True, 'message': '测绘采集状态已清除'})
     result = scanner.force_clear_scan()
     if result.get('error'):
         return jsonify({'ok': False, 'error': result['error'], 'data': result.get('task')}), 409
@@ -195,7 +195,7 @@ def api_scan_status():
     """获取扫描实时进度。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'ok': True, 'data': {'running': False, 'phase': 'idle', 'message': '扫描模块未安装'}})
+        return jsonify({'ok': True, 'data': {'running': False, 'phase': 'idle', 'message': '测绘采集模块未安装'}})
     status = scanner.get_scan_status()
     return jsonify({'ok': True, 'data': status})
 
@@ -205,7 +205,7 @@ def api_scan_stream():
     """SSE 实时推送扫描进度和日志。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+        return jsonify({'ok': False, 'error': '测绘采集模块未安装'}), 503
     slot = acquire_sse_slot()
     if slot is None:
         return jsonify({'ok': False, 'error': 'SSE 连接数已达上限'}), 429
@@ -269,7 +269,7 @@ def api_scan_results_export():
     """Stream every scan result matching the same filters as the table API."""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+        return jsonify({'ok': False, 'error': '测绘采集模块未安装'}), 503
     output_format = (request.args.get('format') or 'm3u').strip().lower()
     if output_format not in ('txt', 'm3u'):
         return jsonify({'ok': False, 'error': 'format must be txt or m3u'}), 400
@@ -818,7 +818,7 @@ def api_detection_stream():
     """SSE 实时推送检测日志。"""
     scanner = _get_scanner()
     if scanner is None:
-        return jsonify({'ok': False, 'error': '扫描模块未安装'}), 503
+        return jsonify({'ok': False, 'error': '测绘采集模块未安装'}), 503
     slot = acquire_sse_slot()
     if slot is None:
         return jsonify({'ok': False, 'error': 'SSE 连接数已达上限'}), 429

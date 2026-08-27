@@ -209,7 +209,7 @@ export function apiGetSources(params = {}, opts = {}) {
   return fetchJSON(withQuery('/api/sources', params), opts)
 }
 
-// ─── 测试控制 ───
+// ─── 全量测速控制 ───
 export function apiTriggerTest(opts = {}) {
   return postJSON('/api/trigger', {}, opts).then(responseTask)
 }
@@ -470,7 +470,7 @@ export function connectScanSse(handlers = {}) {
   return createSseConnection('/api/scan/stream', handlers)
 }
 
-// ─── IP扫描 ───
+// ─── IP 探测 ───
 export function apiIpScanTrigger(data, opts = {}) {
   return postJSON('/api/ip-scan/trigger', data, opts).then(responseTask)
 }

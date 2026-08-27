@@ -176,5 +176,5 @@ async def domain_ip_scan(
         async with aiohttp.ClientSession() as new_session:
             result = await _scan(new_session)
 
-    logger.info(f"[域名/IP扫描] 共发现 {len(result)} 个唯一IP")
+    logger.info(f"[域名/IP探测] 共发现 {len(result)} 个唯一IP")
     return result

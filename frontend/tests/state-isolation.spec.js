@@ -22,8 +22,8 @@ describe('page state and lazy loading contracts', () => {
   })
 
   it('labels current-page and all-filtered export actions distinctly', () => {
-    expect(resultsSource).toContain('导出本页 M3U')
-    expect(resultsSource).toContain('导出全部筛选结果')
+    expect(resultsSource).toContain('导出本页候选 M3U')
+    expect(resultsSource).toContain('导出筛选候选 M3U')
     expect(resultsSource).toContain('apiScanAllResults')
   })
 })

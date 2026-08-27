@@ -182,7 +182,7 @@ async def scan_community_sources(session=None, extra_urls=None):
             urls = [_apply_proxy(url, github_proxy) for url in urls]
             logger.info(f"[Community] 已启用 GitHub 反代: {github_proxy}")
 
-        logger.info(f"[Community] 开始扫描 {len(urls)} 个社区源")
+        logger.info(f"[Community] 开始采集 {len(urls)} 个社区源")
         tasks = [fetch_community_m3u(session, url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -203,7 +203,7 @@ async def scan_community_sources(session=None, extra_urls=None):
                 seen.add(url)
                 unique.append(ch)
 
-        logger.info(f"[Community] 扫描完成，原始 {len(all_channels)} 条，去重后 {len(unique)} 条")
+        logger.info(f"[Community] 采集完成，原始 {len(all_channels)} 条，去重后 {len(unique)} 条")
         return unique
 
     finally:
