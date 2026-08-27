@@ -29,9 +29,19 @@ PERSISTENT_RETENTION_DAYS = 90
 QUALITY_HISTORY_RETENTION_DAYS = 90
 SCANNER_BANDWIDTH_UNIT_MARKER = 'scanner_bandwidth_unit'
 SCANNER_BANDWIDTH_UNIT_MBPS = 'MB/s'
+SCAN_SOURCE_LABEL_PREFIX = '扫描结果池 · '
+SCAN_SOURCE_PLATFORM_FALLBACK = '未标注平台'
 
 # 全局写入锁
 _write_lock = threading.Lock()
+
+
+def scan_source_label(platform):
+    """Return the stable display label used for streams from the scan pool."""
+    name = ' '.join(str(platform or '').split())
+    if name.casefold() in {'未知', 'unknown', 'n/a', 'na'}:
+        name = ''
+    return f"{SCAN_SOURCE_LABEL_PREFIX}{name or SCAN_SOURCE_PLATFORM_FALLBACK}"
 
 
 class MySQLConnection:
@@ -4056,11 +4066,19 @@ def get_persistent_for_test():
     返回 [(channel_info_dict, url)] 格式，与 test_engine 的 test_list 兼容。"""
     conn = _get_conn()
     rows = conn.execute(
-        """SELECT name, url FROM persistent_scan_results
+        """SELECT name, url, platform FROM persistent_scan_results
            WHERE deleted_at IS NULL
            ORDER BY stability DESC, bandwidth DESC"""
     ).fetchall()
-    return [({'name': r['name']}, r['url']) for r in rows]
+    return [
+        ({
+            'name': r['name'],
+            # Keep this provenance in the test run so later scans cannot
+            # overwrite the platform shown for historical results.
+            'source_url': scan_source_label(r.get('platform')),
+        }, r['url'])
+        for r in rows
+    ]
 
 
 def get_all_persistent_for_check():

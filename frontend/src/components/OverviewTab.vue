@@ -8,7 +8,7 @@
       </article>
     </section>
 
-    <section v-if="hasAggregatedDashboard" class="quality-snapshot-grid" aria-label="扫描和订阅质量趋势">
+    <section v-if="hasAggregatedDashboard" class="quality-snapshot-grid" aria-label="扫描和数据来源质量趋势">
       <article class="quality-snapshot-card">
         <div class="panel-head quality-snapshot-head">
           <div>
@@ -49,14 +49,14 @@
       <article class="quality-snapshot-card">
         <div class="panel-head quality-snapshot-head">
           <div>
-            <div class="panel-title">订阅来源质量</div>
+            <div class="panel-title">数据来源质量</div>
             <div class="panel-subtitle">来源数量、频道覆盖、带宽和质量分趋势</div>
           </div>
           <span class="panel-badge">通过率 {{ formatPercent(subscriptionLatest.pass_rate, true) }}</span>
         </div>
 
-        <div class="subscription-snapshot" aria-label="最新订阅质量">
-          <span><strong>{{ number(subscriptionLatest.source_count) }}</strong><small>订阅源</small></span>
+        <div class="subscription-snapshot" aria-label="最新数据来源质量">
+          <span><strong>{{ number(subscriptionLatest.source_count) }}</strong><small>数据来源</small></span>
           <span><strong>{{ number(subscriptionLatest.channels_total) }}</strong><small>频道总数</small></span>
           <span><strong>{{ number(subscriptionLatest.channels_passed) }}</strong><small>通过频道</small></span>
           <span><strong>{{ number(subscriptionLatest.avg_bandwidth_MBps, 2) }}</strong><small>MB/s</small></span>
@@ -64,7 +64,7 @@
         </div>
 
         <div class="quality-table-shell">
-          <div class="quality-table quality-table-subscription" role="table" aria-label="订阅质量最近趋势">
+          <div class="quality-table quality-table-subscription" role="table" aria-label="数据来源质量最近趋势">
             <div class="quality-table-row quality-table-header" role="row">
               <span role="columnheader">轮次</span><span role="columnheader">来源</span><span role="columnheader">频道</span><span role="columnheader">通过率</span><span role="columnheader">带宽</span><span role="columnheader">质量</span>
             </div>
@@ -286,7 +286,7 @@ const dashboardSignals = computed(() => {
     {
       label: '最佳来源',
       value: compactSource(props.dashboard.subscriptions?.best_source),
-      detail: '按最新订阅质量评估',
+      detail: '按最新数据来源质量评估',
       tone: 'green',
     },
     {

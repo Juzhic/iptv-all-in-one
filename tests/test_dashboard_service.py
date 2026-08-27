@@ -31,6 +31,16 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertNotIn('secret', masked)
         self.assertNotIn('token', masked)
 
+    def test_scan_source_label_is_not_masked(self):
+        self.assertEqual(
+            '扫描结果池 · Quake 360',
+            _MODULE.mask_source_url('扫描结果池 · Quake 360'),
+        )
+        self.assertEqual(
+            '扫描结果池 · 未标注平台',
+            _MODULE.mask_source_url('扫描结果池 · 未标注平台'),
+        )
+
     def test_sources_page_uses_bound_parameters_for_score_sort(self):
         class Result:
             def __init__(self, one=None, many=None):
@@ -45,6 +55,7 @@ class DashboardServiceTests(unittest.TestCase):
 
         class Connection:
             def execute(self, sql, params=None):
+                self.queries.append(sql)
                 params = list(params or [])
                 self.assert_placeholder_count(sql, params)
                 if 'FROM runs ORDER BY' in sql:
@@ -67,11 +78,16 @@ class DashboardServiceTests(unittest.TestCase):
                     raise AssertionError((sql.count('%s'), len(params)))
 
         connection = Connection()
+        connection.queries = []
         with patch.object(_MODULE.db, '_get_conn', return_value=connection), \
              patch.object(_MODULE.db, 'get_config_data', return_value='CCTV-1\nCCTV-2'):
             page = _MODULE.get_sources_page(search='example', sort_by='score')
         self.assertEqual(1, page['total'])
         self.assertEqual('https://example.com/•••', page['items'][0]['source_url'])
+        self.assertTrue(any(
+            'LEFT JOIN persistent_scan_results psr ON psr.url = rr.url' in sql
+            for sql in connection.queries
+        ))
 
 
 if __name__ == '__main__':
