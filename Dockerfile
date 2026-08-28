@@ -20,6 +20,7 @@ ENV TZ=Asia/Shanghai \
 
 # Install the minimal runtime system packages.
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ffmpeg tzdata && \
     rm -rf /var/lib/apt/lists/*
 
