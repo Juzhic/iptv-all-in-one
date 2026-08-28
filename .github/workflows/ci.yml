@@ -17,43 +17,65 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     services:
-      mysql:
-        image: mysql:8.4
+      postgres:
+        image: postgres:18
         env:
-          MYSQL_ROOT_PASSWORD: ci-root-db-password-with-32-bytes-2.0
-          MYSQL_DATABASE: iptv_test
-          MYSQL_USER: iptv_app
-          MYSQL_PASSWORD: ci-app-db-password-with-32-bytes-2.0
+          POSTGRES_USER: iptv_admin
+          POSTGRES_PASSWORD: ci-admin-db-password-with-32-bytes-3.0
+          POSTGRES_DB: iptv_test
         ports:
-          - 3306:3306
+          - 5432:5432
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -pci-root-db-password-with-32-bytes-2.0"
+          --health-cmd="pg_isready -h 127.0.0.1 -U iptv_admin -d iptv_test"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=10
+          --health-retries=12
     env:
       DB_HOST: 127.0.0.1
-      DB_PORT: 3306
+      DB_PORT: 5432
       DB_USER: iptv_app
-      DB_PASSWORD: ci-app-db-password-with-32-bytes-2.0
+      DB_PASSWORD: ci-app-db-password-with-32-bytes-3.0
       DB_NAME: iptv_test
       IPTV_AUTH_USERNAME: ci-admin
-      IPTV_AUTH_PASSWORD: ci-basic-auth-password-with-32-bytes-2.0
-      IPTV_SECRET_KEY: ci-secret-key-with-at-least-thirty-two-bytes-2.0
+      IPTV_AUTH_PASSWORD: ci-basic-auth-password-with-32-bytes-3.0
+      IPTV_SECRET_KEY: ci-secret-key-with-at-least-thirty-two-bytes-3.0
       IPTV_REQUIRE_STRONG_CREDENTIALS: '1'
+      IPTV_REQUIRE_DATABASE: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
           cache: pip
+      - name: Create the least-privileged application role
+        env:
+          PG_ADMIN_PASSWORD: ci-admin-db-password-with-32-bytes-3.0
+        run: |
+          set -euo pipefail
+          postgres_container='${{ job.services.postgres.id }}'
+          docker exec -i -e PGPASSWORD="$PG_ADMIN_PASSWORD" "$postgres_container" \
+            psql -U iptv_admin -d postgres --set=ON_ERROR_STOP=1 <<'SQL'
+          DO $do$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iptv_app') THEN
+              CREATE ROLE iptv_app LOGIN
+                PASSWORD 'ci-app-db-password-with-32-bytes-3.0'
+                NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
+            END IF;
+          END
+          $do$;
+          ALTER DATABASE iptv_test OWNER TO iptv_app;
+          \connect iptv_test
+          CREATE EXTENSION IF NOT EXISTS pgcrypto;
+          GRANT USAGE, CREATE ON SCHEMA public TO iptv_app;
+          SQL
       - name: Install backend dependencies
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Compile Python sources
         run: python -m compileall -q database engine scanner_integration web
-      - name: Run backend unit and MySQL integration tests
+      - name: Run backend unit and PostgreSQL 18 integration tests
         run: python -m pytest -q
 
   frontend:
@@ -82,224 +104,161 @@ jobs:
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Build candidate image
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Verify amd64 and arm64 image builds
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build the native smoke-test image
         run: docker build --tag iptv-test:ci .
-      - name: Validate Compose for fresh and legacy environments
+      - name: Render and validate the single-file deployment
         run: |
           set -euo pipefail
-          workdir=$(mktemp -d)
-          trap 'rm -rf "$workdir"' EXIT
-
-          cp docker-compose.yml "$workdir/docker-compose.yml"
-          cp .env.example generate_env.py "$workdir/"
-          (
-            cd "$workdir"
-            python generate_env.py
-            docker compose config --quiet
-          )
-
-          cat > "$workdir/.env" <<EOF
-          DB_HOST=mysql
-          DB_PORT=3306
-          DB_PASSWORD=legacy-root-password
-          DB_NAME=iptv-all-in-one
-          EOF
-          (
-            cd "$workdir"
-            docker compose config --quiet
-          )
-      - name: Start MySQL and application
+          mkdir ci-compose
+          cp docker-compose.yml ci-compose/docker-compose.yml
+          sed -i \
+            -e 's#__POSTGRES_ADMIN_PASSWORD__#ci-admin-db-password-with-32-bytes-3.0#g' \
+            -e 's#__POSTGRES_APP_PASSWORD__#ci-app-db-password-with-32-bytes-3.0#g' \
+            -e 's#__IPTV_AUTH_PASSWORD__#ci-basic-auth-password-with-32-bytes-3.0#g' \
+            -e 's#__IPTV_SECRET_KEY__#ci-secret-key-with-at-least-thirty-two-bytes-3.0#g' \
+            -e 's#juzhic/iptv-all-in-one:3.0.0#iptv-test:ci#g' \
+            ci-compose/docker-compose.yml
+          docker compose -f ci-compose/docker-compose.yml config --quiet
+          if grep -Eq '__[A-Z0-9_]+__' ci-compose/docker-compose.yml; then
+            echo '::error::Generated Compose still contains replacement tokens' >&2
+            exit 1
+          fi
+      - name: Start PostgreSQL 18 and the application
         run: |
-          docker network create iptv-ci-network
-          docker run -d --name iptv-ci-mysql --network iptv-ci-network \
-            -e MYSQL_ROOT_PASSWORD=ci-root-db-password-with-32-bytes-2.0 \
-            -e MYSQL_DATABASE=iptv_test \
-            -e MYSQL_USER=iptv_app \
-            -e MYSQL_PASSWORD=ci-app-db-password-with-32-bytes-2.0 \
-            mysql:8.4
-          for attempt in $(seq 1 60); do
-            if docker exec iptv-ci-mysql mysqladmin ping -h localhost -pci-root-db-password-with-32-bytes-2.0 --silent; then break; fi
+          set -euo pipefail
+          export COMPOSE_PROJECT_NAME=iptvci
+          compose=(docker compose -f ci-compose/docker-compose.yml)
+          "${compose[@]}" up -d
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:58080/api/health >/dev/null; then
+              init_container=$("${compose[@]}" ps -aq postgres-init)
+              test -n "$init_container"
+              test "$(docker inspect --format '{{.State.ExitCode}}' "$init_container")" = 0
+              exit 0
+            fi
             sleep 2
           done
-          docker run -d --name iptv-ci-app --network iptv-ci-network -p 58080:58080 \
-            --user 10001:10001 \
-            --read-only \
-            --cap-drop ALL \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777 \
-            --tmpfs /app/output:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
-            --tmpfs /app/data:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
-            -e DB_HOST=iptv-ci-mysql -e DB_PORT=3306 -e DB_NAME=iptv_test \
-            -e DB_USER=iptv_app -e DB_PASSWORD=ci-app-db-password-with-32-bytes-2.0 \
-            -e IPTV_AUTH_USERNAME=ci-admin \
-            -e IPTV_AUTH_PASSWORD=ci-basic-auth-password-with-32-bytes-2.0 \
-            -e IPTV_SECRET_KEY=ci-secret-key-with-at-least-thirty-two-bytes-2.0 \
-            -e IPTV_REQUIRE_STRONG_CREDENTIALS=1 \
-            iptv-test:ci
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:58080/api/health > /dev/null; then exit 0; fi
-            sleep 2
-          done
-          docker logs iptv-ci-app
+          "${compose[@]}" ps --all
+          "${compose[@]}" logs --no-color
           exit 1
-      - name: Verify non-root and read-only runtime
+      - name: Verify database roles, extension, and idempotent initialization
         run: |
           set -euo pipefail
-          docker inspect --format 'container={{.State.Status}} user={{.Config.User}} readonly={{.HostConfig.ReadonlyRootfs}}' iptv-ci-app
-          docker exec iptv-ci-app sh -ec '
-            fail() {
-              echo "::error::$1" >&2
+          export COMPOSE_PROJECT_NAME=iptvci
+          compose=(docker compose -f ci-compose/docker-compose.yml)
+          postgres_container=$("${compose[@]}" ps -q postgres)
+
+          role_flags=$(docker exec -e PGPASSWORD=ci-admin-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_admin -d postgres -At \
+            -c "SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = 'iptv_app'")
+          test "$role_flags" = 'f|f|f'
+          database_owner=$(docker exec -e PGPASSWORD=ci-admin-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_admin -d postgres -At \
+            -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'iptv_all_in_one'")
+          test "$database_owner" = 'iptv_app'
+          docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
+            -c "SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'" | grep -Fx pgcrypto
+
+          "${compose[@]}" run --rm postgres-init
+          docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
+            -c 'SELECT 1' | grep -Fx 1
+      - name: Verify authentication and anonymous feeds
+        run: |
+          set -euo pipefail
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:58080/api/config)" = 401
+          curl --fail --silent \
+            --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+            http://127.0.0.1:58080/api/config >/tmp/config-before-restart.json
+          curl --fail --silent http://127.0.0.1:58080/api/subscribe.m3u \
+            >/tmp/anonymous-playlist.m3u
+          grep -F '#EXTM3U' /tmp/anonymous-playlist.m3u
+      - name: Verify network isolation and hardened containers
+        run: |
+          set -euo pipefail
+          export COMPOSE_PROJECT_NAME=iptvci
+          compose=(docker compose -f ci-compose/docker-compose.yml)
+          postgres_container=$("${compose[@]}" ps -q postgres)
+          app_container=$("${compose[@]}" ps -q iptv-all-in-one)
+
+          test "$(docker port "$postgres_container" 5432/tcp)" = '127.0.0.1:5432'
+          test "$(docker network inspect iptvci_db_internal --format '{{.Internal}}')" = true
+          app_networks=$(docker inspect "$app_container" \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}')
+          case "$app_networks" in
+            *iptvci_db_internal*iptvci_egress*|*iptvci_egress*iptvci_db_internal*) ;;
+            *) echo "::error::Unexpected app networks: $app_networks" >&2; exit 1 ;;
+          esac
+
+          test "$(docker inspect "$app_container" --format '{{.HostConfig.ReadonlyRootfs}}')" = true
+          test "$(docker inspect "$app_container" --format '{{json .HostConfig.CapDrop}}')" = '["ALL"]'
+          added=$(docker inspect "$app_container" --format '{{json .HostConfig.CapAdd}}')
+          test "$added" = null || test "$added" = '[]'
+          test "$(docker inspect "$app_container" --format '{{.Config.User}}')" = '10001:10001'
+          docker inspect "$postgres_container" --format '{{json .HostConfig.SecurityOpt}}' \
+            | grep -F 'no-new-privileges'
+          docker exec "$app_container" sh -ec '
+            test "$(id -u)" = 10001
+            touch /app/data/ci-write-test /app/output/ci-write-test
+            python -c "import socket; socket.create_connection((\"example.com\", 443), 10).close()"
+            if touch /app/rootfs-must-be-read-only 2>/dev/null; then
+              echo "root filesystem is writable" >&2
               exit 1
-            }
-
-            echo "Runtime identity: $(id)"
-            [ "$(id -u)" != "0" ] || fail "Application container is running as root"
-
-            for path in /app/output /app/data; do
-              [ -d "$path" ] || fail "Required writable directory is missing: $path"
-              stat -c "permission=%A mode=%a owner=%u:%g path=%n" "$path"
-              [ -w "$path" ] || fail "Application user cannot write required directory: $path"
-            done
-
-            site=$(python -c "import site; print(site.getsitepackages()[0])")
-            for path in /app/web/app.py /app/dist "$site"; do
-              [ -e "$path" ] || fail "Required read-only path is missing: $path"
-              stat -c "permission=%A mode=%a owner=%u:%g path=%n" "$path"
-              [ ! -w "$path" ] || fail "Application user can modify protected path: $path"
-            done
-
-            echo "Runtime permission gate passed"
+            fi
           '
-          added_capabilities=$(docker inspect --format '{{json .HostConfig.CapAdd}}' iptv-ci-app)
-          dropped_capabilities=$(docker inspect --format '{{json .HostConfig.CapDrop}}' iptv-ci-app)
-          [ "$added_capabilities" = "null" ] || [ "$added_capabilities" = "[]" ] || {
-            echo "::error::Hardened runtime unexpectedly adds capabilities: $added_capabilities" >&2
-            exit 1
-          }
-          [ "$dropped_capabilities" = '["ALL"]' ] || {
-            echo "::error::Hardened runtime did not drop all capabilities: $dropped_capabilities" >&2
-            exit 1
-          }
-      - name: Verify idempotent migration and health
-        run: |
-          docker restart iptv-ci-app
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:58080/api/health > /dev/null; then exit 0; fi
-            sleep 2
-          done
-          docker logs iptv-ci-app
-          exit 1
-      - name: Verify legacy credentials remain boot-compatible
+      - name: Verify persistence and database reconnect
         run: |
           set -euo pipefail
-          docker run -d --name iptv-ci-legacy --network iptv-ci-network -p 58081:58080 \
-            --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777 \
-            --tmpfs /app/output:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
-            --tmpfs /app/data:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0750 \
-            -e DB_HOST=iptv-ci-mysql -e DB_PORT=3306 -e DB_NAME=iptv_test \
-            -e DB_USER=root -e DB_PASSWORD=ci-root-db-password-with-32-bytes-2.0 \
-            -e IPTV_REQUIRE_STRONG_CREDENTIALS=1 \
-            iptv-test:ci
+          export COMPOSE_PROJECT_NAME=iptvci
+          compose=(docker compose -f ci-compose/docker-compose.yml)
+          postgres_container=$("${compose[@]}" ps -q postgres)
+          docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one \
+            --set=ON_ERROR_STOP=1 -c \
+            "CREATE TABLE IF NOT EXISTS ci_persistence_marker (value text PRIMARY KEY); INSERT INTO ci_persistence_marker VALUES ('survives-restart') ON CONFLICT DO NOTHING;"
+
+          "${compose[@]}" restart postgres
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:58081/api/health > /dev/null; then
+            if curl --fail --silent \
+              --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+              http://127.0.0.1:58080/api/config >/tmp/config-after-restart.json; then
               break
             fi
             sleep 2
           done
-          curl --fail --silent http://127.0.0.1:58081/api/health > /dev/null || {
-            docker logs iptv-ci-legacy
-            exit 1
-          }
-          docker logs iptv-ci-legacy 2>&1 | grep -F '临时凭据'
-      - name: Verify first 2.0 Compose volume compatibility
-        run: |
-          set -euo pipefail
-          docker volume create iptv-ci-v2-data >/dev/null
-          docker volume create iptv-ci-v2-output >/dev/null
-          docker run --rm --user root \
-            -v iptv-ci-v2-data:/app/data \
-            -v iptv-ci-v2-output:/app/output \
-            iptv-test:ci sh -ec '
-              chown 10001:10001 /app/data /app/output
-              chmod 0750 /app/data /app/output
-            '
-          docker run --rm --read-only --cap-drop ALL \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777 \
-            -v iptv-ci-v2-data:/app/data \
-            -v iptv-ci-v2-output:/app/output \
-            iptv-test:ci sh -ec '
-              [ "$(id -u)" = "10001" ]
-              touch /app/data/first-v2-write-test
-              touch /app/output/first-v2-write-test
-            '
-      - name: Verify legacy Compose startup and writable named volumes
-        run: |
-          set -euo pipefail
-          workdir=$(mktemp -d)
-          cleanup_legacy_compose() {
-            COMPOSE_PROJECT_NAME=iptvlegacy docker compose \
-              -f "$workdir/docker-compose.yml" --env-file "$workdir/.env" \
-              down -v 2>/dev/null || true
-            rm -rf "$workdir"
-          }
-          trap cleanup_legacy_compose EXIT
-          cp docker-compose.yml "$workdir/docker-compose.yml"
-          cat > "$workdir/.env" <<EOF
-          DB_HOST=mysql
-          DB_PORT=3306
-          DB_PASSWORD=legacy-pass
-          DB_NAME=iptv-all-in-one
-          PORT=58082
-          EOF
-          sed -i 's#image: juzhic/iptv-all-in-one:latest#image: iptv-test:ci#g' "$workdir/docker-compose.yml"
-
-          # Simulate data volumes created by the first 2.0 image, which used
-          # UID/GID 10001 and mode 0750. Compatibility root must be able to
-          # reuse them as well as root-owned 1.x bind mounts.
-          (
-            cd "$workdir"
-            export COMPOSE_PROJECT_NAME=iptvlegacy
-            docker compose create
-          )
-          for volume in iptvlegacy_app_data iptvlegacy_app_output; do
-            docker run --rm --user root -v "$volume:/target" iptv-test:ci \
-              sh -ec 'chown 10001:10001 /target && chmod 0750 /target'
-          done
-          (
-            cd "$workdir"
-            export COMPOSE_PROJECT_NAME=iptvlegacy
-            docker compose up -d
-            for attempt in $(seq 1 60); do
-              if docker compose exec -T mysql mysqladmin ping -h localhost \
-                -plegacy-pass --silent >/dev/null 2>&1 \
-                && curl --fail --silent http://127.0.0.1:58082/api/health > /dev/null; then
-                break
-              fi
-              sleep 2
-            done
-            docker compose exec -T mysql mysqladmin ping -h localhost \
-              -plegacy-pass --silent
-            curl --fail --silent http://127.0.0.1:58082/api/health > /dev/null
-            docker compose logs --no-color iptv-all-in-one 2>&1 | grep -F '临时凭据'
-            docker compose exec -T iptv-all-in-one sh -ec '
-              [ "$(id -u)" = "0" ]
-              touch /app/data/legacy-compose-write-test
-              touch /app/output/legacy-compose-write-test
-              touch /app/legacy-rootfs-write-test
-              rm /app/legacy-rootfs-write-test
-            '
-          )
+          curl --fail --silent \
+            --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+            http://127.0.0.1:58080/api/config >/dev/null
+          docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
+            -c 'SELECT value FROM ci_persistence_marker' | grep -Fx survives-restart
       - name: Scan candidate image for high and critical vulnerabilities
         run: >-
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
           aquasec/trivy:0.58.2 image --exit-code 1 --severity HIGH,CRITICAL
           --ignore-unfixed --scanners vuln --no-progress iptv-test:ci
-      - name: Show container logs on failure
+      - name: Show service logs on failure
         if: failure()
-        run: docker logs iptv-ci-app || true
-      - name: Cleanup smoke containers
+        run: |
+          COMPOSE_PROJECT_NAME=iptvci docker compose -f ci-compose/docker-compose.yml \
+            ps --all || true
+          COMPOSE_PROJECT_NAME=iptvci docker compose -f ci-compose/docker-compose.yml \
+            logs --no-color || true
+      - name: Cleanup smoke deployment
         if: always()
         run: |
-          docker rm -f iptv-ci-app iptv-ci-legacy iptv-ci-mysql 2>/dev/null || true
-          docker volume rm iptv-ci-v2-data iptv-ci-v2-output 2>/dev/null || true
-          docker network rm iptv-ci-network 2>/dev/null || true
+          COMPOSE_PROJECT_NAME=iptvci docker compose -f ci-compose/docker-compose.yml \
+            down --volumes --remove-orphans 2>/dev/null || true

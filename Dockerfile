@@ -1,4 +1,6 @@
-# Stage 1: Build frontend
+# syntax=docker/dockerfile:1
+
+# Stage 1: Build frontend. Both base images publish amd64 and arm64 variants.
 FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -16,10 +18,9 @@ ENV TZ=Asia/Shanghai \
     PYTHONDONTWRITEBYTECODE=1 \
     FFMPEG_BIN=/usr/bin/ffmpeg
 
-# Install FFmpeg only
+# Install the minimal runtime system packages.
 RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends ffmpeg curl tzdata && \
+    apt-get install -y --no-install-recommends ffmpeg tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -32,34 +33,25 @@ COPY engine/ ./engine/
 COPY web/ ./web/
 COPY database/ ./database/
 COPY scanner_integration/ ./scanner_integration/
-COPY generate_env.py migrate_2_0.py ./
 
 # Copy frontend build from stage 1
 COPY --from=frontend-builder /app/dist ./dist
 
 # Runtime source, dependencies and frontend assets stay root-owned/read-only.
-# UID 10001 owns the writable directories for hardened and first-2.0
-# deployments; group root can also write when the current Compose file
-# deliberately runs legacy compatibility as root. No access is granted to
-# others.
+# UID 10001 owns the only two application-writable paths.
 RUN groupadd --gid 10001 iptv \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin iptv \
     && mkdir -p /app/data /app/output \
-    && chown -R iptv:root /app/data /app/output \
-    && chmod 0770 /app/data /app/output \
+    && chown -R iptv:iptv /app/data /app/output \
+    && chmod 0750 /app/data /app/output \
     && chmod -R a-w /app/engine /app/web /app/database /app/scanner_integration /app/dist \
-    && chmod a-w /app/requirements.txt /app/generate_env.py /app/migrate_2_0.py
+    && chmod a-w /app/requirements.txt
 
-# Keep the image default compatible with both the standard 1.x Compose file
-# (which had no application bind mounts) and the first 2.0 Compose release
-# (which relied on the image USER and created UID-10001-owned volumes).
-# The current Compose file can explicitly use compatibility root when an
-# operator has older root-owned custom mounts.
 USER 10001:10001
 
 EXPOSE 58080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:58080/api/health || exit 1
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:58080/api/health', timeout=4).read()"]
 
 CMD ["gunicorn", "-w", "1", "--worker-class", "gthread", "--threads", "8", "-b", "0.0.0.0:58080", "--timeout", "120", "web:app"]

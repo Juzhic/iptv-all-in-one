@@ -85,6 +85,7 @@ class SecureKeyTests(unittest.TestCase):
         class FakeConnection:
             def __init__(self):
                 self.events = []
+                self.queries = []
                 self.updated = None
 
             @contextmanager
@@ -99,6 +100,7 @@ class SecureKeyTests(unittest.TestCase):
 
             def execute(self, query, args=None):
                 self.events.append(query.split()[0].lower())
+                self.queries.append(query)
                 if query.startswith('SELECT'):
                     return type('Cursor', (), {
                         'fetchone': lambda _self: {
@@ -120,6 +122,8 @@ class SecureKeyTests(unittest.TestCase):
             self.assertTrue(migrate_stored_api_keys())
 
         self.assertEqual(['begin', 'select', 'update', 'commit'], connection.events)
+        self.assertTrue(all('`key`' not in query for query in connection.queries))
+        self.assertTrue(all('"key"' in query for query in connection.queries))
         self.assertNotIn('legacy-plain-key', connection.updated)
         stored = json.loads(connection.updated)
         self.assertTrue(stored['quake_api_keys'][0].startswith('enc:v1:'))

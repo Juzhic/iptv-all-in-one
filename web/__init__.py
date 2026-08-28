@@ -5,6 +5,7 @@ web 包 — iptv-all-in-one 管理后台。
 gunicorn 入口: gunicorn web:app
 """
 import logging
+import os
 
 from web.app import create_app, _ensure_frontend
 import database as db
@@ -21,40 +22,29 @@ _state._scanner_module = _scanner_module
 # 创建 Flask 应用
 app = create_app()
 
-# 模块级初始化（兼容 uWSGI / gunicorn 等 WSGI 服务器）
-# The long-running Web process must remain available while an old deployment
-# is being repaired.  Database helpers and the explicit migrate-2-0 command
-# still fail on real schema/key migration errors, but importing the WSGI app
-# reports those errors instead of turning an image pull into a restart loop.
+# 模块级初始化（兼容 uWSGI / gunicorn 等 WSGI 服务器）。生产 Compose
+# 显式要求数据库可用；源码工具和不涉及数据库的单元测试仍可导入模块。
+_database_required = os.environ.get('IPTV_REQUIRE_DATABASE', '').strip().lower() \
+    in {'1', 'true', 'yes', 'on'}
 _db_ready = False
-
 try:
     db.init_db()
 except Exception as error:
-    logging.getLogger(__name__).exception(
-        '数据库初始化未完成，兼容模式继续启动；数据库恢复后请求会重试。'
-        '如为结构迁移或权限错误，请在备份后运行一次性迁移并检查日志: %s',
-        error,
-    )
+    logging.getLogger(__name__).exception('PostgreSQL 初始化失败: %s', error)
+    if _database_required:
+        raise
 else:
     _db_ready = True
-    try:
-        db.migrate_from_json()
-    except Exception as error:
-        logging.getLogger(__name__).exception(
-            '旧 JSON 数据迁移未完成，兼容模式继续启动: %s', error
-        )
 
 if _db_ready:
     try:
+        db.migrate_from_json()
         from scanner_integration.config_bridge import get_scan_config
         get_scan_config()
     except Exception as error:
-        logging.getLogger(__name__).exception(
-            '扫描 API Key 读取或迁移未完成，兼容模式继续启动；'
-            '受影响的扫描 Key 在修复前不可用: %s',
-            error,
-        )
+        logging.getLogger(__name__).exception('数据库内容迁移或读取失败: %s', error)
+        if _database_required:
+            raise
 try:
     db.clear_run_progress()
 except Exception:

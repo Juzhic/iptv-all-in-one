@@ -16,7 +16,7 @@ from engine import test_engine
 
 
 def _load_web_modules_without_startup():
-    """Load route modules without executing web/__init__.py or touching MySQL."""
+    """Load route modules without executing web/__init__.py or touching PostgreSQL."""
     root = Path(__file__).resolve().parents[1]
     module_names = (
         'web', 'web.state', 'web.scheduler', 'web.routes',
@@ -102,9 +102,9 @@ def _make_app(monkeypatch):
     return app
 
 
-def test_legacy_credentials_warn_without_blocking_startup(monkeypatch, caplog):
-    monkeypatch.setenv('DB_USER', 'root')
-    monkeypatch.setenv('DB_PASSWORD', 'legacy')
+def test_development_credentials_warn_without_blocking_startup(monkeypatch, caplog):
+    monkeypatch.setenv('DB_USER', 'postgres')
+    monkeypatch.setenv('DB_PASSWORD', 'weak')
     monkeypatch.setenv('IPTV_SECRET_KEY', '')
     monkeypatch.delenv('IPTV_REQUIRE_STRONG_CREDENTIALS', raising=False)
     monkeypatch.setattr(web_app_module, 'BASIC_AUTH_PASSWORD', 'legacy')
@@ -112,26 +112,22 @@ def test_legacy_credentials_warn_without_blocking_startup(monkeypatch, caplog):
 
     problems = web_app_module._validate_runtime_credentials()
 
-    assert 'DB_USER 必须是专用的非 root 用户' in problems
+    assert 'DB_USER 必须是专用的非 PostgreSQL 管理员用户' in problems
     assert 'IPTV_AUTH_PASSWORD 必须是至少 16 位的强密码' in problems
     assert 'IPTV_SECRET_KEY 必须是至少 32 位的强随机值' in problems
-    assert '服务继续启动' in caplog.text
+    assert '开发模式继续启动' in caplog.text
 
 
-def test_explicit_strict_credentials_warn_without_blocking_upgrade(
-    monkeypatch, caplog,
-):
-    monkeypatch.setenv('DB_USER', 'root')
+def test_explicit_strict_credentials_fail_closed(monkeypatch):
+    monkeypatch.setenv('DB_USER', 'postgres')
     monkeypatch.setenv('DB_PASSWORD', 'legacy')
     monkeypatch.setenv('IPTV_SECRET_KEY', '')
     monkeypatch.setenv('IPTV_REQUIRE_STRONG_CREDENTIALS', '1')
     monkeypatch.setattr(web_app_module, 'BASIC_AUTH_PASSWORD', 'legacy')
     monkeypatch.setattr(web_app_module, 'BASIC_AUTH_TEMPORARY_PASSWORD', False)
 
-    problems = web_app_module._validate_runtime_credentials()
-
-    assert problems
-    assert '已请求严格凭据模式，但为避免升级中断' in caplog.text
+    with pytest.raises(RuntimeError, match='严格凭据校验失败'):
+        web_app_module._validate_runtime_credentials()
 
 
 def test_missing_basic_auth_uses_temporary_password_even_with_stale_strict_flag(
@@ -163,61 +159,53 @@ def test_temporary_basic_auth_is_reported_as_unconfigured(monkeypatch):
     assert problems == ['IPTV_AUTH_PASSWORD 必须是至少 16 位的强密码']
 
 
-def test_docker_defaults_do_not_block_legacy_compose_startup():
+def test_docker_assets_enforce_postgresql_production_contract():
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / 'Dockerfile').read_text(encoding='utf-8')
     compose = (root / 'docker-compose.yml').read_text(encoding='utf-8')
-    external_compose = (
-        root / 'docker-compose.external-mysql.yml'
-    ).read_text(encoding='utf-8')
 
-    assert 'IPTV_REQUIRE_STRONG_CREDENTIALS=1' not in dockerfile
-    assert 'DB_USER=iptv_app' not in dockerfile
     assert 'USER 10001:10001' in dockerfile
-    assert 'chown -R iptv:root /app/data /app/output' in dockerfile
-    assert 'chmod 0770 /app/data /app/output' in dockerfile
-    assert (
-        'IPTV_REQUIRE_STRONG_CREDENTIALS: '
-        '${IPTV_REQUIRE_STRONG_CREDENTIALS:-0}'
-    ) in compose
-    assert (
-        'IPTV_REQUIRE_STRONG_CREDENTIALS: '
-        '${IPTV_REQUIRE_STRONG_CREDENTIALS:-0}'
-    ) in external_compose
-    assert 'DB_USER: ${DB_USER:-root}' in compose
-    assert 'DB_USER: ${DB_USER:-root}' in external_compose
-    assert 'DB_PASSWORD: ${DB_PASSWORD:-}' in external_compose
-    for compose_text in (compose, external_compose):
-        assert 'user: ${IPTV_CONTAINER_USER:-root}' in compose_text
-        assert 'read_only: ${IPTV_HARDENED_CONTAINER:-false}' in compose_text
-        application_service = compose_text.split('  iptv-all-in-one:', 1)[1]
-        if '  migrate-2-0:' in application_service:
-            application_service = application_service.split('  migrate-2-0:', 1)[0]
-        assert 'cap_drop:\n      - ALL' in application_service
-        assert 'cap_add:\n      - DAC_OVERRIDE' in application_service
+    assert 'generate_env.py' not in dockerfile
+    assert 'migrate_2_0.py' not in dockerfile
+    assert 'mysql' not in dockerfile.casefold()
 
-    legacy_optional_values = (
-        'IPTV_MIGRATION_DB_USER',
-        'IPTV_MIGRATION_DB_PASSWORD',
-        'MYSQL_ROOT_PASSWORD',
-        'IPTV_AUTH_PASSWORD',
-        'IPTV_SECRET_KEY',
-    )
-    migration_service = compose.split('  migrate-2-0:', 1)[1]
-    for name in legacy_optional_values:
-        assert f'${{{name}:-}}' in migration_service
-        assert '${' + name + ':?' not in migration_service
+    assert 'image: postgres:18' in compose
+    assert '- postgres_data:/var/lib/postgresql' in compose
+    assert '127.0.0.1:5432:5432' in compose
+    assert 'APP_DB_USER: iptv_app' in compose
+    assert 'CREATE EXTENSION IF NOT EXISTS pgcrypto' in compose
+    assert 'image: juzhic/iptv-all-in-one:3.0.0' in compose
+    assert 'DB_HOST: postgres' in compose
+    assert 'DB_PORT: "5432"' in compose
+    assert 'DB_USER: iptv_app' in compose
+    assert 'IPTV_REQUIRE_STRONG_CREDENTIALS: "1"' in compose
+    assert 'IPTV_REQUIRE_DATABASE: "1"' in compose
+    assert 'user: "10001:10001"' in compose
+    assert 'read_only: true' in compose
+    assert 'cap_drop:\n      - ALL' in compose
+    assert 'db_internal:\n    internal: true' in compose
+    assert all(token in compose for token in (
+        '__POSTGRES_ADMIN_PASSWORD__',
+        '__POSTGRES_APP_PASSWORD__',
+        '__IPTV_AUTH_PASSWORD__',
+        '__IPTV_SECRET_KEY__',
+    ))
+    assert 'mysql' not in compose.casefold()
+    assert 'frpc' not in compose.casefold()
+    assert 'iptv_backup.sql' not in compose
 
 
-def test_wsgi_startup_keeps_legacy_database_errors_non_fatal():
+def test_wsgi_startup_fails_closed_when_database_is_required():
     root = Path(__file__).resolve().parents[1]
     startup = (root / 'web' / '__init__.py').read_text(encoding='utf-8')
 
+    assert "os.environ.get('IPTV_REQUIRE_DATABASE'" in startup
     assert 'db.init_db()' in startup
     init_handler = startup.split('db.init_db()', 1)[1].split('else:', 1)[0]
-    assert '兼容模式继续启动' in init_handler
-    assert '\n        raise' not in init_handler
-    assert '扫描 API Key 读取或迁移未完成，兼容模式继续启动' in startup
+    assert 'if _database_required:' in init_handler
+    assert '\n        raise' in init_handler
+    assert 'PostgreSQL 初始化失败' in init_handler
+    assert '数据库内容迁移或读取失败' in startup
 
 
 def test_output_paths_are_fixed_and_web_fields_are_removed(monkeypatch, local_tmp_path):
@@ -393,6 +381,8 @@ def test_atomic_import_uses_one_transaction(monkeypatch):
     ])
 
     assert [args[0] for _, args in connection.executed] == ['subscribe', 'demo']
+    assert all('ON CONFLICT ("key") DO UPDATE' in query for query, _ in connection.executed)
+    assert all('REPLACE INTO' not in query for query, _ in connection.executed)
     assert not connection.in_transaction
 
 
@@ -481,6 +471,9 @@ def test_request_teardown_closes_thread_database_connection(monkeypatch):
 def test_insecure_tls_status_exposes_only_filtered_hosts(monkeypatch):
     app = _make_app(monkeypatch)
     app.register_blueprint(config_routes.config_bp)
+    # The route imports these helpers lazily. Keep this isolated module loader
+    # from importing the real web package and triggering WSGI/database startup.
+    monkeypatch.setitem(sys.modules, 'web.app', web_app_module)
     monkeypatch.setenv(
         'IPTV_INSECURE_TLS_HOSTS',
         'Example.COM, bad/path, example.com, 10.0.0.8',

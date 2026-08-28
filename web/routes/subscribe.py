@@ -42,17 +42,17 @@ def _get_passed_results_with_codec(codec_filter=None, min_bw=None):
         where += " AND (is_h265 = 0 OR is_h265 IS NULL)"
 
     if min_bw is not None:
-        where += " AND COALESCE(bandwidth_MBps, 0) >= %s"
+        where += " AND COALESCE(\"bandwidth_MBps\", 0) >= %s"
         params.append(min_bw)
 
     rows = conn.execute(
-        f"""SELECT channel, url, bandwidth_MBps, connection_latency_ms,
+        f"""SELECT channel, url, "bandwidth_MBps", connection_latency_ms,
                    quality_score, output_updated_at, is_h265, codec
             FROM run_results
             {where}
             ORDER BY channel,
                      COALESCE(quality_score, 0) DESC,
-                     COALESCE(bandwidth_MBps, 0) DESC,
+                     COALESCE("bandwidth_MBps", 0) DESC,
                      COALESCE(connection_latency_ms, 999999999) ASC,
                      id""",
         params

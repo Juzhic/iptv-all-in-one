@@ -89,9 +89,55 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(1, page['total'])
         self.assertEqual('https://example.com/•••', page['items'][0]['source_url'])
         self.assertTrue(any(
-            'LEFT JOIN persistent_scan_results psr ON psr.url = rr.url' in sql
+            "digest(psr.url, 'sha256') = digest(rr.url, 'sha256')" in sql
+            and 'psr.url = rr.url' in sql
             for sql in connection.queries
         ))
+        sql = '\n'.join(connection.queries)
+        self.assertIn('source_url ILIKE %s', sql)
+        self.assertIn('"bandwidth_MBps"', sql)
+        self.assertIn('::DOUBLE PRECISION', sql)
+        self.assertIn('NULLS LAST', sql)
+        self.assertIn("'\u5019\u9009\u6e90\u6c60 \u00b7 ' ||", sql)
+        self.assertNotIn('CONCAT(', sql)
+
+    def test_dashboard_queries_preserve_mixed_case_bandwidth_alias(self):
+        class Result:
+            def __init__(self, one=None, many=None):
+                self.one = one
+                self.many = many or []
+
+            def fetchone(self):
+                return self.one
+
+            def fetchall(self):
+                return self.many
+
+        class Connection:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, sql, params=None):
+                self.queries.append(sql)
+                if 'FROM persistent_scan_results WHERE' in sql:
+                    return Result(one={
+                        'good': 0,
+                        'poor': 0,
+                        'unreachable': 0,
+                        'pending': 0,
+                        'avg_stability': None,
+                        'avg_delay_ms': None,
+                        'avg_bandwidth_MBps': 1.25,
+                    })
+                return Result(many=[])
+
+        connection = Connection()
+        dashboard = _MODULE._scan_dashboard(connection, 10)
+        self.assertEqual(1.25, dashboard['pool']['avg_bandwidth_MBps'])
+        self.assertIn(
+            'AVG(bandwidth) AS "avg_bandwidth_MBps"',
+            '\n'.join(connection.queries),
+        )
 
 
 if __name__ == '__main__':

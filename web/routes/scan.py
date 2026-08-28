@@ -804,8 +804,10 @@ def api_persistent_priority():
     try:
         conn = db._get_conn()
         conn.execute(
-            "UPDATE persistent_scan_results SET priority = %s WHERE url = %s",
-            (priority, url)
+            """UPDATE persistent_scan_results SET priority = %s
+               WHERE digest(url, 'sha256') = digest(%s, 'sha256')
+                 AND url = %s""",
+            (priority, url, url)
         )
         conn.commit()
         return jsonify({'ok': True})
