@@ -177,7 +177,7 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert '127.0.0.1:5432:5432' in compose
     assert 'APP_DB_USER: iptv_app' in compose
     assert 'CREATE EXTENSION IF NOT EXISTS pgcrypto' in compose
-    assert 'image: juzhic/iptv-all-in-one:3.0.0' in compose
+    assert 'image: juzhic/iptv-all-in-one:3.0.1' in compose
     assert 'DB_HOST: postgres' in compose
     assert 'DB_PORT: "5432"' in compose
     assert 'DB_USER: iptv_app' in compose
@@ -186,6 +186,10 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert 'user: "10001:10001"' in compose
     assert 'read_only: true' in compose
     assert 'cap_drop:\n      - ALL' in compose
+    assert 'networks:\n      - db_host_access\n      - db_internal' in compose
+    assert 'networks:\n      - egress\n      - db_internal' in compose
+    assert 'db_host_access:\n' in compose
+    assert 'driver: bridge' in compose
     assert 'db_internal:\n    internal: true' in compose
     assert all(token in compose for token in (
         '__POSTGRES_ADMIN_PASSWORD__',
@@ -206,6 +210,10 @@ def test_docker_assets_enforce_postgresql_production_contract():
         f'--user {auth_username}:ci-basic-auth-password-with-32-bytes-3.0'
     )
     assert ci_workflow.count(smoke_credential) == 3
+    assert '.NetworkSettings.Ports' in ci_workflow
+    assert 'iptvci_db_host_access iptvci_db_internal' in ci_workflow
+    assert 'docker run --rm --network host' in ci_workflow
+    assert "--command='SELECT 1'" in ci_workflow
 
 
 def test_wsgi_startup_fails_closed_when_database_is_required():

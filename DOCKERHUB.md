@@ -2,7 +2,7 @@
 
 镜像：`juzhic/iptv-all-in-one`
 
-- `3.0.0`：固定的 PostgreSQL 18 版本
+- `3.0.1`：固定的 PostgreSQL 18 版本
 - `latest`：当前稳定版
 - 平台：`linux/amd64`、`linux/arm64`
 
@@ -34,7 +34,7 @@ docker compose -f docker-compose.fnos.yml ps
 | `postgres-init` | 幂等创建/更新 `iptv_app` 与授权 | 一次性、无端口 |
 | `iptv-all-in-one` | Web、扫描和播放列表 | 宿主 `0.0.0.0:58080` |
 
-应用通过专用 Docker 内网连接 `postgres:5432`。数据库不加入应用出网网络；应用另接普通 bridge 网络，以便访问订阅、测绘平台和视频源。
+应用通过专用 Docker 内网连接 `postgres:5432`。数据库不加入应用出网网络；它单独连接 `db_host_access` bridge 以使宿主回环端口映射生效。应用另接普通 bridge 网络，以便访问订阅、测绘平台和视频源。
 
 PostgreSQL 18 的持久卷挂载点是 `/var/lib/postgresql`。不要照搬旧版本教程改为 `/var/lib/postgresql/data`，也不要执行 `docker compose down -v`。
 
@@ -53,6 +53,8 @@ PostgreSQL 18 的持久卷挂载点是 `/var/lib/postgresql`。不要照搬旧�
 应用端口 `58080` 面向飞牛宿主网络发布。项目不内置 frpc/frps；可以按自己的网络方案转发 58080。
 
 PostgreSQL 仅绑定宿主回环 `127.0.0.1:5432`，用于本机管理或宿主级安全隧道。不要直接改成 `0.0.0.0:5432`。如通过 FRP 提供数据库维护入口，应同时限制来源、启用强 token/TLS，并在操作完成后关闭隧道。
+
+Docker Engine 28.0.0 之前存在 localhost 发布端口仍可能被同一二层网络访问的[已知限制](https://github.com/moby/moby/issues/45610)。飞牛使用旧版 Engine 时必须配置宿主防火墙限制 5432，不能只依赖回环绑定。
 
 浏览器公网入口需要独立的 HTTPS。FRP transport TLS 只保护 frpc 到 frps，不会自动为浏览器提供 HTTPS。反向代理后的最终 Origin 应加入 `IPTV_TRUSTED_ORIGINS`。
 
