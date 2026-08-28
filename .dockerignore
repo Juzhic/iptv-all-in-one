@@ -12,6 +12,7 @@ node_modules
 frontend/node_modules
 dist
 output
+/deploy
 nul
 *.log
 tests
@@ -21,3 +22,6 @@ LICENSE
 frontend-style-guide.md
 database/db_config.json
 basic_auth.json
+/.env
+/docker-compose.fnos.yml
+/iptv_backup.sql

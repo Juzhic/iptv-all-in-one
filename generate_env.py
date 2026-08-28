@@ -1,4 +1,4 @@
-"""Create an atomic .env file with stable, independent strong credentials."""
+"""Legacy 2.x offline helper; PostgreSQL 3.0 does not use .env deployment."""
 from __future__ import annotations
 
 import argparse

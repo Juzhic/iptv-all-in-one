@@ -338,7 +338,7 @@ def migrate_stored_api_keys():
         conn = database_db._get_conn()
         with conn.transaction():
             row = conn.execute(
-                "SELECT content FROM config_data WHERE `key` = %s FOR UPDATE",
+                "SELECT content FROM config_data WHERE \"key\" = %s FOR UPDATE",
                 ('scan_config',),
             ).fetchone()
             if not row:
@@ -357,7 +357,7 @@ def migrate_stored_api_keys():
                     persisted = _prepare_persisted_config(normalized)
                     conn.execute(
                         "UPDATE config_data SET content = %s, updated_at = %s "
-                        "WHERE `key` = %s",
+                        "WHERE \"key\" = %s",
                         (
                             json.dumps(persisted, ensure_ascii=False, indent=2),
                             database_db.now_str(),

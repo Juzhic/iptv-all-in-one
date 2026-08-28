@@ -1,4 +1,6 @@
-"""One-time 1.x -> 2.0 database/security migration.
+"""Legacy one-time 1.x -> 2.0 database/security migration.
+
+This historical helper is excluded from the PostgreSQL 3.0 runtime image.
 
 This command is intentionally the only application-side path that receives the
 MySQL root password.  It creates the dedicated account, verifies it, and then

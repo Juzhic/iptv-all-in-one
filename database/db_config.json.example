@@ -1,8 +1,7 @@
 {
-    "host": "127.0.0.1",
-    "port": 3306,
-    "user": "your_username",
+    "host": "postgres",
+    "port": 5432,
+    "user": "iptv_app",
     "password": "your_password",
-    "database": "iptv-all-in-one",
-    "charset": "utf8mb4"
+    "database": "iptv_all_in_one"
 }

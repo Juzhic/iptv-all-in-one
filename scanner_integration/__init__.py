@@ -1464,14 +1464,14 @@ async def _daily_db_maintenance_task():
                 except Exception as e:
                     logger.warning(f"[DBMaint] 清理 run_logs 失败: {e}")
 
-                # 2. 数据库维护（MySQL 无需 VACUUM）
+                # 2. 数据库维护（PostgreSQL VACUUM）
                 try:
                     progress = _db.get_scan_progress()
                     if progress.get('running'):
                         logger.info("[DBMaint] 扫描正在进行中，跳过维护。")
                     else:
-                        _db.vacuum_database()  # MySQL 下为空操作
-                        logger.info("[DBMaint] 数据库维护完成（MySQL 无需 VACUUM）")
+                        _db.vacuum_database()
+                        logger.info("[DBMaint] PostgreSQL 数据库维护完成")
                 except Exception as e:
                     logger.warning(f"[DBMaint] 维护异常: {e}")
 

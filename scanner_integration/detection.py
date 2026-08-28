@@ -271,7 +271,7 @@ class DetectionManager:
                 'result': self._last_cycle_result,
             })
             # The detection loop lives on the bridge worker thread.  Do not
-            # retain its thread-local MySQL connection between cycles (or
+            # retain its thread-local PostgreSQL connection between cycles (or
             # after a one-shot manual cycle).
             try:
                 import database as _db

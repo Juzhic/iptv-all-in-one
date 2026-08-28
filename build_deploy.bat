@@ -42,11 +42,11 @@ del /q "%DEPLOY%\database\db_config.json" 2>nul
 xcopy /e /i /q "dist"                  "%DEPLOY%\dist"
 
 copy /y "requirements.txt"    "%DEPLOY%\"
-copy /y "basic_auth.json"     "%DEPLOY%\"
 copy /y "Dockerfile"          "%DEPLOY%\"
 copy /y "docker-compose.yml"  "%DEPLOY%\"
-copy /y ".env.example"        "%DEPLOY%\"
-copy /y "generate_env.py"     "%DEPLOY%\"
+copy /y "generate_fnos_compose.py" "%DEPLOY%\"
+copy /y "README.md"           "%DEPLOY%\"
+copy /y "MIGRATING-3.0.md"    "%DEPLOY%\"
 
 for /d /r "%DEPLOY%" %%d in (__pycache__) do (
     if exist "%%d" rd /s /q "%%d"
@@ -59,8 +59,9 @@ echo ============================================
 echo.
 dir /b "%DEPLOY%"
 echo.
-echo Copy the deploy folder to server and run:
-echo   python -m web
+echo Generate the private single-file deployment, then upload that YAML to fnOS:
+echo   python generate_fnos_compose.py
+echo   docker compose -f docker-compose.fnos.yml up -d
 echo.
 pause
 exit /b 0

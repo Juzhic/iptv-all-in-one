@@ -43,9 +43,9 @@ def _load_root_iptv_env():
     """Load only IPTV_* values from the project .env for source/dev runs.
 
     Database variables are intentionally left to database/db_config.json when
-    running from source.  Loading DB_HOST=mysql on a developer workstation
-    would silently redirect the process to a Docker-only hostname.  Docker
-    injects all required variables directly through Compose.
+    running from source. Loading a Docker-only DB_HOST on a developer
+    workstation would silently redirect the process away from the local
+    development database. Docker injects all required values through Compose.
     """
     env_path = os.path.join(BASE_DIR, '.env')
     try:
@@ -292,7 +292,8 @@ BASIC_AUTH_REALM = BASIC_AUTH_CONFIG['realm']
 
 _KNOWN_WEAK_SECRETS = {
     'admin', 'changeme', 'default', 'letmein', 'mysql', 'password',
-    'root', 'secret', 'test', '123456', '12345678', 'admin123',
+    'postgres', 'iptv_admin', 'root', 'secret', 'test', '123456',
+    '12345678', 'admin123',
 }
 
 
@@ -310,8 +311,8 @@ def _runtime_credential_problems():
     db_user = os.environ.get('DB_USER', '')
     db_password = os.environ.get('DB_PASSWORD', '')
     secret_key = os.environ.get('IPTV_SECRET_KEY', '')
-    if not db_user or db_user.casefold() == 'root':
-        problems.append('DB_USER 必须是专用的非 root 用户')
+    if not db_user or db_user.casefold() in {'root', 'postgres', 'iptv_admin'}:
+        problems.append('DB_USER 必须是专用的非 PostgreSQL 管理员用户')
     if _is_weak_secret(db_password, 16):
         problems.append('DB_PASSWORD 必须是至少 16 位的强密码')
     if BASIC_AUTH_TEMPORARY_PASSWORD or _is_weak_secret(BASIC_AUTH_PASSWORD, 16):
@@ -319,38 +320,22 @@ def _runtime_credential_problems():
     if _is_weak_secret(secret_key, 32):
         problems.append('IPTV_SECRET_KEY 必须是至少 32 位的强随机值')
 
-    if _env_flag('IPTV_REQUIRE_MYSQL_ROOT_PASSWORD'):
-        root_password = os.environ.get('MYSQL_ROOT_PASSWORD', '')
-        if _is_weak_secret(root_password, 16):
-            problems.append('MYSQL_ROOT_PASSWORD 必须是至少 16 位的强密码')
-        elif db_password and hmac.compare_digest(root_password, db_password):
-            problems.append('MYSQL_ROOT_PASSWORD 与 DB_PASSWORD 必须不同')
-
     return problems
 
 
 def _validate_runtime_credentials():
-    """Report credential problems without turning an upgrade into an outage.
-
-    ``IPTV_REQUIRE_STRONG_CREDENTIALS`` was introduced by 2.0 and was also
-    hard-coded by the first 2.0 image/Compose release.  Treating it as a boot
-    gate meant that simply pulling the image could permanently restart-loop a
-    healthy 1.x deployment before the operator had any chance to migrate it.
-    Credential generation and the explicit migration/finalization commands
-    still validate strong values; the long-running service only reports the
-    remaining work.
-    """
+    """Validate PostgreSQL and Web secrets without exposing their values."""
     problems = _runtime_credential_problems()
     if not problems:
         return []
 
-    requested_strict = _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS')
+    detail = '; '.join(problems)
+    if _env_flag('IPTV_REQUIRE_STRONG_CREDENTIALS'):
+        raise RuntimeError(f'严格凭据校验失败：{detail}')
     logger.warning(
-        '%s检测到旧版或弱凭据配置，服务继续启动：%s。'
-        '请备份数据库和 .env 后依次运行 generate_env.py --upgrade、'
-        'migrate-2-0 和 generate_env.py --finalize-upgrade。',
-        '已请求严格凭据模式，但为避免升级中断，' if requested_strict else '兼容模式：',
-        '; '.join(problems),
+        '检测到弱凭据配置，开发模式继续启动：%s。生产部署请使用私有的 '
+        'docker-compose.fnos.yml 并配置独立强密码。',
+        detail,
     )
     return problems
 
@@ -444,7 +429,7 @@ def create_app():
         secret_key = secrets.token_urlsafe(48)
         logger.warning(
             '未配置 IPTV_SECRET_KEY；本次进程使用临时密钥。'
-            '请运行 python generate_env.py 生成持久密钥。'
+            '生产部署请在私有 docker-compose.fnos.yml 中保存持久密钥。'
         )
 
     app = Flask(__name__, root_path=BASE_DIR, instance_path=BASE_DIR)

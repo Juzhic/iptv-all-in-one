@@ -122,7 +122,7 @@ def api_channel_trend(name):
     conn = _get_conn()
     rows = conn.execute("""
         SELECT r.run_id, r.finished_at,
-               res.bandwidth_MBps, res.connection_latency_ms,
+               res."bandwidth_MBps", res.connection_latency_ms,
                res.quality_score, res.resolution, res.codec, res.passed
         FROM run_results res
         JOIN runs r ON res.run_id = r.run_id

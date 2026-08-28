@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest==8.4.1
+# 仅用于验证保留的 2.x 历史离线迁移工具；不进入 3.0 运行镜像。
+pymysql==1.1.1

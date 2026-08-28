@@ -476,7 +476,11 @@ def _write_import_entries_atomically(entries):
         with conn.transaction():
             for key, content in entries:
                 conn.execute(
-                    "REPLACE INTO config_data (`key`, content, updated_at) VALUES (%s, %s, %s)",
+                    """INSERT INTO config_data ("key", content, updated_at)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT ("key") DO UPDATE SET
+                           content = EXCLUDED.content,
+                           updated_at = EXCLUDED.updated_at""",
                     (key, content, updated_at),
                 )
 

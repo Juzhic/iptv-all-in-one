@@ -7,6 +7,42 @@
 
 **重要说明：每次代码修改都必须将更新内容写入本文件；只有发布级或用户可见变更才提升版本号。**
 
+## [3.0.0] - 2026-08-28
+
+### 新增
+- 新增 PostgreSQL 18 原生 schema、版本表与 advisory lock 启动迁移，正式支持 PostgreSQL identity、事务、`ON CONFLICT` 和 Psycopg 3 字典行。
+- 新增飞牛 OS 私有单 YAML 生成器，在不输出秘密的前提下生成独立的数据库管理员、应用数据库、Web 登录密码及稳定 `IPTV_SECRET_KEY`。
+- 新增 `MIGRATING-3.0.md`，记录 MySQL 备份边界、PostgreSQL 恢复验收、回滚和后续 major 升级要求。
+- 在迁移验收中明确 MySQL `utf8mb4_unicode_ci` 与 PostgreSQL `C.UTF-8` 的大小写、重音和排序差异，要求恢复前检测并人工确认等价值冲突。
+- 新增 PostgreSQL 18 真实集成测试，覆盖幂等建库、事务回滚、级联删除、UPSERT、identity、4096 字符 URL、搜索/排序、小数统计、并发租约和断线重连。
+
+### 改进
+- 运行时数据库从 MySQL 8.4 完整切换到 PostgreSQL 18，应用连接默认改为 `postgres:5432/iptv_all_in_one`，并保持现有 HTTP API 与 `bandwidth_MBps` JSON 字段兼容。
+- 将 MySQL DDL、元数据查询、UPSERT、分页、搜索和排序统一改为 PostgreSQL 语义；统计除法显式使用浮点，并固定 NULL 排序。
+- URL 唯一与复合索引改用 `pgcrypto` SHA-256 表达式，避免最长 4096 字符 URL 超出 PostgreSQL B-tree 索引项上限。
+- URL 精确查询同时匹配 SHA-256 与原值，使 PostgreSQL 可使用表达式索引并继续防御摘要碰撞。
+- 来源汇总、总览关联与优先级更新同样通过 URL 摘要索引定位并复核原值，避免百万级持久化结果表上的重复全表扫描。
+- Docker 镜像发布扩展为 `linux/amd64` 和 `linux/arm64`，README 与 Docker Hub 文档改为 PostgreSQL 3.0 单 YAML 流程。
+- 同步前端包版本为 3.0.0，并更新数据库元数据与部署安全回归测试。
+- Compose smoke test 直接校验空库匿名订阅的 M3U 响应，避免把下载接口正常的无数据 404 误判为部署失败。
+- 修正前端 CI 的 `setup-node` 固定提交 SHA，并补充 PostgreSQL 逻辑备份、隔离恢复演练、RPO/RTO 与私有密钥联动说明。
+
+### 修复
+- 将任务租约获取改为 PostgreSQL 原子条件 UPSERT，修复目标行不存在时并发请求可能同时取得租约的问题。
+- 修复 PostgreSQL 整数除法会把总览通过率截断为 0/1，以及默认 NULL 排序差异可能改变分页和质量排序的问题。
+- 修复 PostgreSQL 对 `ROUND(double precision, digits)` 不支持导致来源分组统计失败，以及数据库断线时日志失败批次重复获取非重入锁造成死锁的问题。
+- 收窄断线恢复为执行前安全重连，禁止在结果未知时透明重放写语句；为扫描、检测、URL UPSERT 与清理批次补齐显式事务，避免中途失败后部分提交。
+
+### 安全
+- PostgreSQL 管理员与常驻 `iptv_app` 账号分离，启用 SCRAM 认证；管理员密码不再传入应用容器。
+- PostgreSQL 宿主端口仅绑定 `127.0.0.1:5432`，应用数据库流量使用隔离 Docker 内网；Web 继续以非 root、只读根文件系统和无 capabilities 运行。
+- 将私有 `docker-compose.fnos.yml` 与含业务数据的 `iptv_backup.sql` 同时排除出 Git 和 Docker 构建上下文。
+- 将用于 2.x 回滚的本地 `.env` 及可能包含嵌套私有 YAML 的 `deploy/` 一并排除出 Docker 构建上下文，避免远程 BuildKit 上传历史凭据。
+
+### 运维
+- 移除默认 MySQL Compose、PyMySQL 运行依赖、旧 MySQL 账号迁移入口及 `.env.example` 部署模板；3.0 不再提供 `.env` 部署流程，旧 MySQL 数据卷不能直接复用。
+- PostgreSQL 18 数据卷使用 `/var/lib/postgresql`，应用端口保持 `58080`；FRP 与 MySQL 备份恢复均保持为独立运维操作，不进入应用启动链路。
+
 ## [2.1.2] - 2026-08-27
 
 ### 改进

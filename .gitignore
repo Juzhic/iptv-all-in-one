@@ -19,6 +19,8 @@ basic_auth.json
 database/db_config.json
 *.log
 .env
+/docker-compose.fnos.yml
+/iptv_backup.sql
 
 # IDE
 .idea/

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQL-aggregated data for the 2.0 operations dashboard and source table."""
+"""SQL-aggregated data for the operations dashboard and source table."""
 
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ def _integer(value, default=0):
 
 def _scan_source_label_sql(platform_column):
     """Build the SQL display label for a stream found in the scan pool."""
-    return f"""CONCAT(
-        '{SCAN_SOURCE_LABEL_PREFIX}',
+    return f"""(
+        '{SCAN_SOURCE_LABEL_PREFIX}' ||
         CASE
           WHEN NULLIF(TRIM({platform_column}), '') IS NULL
                OR LOWER(TRIM({platform_column})) IN ('unknown', 'n/a', 'na')
@@ -116,11 +116,13 @@ def _source_aggregate_rows(conn, run_id):
         f"""SELECT {source_sql} AS source_url,
                   COUNT(DISTINCT channel) AS channels_total,
                   COUNT(DISTINCT CASE WHEN passed=1 THEN channel END) AS channels_passed,
-                  AVG(CASE WHEN passed=1 AND bandwidth_MBps > 0 THEN bandwidth_MBps END) AS avg_bandwidth,
+                  AVG(CASE WHEN passed=1 AND "bandwidth_MBps" > 0 THEN "bandwidth_MBps" END) AS avg_bandwidth,
                   AVG(CASE WHEN passed=1 AND quality_score > 0 THEN quality_score END) AS avg_quality,
                   AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END) AS h265_ratio
            FROM run_results rr
-           LEFT JOIN persistent_scan_results psr ON psr.url = rr.url
+           LEFT JOIN persistent_scan_results psr
+             ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+            AND psr.url = rr.url
            WHERE rr.run_id=%s
            GROUP BY {source_sql}""",
         (run_id,),
@@ -164,7 +166,8 @@ def get_sources_page(
     order = 'ASC' if str(sort_order).lower() == 'asc' else 'DESC'
     conn = db._get_conn()
     latest = conn.execute(
-        "SELECT run_id, finished_at FROM runs ORDER BY finished_at DESC, id DESC LIMIT 1"
+        "SELECT run_id, finished_at FROM runs "
+        "ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1"
     ).fetchone()
     if not latest:
         return {'items': [], 'total': 0, 'page': page, 'page_size': size, 'last_updated': None}
@@ -174,7 +177,7 @@ def get_sources_page(
     search_where = ""
     search_params = []
     if search:
-        search_where = "WHERE source_url LIKE %s"
+        search_where = "WHERE source_url ILIKE %s"
         search_params.append(f'%{search}%')
 
     source_sql = _source_display_sql()
@@ -183,22 +186,25 @@ def get_sources_page(
             COUNT(DISTINCT channel) AS channels_total,
             COUNT(DISTINCT CASE WHEN passed=1 THEN channel END) AS channels_passed,
             CASE WHEN COUNT(DISTINCT channel) > 0
-                 THEN COUNT(DISTINCT CASE WHEN passed=1 THEN channel END) / COUNT(DISTINCT channel)
-                 ELSE 0 END AS pass_rate,
-            COALESCE(AVG(CASE WHEN passed=1 AND bandwidth_MBps > 0 THEN bandwidth_MBps END), 0) AS avg_bandwidth,
+                 THEN COUNT(DISTINCT CASE WHEN passed=1 THEN channel END)::DOUBLE PRECISION
+                      / NULLIF(COUNT(DISTINCT channel), 0)
+                 ELSE 0.0 END AS pass_rate,
+            COALESCE(AVG(CASE WHEN passed=1 AND "bandwidth_MBps" > 0 THEN "bandwidth_MBps" END), 0) AS avg_bandwidth,
             COALESCE(AVG(CASE WHEN passed=1 AND quality_score > 0 THEN quality_score END), 0) AS avg_quality
             ,COALESCE(AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END), 0) AS h265_ratio
         FROM run_results rr
-        LEFT JOIN persistent_scan_results psr ON psr.url = rr.url
+        LEFT JOIN persistent_scan_results psr
+          ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+         AND psr.url = rr.url
         WHERE rr.run_id=%s
         GROUP BY {source_sql}"""
     # Score is calculated in SQL so LIMIT/OFFSET apply after score sorting.
     template_denominator = max(template_total, 1)
     score_sql = """(
-        CASE WHEN %s > 0 THEN LEAST(agg.channels_passed / %s, 1) * 30 ELSE 0 END +
-        LEAST(agg.pass_rate, 1) * 30 +
-        LEAST(agg.avg_bandwidth / 10, 1) * 20 +
-        LEAST(agg.avg_quality / 5, 1) * 20
+        CASE WHEN %s > 0 THEN LEAST(agg.channels_passed::DOUBLE PRECISION / %s, 1.0) * 30 ELSE 0.0 END +
+        LEAST(agg.pass_rate, 1.0) * 30 +
+        LEAST(agg.avg_bandwidth / 10.0, 1.0) * 20 +
+        LEAST(agg.avg_quality / 5.0, 1.0) * 20
     )"""
     total_row = conn.execute(
         f"SELECT COUNT(*) AS cnt FROM ({aggregate_sql}) agg {search_where}",
@@ -206,11 +212,12 @@ def get_sources_page(
     ).fetchone()
     offset = (page - 1) * size
     order_expression = score_sql if sort_column == 'score' else f'agg.{sort_column}'
+    nulls_order = 'NULLS FIRST' if order == 'ASC' else 'NULLS LAST'
     rows = conn.execute(
         f"""SELECT agg.*, {score_sql} AS score
             FROM ({aggregate_sql}) agg
             {search_where}
-            ORDER BY {order_expression} {order}, agg.source_url ASC
+            ORDER BY {order_expression} {order} {nulls_order}, agg.source_url ASC NULLS FIRST
             LIMIT %s OFFSET %s""",
         # SELECT score always needs one denominator; score ORDER needs another.
         [template_total, template_denominator, latest['run_id'], *search_params]
@@ -259,7 +266,7 @@ def _scan_dashboard(conn, trend_limit):
               SUM(CASE WHEN quality_status='pending' THEN 1 ELSE 0 END) AS pending,
               AVG(stability) AS avg_stability,
               AVG(delay) AS avg_delay_ms,
-              AVG(bandwidth) AS avg_bandwidth_MBps
+              AVG(bandwidth) AS "avg_bandwidth_MBps"
            FROM persistent_scan_results WHERE deleted_at IS NULL"""
     ).fetchone() or {}
     pool = {key: _integer(pool_row.get(key)) for key in ('good', 'poor', 'unreachable', 'pending')}
@@ -282,11 +289,13 @@ def _subscription_trend(conn, trend_limit):
                         THEN {source_sql} END) AS source_count,
                   COUNT(DISTINCT rr.channel) AS channels_total,
                   COUNT(DISTINCT CASE WHEN rr.passed=1 THEN rr.channel END) AS channels_passed,
-                  AVG(CASE WHEN rr.passed=1 AND rr.bandwidth_MBps>0 THEN rr.bandwidth_MBps END) AS avg_bandwidth_MBps,
+                  AVG(CASE WHEN rr.passed=1 AND rr."bandwidth_MBps">0 THEN rr."bandwidth_MBps" END) AS "avg_bandwidth_MBps",
                   AVG(CASE WHEN rr.passed=1 AND rr.quality_score>0 THEN rr.quality_score END) AS avg_quality
            FROM (SELECT id, run_id, finished_at FROM runs ORDER BY id DESC LIMIT %s) recent
            LEFT JOIN run_results rr ON rr.run_id=recent.run_id
-           LEFT JOIN persistent_scan_results psr ON psr.url=rr.url
+           LEFT JOIN persistent_scan_results psr
+             ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+            AND psr.url=rr.url
            GROUP BY recent.id, recent.run_id, recent.finished_at
            ORDER BY recent.id ASC""",
         (trend_limit,),
