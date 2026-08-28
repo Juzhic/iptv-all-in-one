@@ -127,7 +127,7 @@ jobs:
             -e 's#__POSTGRES_APP_PASSWORD__#ci-app-db-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_AUTH_PASSWORD__#ci-basic-auth-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_SECRET_KEY__#ci-secret-key-with-at-least-thirty-two-bytes-3.0#g' \
-            -e 's#juzhic/iptv-all-in-one:3.0.1#iptv-test:ci#g' \
+            -e 's#juzhic/iptv-all-in-one:3.0.2#iptv-test:ci#g' \
             ci-compose/docker-compose.yml
           docker compose -f ci-compose/docker-compose.yml config --quiet
           if grep -Eq '__[A-Z0-9_]+__' ci-compose/docker-compose.yml; then

@@ -171,13 +171,18 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert 'generate_env.py' not in dockerfile
     assert 'migrate_2_0.py' not in dockerfile
     assert 'mysql' not in dockerfile.casefold()
+    assert (
+        dockerfile.index('apt-get update')
+        < dockerfile.index('apt-get upgrade -y')
+        < dockerfile.index('apt-get install -y --no-install-recommends')
+    )
 
     assert 'image: postgres:18' in compose
     assert '- postgres_data:/var/lib/postgresql' in compose
     assert '127.0.0.1:5432:5432' in compose
     assert 'APP_DB_USER: iptv_app' in compose
     assert 'CREATE EXTENSION IF NOT EXISTS pgcrypto' in compose
-    assert 'image: juzhic/iptv-all-in-one:3.0.1' in compose
+    assert 'image: juzhic/iptv-all-in-one:3.0.2' in compose
     assert 'DB_HOST: postgres' in compose
     assert 'DB_PORT: "5432"' in compose
     assert 'DB_USER: iptv_app' in compose

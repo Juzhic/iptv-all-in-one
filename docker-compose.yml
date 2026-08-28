@@ -101,7 +101,7 @@ services:
     restart: "no"
 
   iptv-all-in-one:
-    image: juzhic/iptv-all-in-one:3.0.1
+    image: juzhic/iptv-all-in-one:3.0.2
     depends_on:
       postgres-init:
         condition: service_completed_successfully

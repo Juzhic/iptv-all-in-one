@@ -2,7 +2,7 @@
 
 IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理工具。
 
-当前版本：**3.0.1**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**3.0.2**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要能力
 
@@ -120,7 +120,7 @@ npm run check:size
 | PostgreSQL 初始化失败 | 数据卷是否为全新 PG18 卷、私有 YAML 四个秘密是否完整 |
 | 页面无法登录 | 私有 YAML 中的 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD` |
 | 变更请求返回 403 | 公网最终 Origin 是否加入 `IPTV_TRUSTED_ORIGINS` |
-| 页面空白或静态资源 404 | 镜像标签是否为 3.0.1，源码部署是否完成前端构建 |
+| 页面空白或静态资源 404 | 镜像标签是否为 3.0.2，源码部署是否完成前端构建 |
 | 候选源过少 | 测绘平台配额、区域筛选、关键词和质量阈值 |
 
 ## 相关文档
