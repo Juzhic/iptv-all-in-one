@@ -180,10 +180,10 @@ jobs:
           set -euo pipefail
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:58080/api/config)" = 401
-          curl --fail --silent \
-            --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+          curl --fail --silent --show-error \
+            --user admin:ci-basic-auth-password-with-32-bytes-3.0 \
             http://127.0.0.1:58080/api/config >/tmp/config-before-restart.json
-          curl --fail --silent http://127.0.0.1:58080/api/subscribe.m3u \
+          curl --fail --silent --show-error http://127.0.0.1:58080/api/subscribe.m3u \
             >/tmp/anonymous-playlist.m3u
           grep -F '#EXTM3U' /tmp/anonymous-playlist.m3u
       - name: Verify network isolation and hardened containers
@@ -232,15 +232,15 @@ jobs:
 
           "${compose[@]}" restart postgres
           for attempt in $(seq 1 60); do
-            if curl --fail --silent \
-              --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+            if curl --fail --silent --show-error \
+              --user admin:ci-basic-auth-password-with-32-bytes-3.0 \
               http://127.0.0.1:58080/api/config >/tmp/config-after-restart.json; then
               break
             fi
             sleep 2
           done
-          curl --fail --silent \
-            --user ci-admin:ci-basic-auth-password-with-32-bytes-3.0 \
+          curl --fail --silent --show-error \
+            --user admin:ci-basic-auth-password-with-32-bytes-3.0 \
             http://127.0.0.1:58080/api/config >/dev/null
           docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
             "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
