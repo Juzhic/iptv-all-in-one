@@ -2,7 +2,7 @@
 
 IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理工具。
 
-当前版本：**3.0.0**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**3.0.1**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要能力
 
@@ -37,6 +37,7 @@ docker compose -f docker-compose.fnos.yml up -d
 - 不要执行 `docker compose down -v`，否则会删除 PostgreSQL、应用数据和输出卷。
 - 应用固定发布在宿主机 `58080`；PostgreSQL 仅绑定 `127.0.0.1:5432`。
 - 应用连接数据库时始终使用 Docker 内网地址 `postgres:5432`，不会绕行宿主端口。
+- PostgreSQL 的 `db_host_access` bridge 只用于使宿主回环映射生效；应用和初始化任务仍仅通过 `db_internal` 与数据库通信。
 - 如需 FRP，请自行转发宿主机端口；本项目不内置或配置 frpc/frps。
 
 ## 从 2.x 升级
@@ -86,6 +87,7 @@ PostgreSQL 管理员凭据只提供给数据库和一次性初始化服务，常
 ## 安全边界
 
 - PostgreSQL 使用 SCRAM 密码认证，管理员与 `iptv_app` 分离，5432 默认只对宿主回环开放。
+- Docker Engine 28.0.0 之前存在 localhost 发布端口仍可能被同一二层网络访问的[已知限制](https://github.com/moby/moby/issues/45610)；飞牛使用旧版 Engine 时必须再加宿主防火墙规则。
 - 应用以 UID/GID 10001 运行，根文件系统只读，移除 Linux capabilities，并启用 `no-new-privileges`。
 - `IPTV_SECRET_KEY` 必须与 PostgreSQL 备份一起稳定保存；丢失后既有加密 API Key 无法恢复。
 - 58080 会发布到飞牛宿主网络。通过 FRP 暴露前，应为浏览器入口配置 HTTPS、访问控制和正确的 `IPTV_TRUSTED_ORIGINS`。
@@ -118,7 +120,7 @@ npm run check:size
 | PostgreSQL 初始化失败 | 数据卷是否为全新 PG18 卷、私有 YAML 四个秘密是否完整 |
 | 页面无法登录 | 私有 YAML 中的 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD` |
 | 变更请求返回 403 | 公网最终 Origin 是否加入 `IPTV_TRUSTED_ORIGINS` |
-| 页面空白或静态资源 404 | 镜像标签是否为 3.0.0，源码部署是否完成前端构建 |
+| 页面空白或静态资源 404 | 镜像标签是否为 3.0.1，源码部署是否完成前端构建 |
 | 候选源过少 | 测绘平台配额、区域筛选、关键词和质量阈值 |
 
 ## 相关文档

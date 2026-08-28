@@ -15,7 +15,10 @@ services:
     volumes:
       # PostgreSQL 18 uses a major-version subdirectory below this mount.
       - postgres_data:/var/lib/postgresql
+    # Docker does not activate published ports for a container attached only
+    # to internal networks. Keep host ingress separate from application traffic.
     networks:
+      - db_host_access
       - db_internal
     # Keep the official root entrypoint so it can prepare a fresh named volume;
     # it drops privileges to postgres before starting the database server.
@@ -98,7 +101,7 @@ services:
     restart: "no"
 
   iptv-all-in-one:
-    image: juzhic/iptv-all-in-one:3.0.0
+    image: juzhic/iptv-all-in-one:3.0.1
     depends_on:
       postgres-init:
         condition: service_completed_successfully
@@ -147,6 +150,10 @@ volumes:
   app_output:
 
 networks:
+  db_host_access:
+    # Used only by PostgreSQL so its 127.0.0.1 binding is effective. The
+    # application and postgres-init services do not join this network.
+    driver: bridge
   db_internal:
     internal: true
   egress:

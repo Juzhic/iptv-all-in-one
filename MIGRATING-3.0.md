@@ -129,4 +129,4 @@ docker compose -f docker-compose.fnos.yml exec -T postgres \
 
 `postgres:18` 会跟随 18.x 安全和修复版本，不会自动跨到 19。未来 major 升级必须另做备份恢复或 `pg_upgrade` 演练，不能直接把持久卷交给不同 major 镜像。
 
-通过 FRP 暂时开放 PostgreSQL 时，应只在维护窗口启用受认证、受限来源的隧道，完成后立即关闭。不要把宿主映射改成公开的 `0.0.0.0:5432`。
+通过 FRP 暂时开放 PostgreSQL 时，应只在维护窗口启用受认证、受限来源的隧道，完成后立即关闭。不要把宿主映射改成公开的 `0.0.0.0:5432`。Docker Engine 28.0.0 之前存在 localhost 发布端口仍可能被同一二层网络访问的[已知限制](https://github.com/moby/moby/issues/45610)，飞牛使用旧版 Engine 时必须再配置宿主防火墙限制 5432。

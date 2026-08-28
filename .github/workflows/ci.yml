@@ -127,7 +127,7 @@ jobs:
             -e 's#__POSTGRES_APP_PASSWORD__#ci-app-db-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_AUTH_PASSWORD__#ci-basic-auth-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_SECRET_KEY__#ci-secret-key-with-at-least-thirty-two-bytes-3.0#g' \
-            -e 's#juzhic/iptv-all-in-one:3.0.0#iptv-test:ci#g' \
+            -e 's#juzhic/iptv-all-in-one:3.0.1#iptv-test:ci#g' \
             ci-compose/docker-compose.yml
           docker compose -f ci-compose/docker-compose.yml config --quiet
           if grep -Eq '__[A-Z0-9_]+__' ci-compose/docker-compose.yml; then
@@ -194,14 +194,27 @@ jobs:
           postgres_container=$("${compose[@]}" ps -q postgres)
           app_container=$("${compose[@]}" ps -q iptv-all-in-one)
 
-          test "$(docker port "$postgres_container" 5432/tcp)" = '127.0.0.1:5432'
+          published_ports=$(docker inspect "$postgres_container" \
+            --format '{{json .NetworkSettings.Ports}}')
+          jq -e \
+            '.["5432/tcp"] == [{"HostIp":"127.0.0.1","HostPort":"5432"}]' \
+            <<<"$published_ports" >/dev/null
           test "$(docker network inspect iptvci_db_internal --format '{{.Internal}}')" = true
+          test "$(docker network inspect iptvci_db_host_access --format '{{.Internal}}')" = false
+          postgres_networks=$(docker inspect "$postgres_container" \
+            --format '{{json .NetworkSettings.Networks}}' \
+            | jq -r 'keys | sort | join(" ")')
+          test "$postgres_networks" = 'iptvci_db_host_access iptvci_db_internal'
           app_networks=$(docker inspect "$app_container" \
-            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}')
-          case "$app_networks" in
-            *iptvci_db_internal*iptvci_egress*|*iptvci_egress*iptvci_db_internal*) ;;
-            *) echo "::error::Unexpected app networks: $app_networks" >&2; exit 1 ;;
-          esac
+            --format '{{json .NetworkSettings.Networks}}' \
+            | jq -r 'keys | sort | join(" ")')
+          test "$app_networks" = 'iptvci_db_internal iptvci_egress'
+
+          docker run --rm --network host \
+            -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 postgres:18 \
+            psql --host=127.0.0.1 --username=iptv_app \
+            --dbname=iptv_all_in_one --tuples-only --no-align \
+            --command='SELECT 1' | grep -Fx 1
 
           test "$(docker inspect "$app_container" --format '{{.HostConfig.ReadonlyRootfs}}')" = true
           test "$(docker inspect "$app_container" --format '{{json .HostConfig.CapDrop}}')" = '["ALL"]'
