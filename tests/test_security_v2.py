@@ -163,6 +163,9 @@ def test_docker_assets_enforce_postgresql_production_contract():
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / 'Dockerfile').read_text(encoding='utf-8')
     compose = (root / 'docker-compose.yml').read_text(encoding='utf-8')
+    ci_workflow = (root / '.github' / 'workflows' / 'ci.yml').read_text(
+        encoding='utf-8'
+    )
 
     assert 'USER 10001:10001' in dockerfile
     assert 'generate_env.py' not in dockerfile
@@ -193,6 +196,16 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert 'mysql' not in compose.casefold()
     assert 'frpc' not in compose.casefold()
     assert 'iptv_backup.sql' not in compose
+
+    auth_username_line = next(
+        line for line in compose.splitlines()
+        if line.strip().startswith('IPTV_AUTH_USERNAME:')
+    )
+    auth_username = auth_username_line.split(':', 1)[1].strip().strip('"\'')
+    smoke_credential = (
+        f'--user {auth_username}:ci-basic-auth-password-with-32-bytes-3.0'
+    )
+    assert ci_workflow.count(smoke_credential) == 3
 
 
 def test_wsgi_startup_fails_closed_when_database_is_required():
