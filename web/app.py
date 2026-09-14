@@ -501,7 +501,9 @@ def create_app():
         response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
         response.headers.setdefault('X-XSS-Protection', '1; mode=block')
         response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
-        response.headers.setdefault('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
+        # Browser playback fetches playlists/segments directly from IPTV hosts;
+        # MSE and decoder workers use blob URLs. Scripts remain same-origin.
+        response.headers.setdefault('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http: https:; media-src 'self' http: https: blob:; worker-src 'self' blob:")
         return response
 
     @app.teardown_appcontext
