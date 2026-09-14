@@ -42,6 +42,8 @@ docker compose -f docker-compose.fnos.yml ps
 
 新栈使用独立 `postgres_data` 卷，PostgreSQL 18 挂载 `/var/lib/postgresql`。应用通过 `postgres:5432` 内网连接；宿主 5432 只绑定回环地址。
 
+3.0.3 起，应用创建固定 UTF-8 编码的 `iptv_url_sha256(text)` 函数，调用 PostgreSQL 内置 SHA-256，不再安装或调用 `pgcrypto`。已有 3.0 数据库在启动迁移事务及 advisory lock 内重建四个旧 URL 表达式索引，保留 URL 原值复核和唯一约束；失败时整个迁移回滚，已有扩展不会被删除。请先备份并为首次索引重建预留维护时间。外置数据库的应用账号应拥有业务表和索引，且具备应用 schema 的 CREATE 权限；仅有读写权限不足以执行迁移。
+
 空库启动完成后应验证：
 
 - `postgres` 为 healthy；

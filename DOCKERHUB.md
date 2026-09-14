@@ -2,9 +2,11 @@
 
 镜像：`juzhic/iptv-all-in-one`
 
-- `3.0.2`：固定的 PostgreSQL 18 版本
+- `3.0.3`：固定的 PostgreSQL 18 版本
 - `latest`：当前稳定版
 - 平台：`linux/amd64`、`linux/arm64`
+
+3.0.3 起无需安装 `pgcrypto` 扩展，URL 去重和索引使用 PostgreSQL 内置 SHA-256。外置 PostgreSQL 18 需预先准备应用数据库与专用账号，并授权在应用 schema 中创建表、函数和索引；应用会自动完成业务表初始化。已有数据库首次升级会事务性重建四个 URL 摘要索引，请预留维护时间，原扩展和业务数据会保留。
 
 3.0 起应用仅支持 PostgreSQL，不再支持 MySQL 连接或旧 MySQL 数据卷。
 

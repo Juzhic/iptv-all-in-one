@@ -52,7 +52,7 @@ class BackendHardeningTests(unittest.TestCase):
             if 'WITH requested(url)' in query
         )
         self.assertIn('unnest(%s::TEXT[])', query)
-        self.assertIn("digest(stored.url, 'sha256')", query)
+        self.assertIn("iptv_url_sha256(stored.url)", query)
         self.assertIn('stored.url = requested.url', query)
         self.assertEqual((['https://example.test/live'],), args)
 

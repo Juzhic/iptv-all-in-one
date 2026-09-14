@@ -121,7 +121,7 @@ def _source_aggregate_rows(conn, run_id):
                   AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END) AS h265_ratio
            FROM run_results rr
            LEFT JOIN persistent_scan_results psr
-             ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+             ON iptv_url_sha256(psr.url) = iptv_url_sha256(rr.url)
             AND psr.url = rr.url
            WHERE rr.run_id=%s
            GROUP BY {source_sql}""",
@@ -194,7 +194,7 @@ def get_sources_page(
             ,COALESCE(AVG(CASE WHEN is_h265=1 THEN 1 ELSE 0 END), 0) AS h265_ratio
         FROM run_results rr
         LEFT JOIN persistent_scan_results psr
-          ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+          ON iptv_url_sha256(psr.url) = iptv_url_sha256(rr.url)
          AND psr.url = rr.url
         WHERE rr.run_id=%s
         GROUP BY {source_sql}"""
@@ -294,7 +294,7 @@ def _subscription_trend(conn, trend_limit):
            FROM (SELECT id, run_id, finished_at FROM runs ORDER BY id DESC LIMIT %s) recent
            LEFT JOIN run_results rr ON rr.run_id=recent.run_id
            LEFT JOIN persistent_scan_results psr
-             ON digest(psr.url, 'sha256') = digest(rr.url, 'sha256')
+             ON iptv_url_sha256(psr.url) = iptv_url_sha256(rr.url)
             AND psr.url=rr.url
            GROUP BY recent.id, recent.run_id, recent.finished_at
            ORDER BY recent.id ASC""",

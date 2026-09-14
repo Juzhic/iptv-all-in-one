@@ -8,11 +8,14 @@ truncate application objects.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import multiprocessing
 import os
 import queue
 import uuid
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import patch
 
 import psycopg
@@ -198,6 +201,9 @@ def _acquire_lease_worker(config, task_type, task_id, owner, start_event, result
 def test_postgresql_18_and_init_db_are_idempotent():
     with _raw_connect() as conn:
         version = conn.info.server_version
+        extensions_before = conn.execute(
+            'SELECT extname FROM pg_extension ORDER BY extname'
+        ).fetchall()
     assert 180000 <= version < 190000
 
     with _without_startup_retention():
@@ -209,11 +215,139 @@ def test_postgresql_18_and_init_db_are_idempotent():
         "SELECT description FROM schema_migrations WHERE version = %s",
         (db.SCHEMA_VERSION,),
     ).fetchone()
-    extension = conn.execute(
-        "SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'"
-    ).fetchone()
-    assert migration['description'] == 'PostgreSQL 18 baseline schema'
-    assert extension['extname'] == 'pgcrypto'
+    extensions_after = conn.execute(
+        'SELECT extname FROM pg_extension ORDER BY extname'
+    ).fetchall()
+    assert migration['description'] == 'Core SHA-256 URL indexes without pgcrypto'
+    assert extensions_after == extensions_before
+
+
+def test_native_url_hash_matches_utf8_bytes_and_uses_expression_index():
+    conn = db._get_conn()
+    urls = [
+        '', 'https://example.test/live',
+        'https://example.test/央视/直播?频道=一📺',
+        r'https://example.test/\x6162/\123?token=%2F',
+        'https://example.test/caf\u00e9', 'https://example.test/cafe\u0301',
+        _URL_BASE + '界' * (4096 - len(_URL_BASE)),
+    ]
+    for url in urls:
+        actual = conn.execute(
+            'SELECT iptv_url_sha256(%s) AS hash', (url,)
+        ).fetchone()['hash']
+        assert bytes(actual) == hashlib.sha256(url.encode('utf-8')).digest()
+    assert conn.execute('SELECT iptv_url_sha256(NULL) AS hash').fetchone()['hash'] is None
+
+    url = f'{_URL_BASE}index-plan'
+    db.upsert_persistent_results([{'url': url, 'name': 'Index plan'}])
+    with conn.transaction():
+        conn.execute('SET LOCAL enable_seqscan = off')
+        plan = conn.execute(
+            """EXPLAIN (FORMAT JSON) SELECT id FROM persistent_scan_results
+               WHERE iptv_url_sha256(url) = iptv_url_sha256(%s) AND url = %s""",
+            (url, url),
+        ).fetchone()['QUERY PLAN']
+    assert 'idx_psr_url' in str(plan)
+
+
+def test_dashboard_source_queries_work_without_digest_extension():
+    spec = importlib.util.spec_from_file_location(
+        'dashboard_pg_integration',
+        Path(__file__).resolve().parents[1] / 'web' / 'dashboard_service.py',
+    )
+    dashboard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dashboard)
+    run_id = f'{_PREFIX}dashboard'
+    payload = _run_payload(run_id, bandwidth=2.5, pass_rate=1.0)
+    payload['finished_at'] = '2099-01-01 00:00:00'
+    payload['results'][0]['source_url'] = ''
+    url = payload['results'][0]['url']
+    platform = f'{_PREFIX}dashboard_platform'
+    db.upsert_persistent_results([{'url': url, 'platform': platform}])
+    _insert_run_without_retention(payload)
+
+    conn = db._get_conn()
+    sources = dashboard._source_aggregate_rows(conn, run_id)
+    assert sources[0]['source_url'] == f'{db.SCAN_SOURCE_LABEL_PREFIX}{platform}'
+    page = dashboard.get_sources_page(search=platform, reveal_url=True)
+    assert page['total'] == 1
+    assert page['items'][0]['channels_passed'] == 1
+    trend = dashboard._subscription_trend(conn, 100)
+    run = next(row for row in trend if row['run_id'] == run_id)
+    assert run['source_count'] == 1
+
+
+def test_legacy_url_index_migration_is_atomic_preserves_data_and_is_idempotent():
+    # All DDL is confined to a random test schema and rolled back on exit.
+    # A test-only digest(text,text) reproduces old expression indexes without
+    # installing any extension or touching the application's existing indexes.
+    schema = f'{_PREFIX}_hash_migration'
+    with _raw_connect() as conn, conn.transaction(force_rollback=True):
+        conn.execute(psycopg.sql.SQL('CREATE SCHEMA {}').format(psycopg.sql.Identifier(schema)))
+        conn.execute(psycopg.sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(
+            psycopg.sql.Identifier(schema)
+        ))
+        conn.execute(db._CREATE_URL_HASH_FUNCTION_SQL)
+        conn.execute("""CREATE FUNCTION digest(value text, algorithm text)
+            RETURNS bytea LANGUAGE sql IMMUTABLE STRICT
+            RETURN pg_catalog.sha256(pg_catalog.convert_to(value, 'UTF8'))""")
+        for table, _ in db._URL_HASH_INDEXES.values():
+            conn.execute(psycopg.sql.SQL(
+                'CREATE TABLE {} (scan_id text, url text, recorded_at text, name text)'
+            ).format(psycopg.sql.Identifier(table)))
+        for _, create_sql in db._URL_HASH_INDEXES.values():
+            conn.execute(create_sql.replace('iptv_url_sha256(url)', "digest(url, 'sha256')"))
+        long_url = _URL_BASE + 'p' * (4096 - len(_URL_BASE))
+        conn.execute(
+            "INSERT INTO persistent_scan_results (url, name) VALUES (%s, 'before')",
+            (long_url,),
+        )
+        # An unrelated legacy index must survive, even on the same table.
+        conn.execute("CREATE INDEX unrelated_legacy ON persistent_scan_results (digest(name, 'sha256'))")
+
+        def index_snapshot():
+            return conn.execute(
+                """SELECT c.oid, c.relname, pg_get_indexdef(c.oid) AS definition
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE n.nspname = current_schema() AND c.relkind = 'i'
+                   ORDER BY c.relname"""
+            ).fetchall()
+
+        before = index_snapshot()
+
+        class FailSecondRebuild:
+            def execute(self, query, args=None):
+                if query == db._URL_HASH_INDEXES['idx_psr_url'][1]:
+                    raise RuntimeError('simulated index build failure')
+                return conn.execute(query, args)
+
+        with pytest.raises(RuntimeError, match='simulated index build failure'):
+            with conn.transaction():
+                db._migrate_url_hash_indexes(FailSecondRebuild())
+        assert index_snapshot() == before
+
+        db._migrate_url_hash_indexes(conn)
+        after = index_snapshot()
+        for index in after:
+            if index['relname'] in db._URL_HASH_INDEXES:
+                assert 'iptv_url_sha256(url)' in index['definition']
+            else:
+                assert index in before
+        assert conn.execute(
+            "SELECT to_regprocedure('digest(text,text)') IS NOT NULL AS present"
+        ).fetchone()['present']
+        assert conn.execute(
+            'SELECT url, name FROM persistent_scan_results'
+        ).fetchone() == {'url': long_url, 'name': 'before'}
+        conn.execute(
+            """INSERT INTO persistent_scan_results (url, name) VALUES (%s, 'after')
+               ON CONFLICT ((iptv_url_sha256(url))) DO UPDATE SET name = EXCLUDED.name
+               WHERE persistent_scan_results.url = EXCLUDED.url""",
+            (long_url,),
+        )
+        assert conn.execute('SELECT name FROM persistent_scan_results').fetchall() == [{'name': 'after'}]
+        db._migrate_url_hash_indexes(conn)
+        assert index_snapshot() == after
 
 
 def test_crud_explicit_rollback_and_foreign_key_cascade():
@@ -330,7 +464,7 @@ def test_digest_indexes_accept_4096_char_urls_and_scan_search_null_sorting():
     conn = db._get_conn()
     stored = conn.execute(
         """SELECT name, length(url) AS url_length,
-                  octet_length(digest(url, 'sha256')) AS digest_length
+                  octet_length(iptv_url_sha256(url)) AS digest_length
            FROM scan_results WHERE scan_id = %s AND url = %s""",
         (scan_id, long_url),
     ).fetchone()

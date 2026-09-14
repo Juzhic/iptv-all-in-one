@@ -805,7 +805,7 @@ def api_persistent_priority():
         conn = db._get_conn()
         conn.execute(
             """UPDATE persistent_scan_results SET priority = %s
-               WHERE digest(url, 'sha256') = digest(%s, 'sha256')
+               WHERE iptv_url_sha256(url) = iptv_url_sha256(%s)
                  AND url = %s""",
             (priority, url, url)
         )

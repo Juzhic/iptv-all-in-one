@@ -2,7 +2,7 @@
 
 IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理工具。
 
-当前版本：**3.0.2**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**3.0.3**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要能力
 
@@ -72,6 +72,8 @@ docker compose -f docker-compose.fnos.yml up -d
 
 PostgreSQL 管理员凭据只提供给数据库和一次性初始化服务，常驻应用不会收到管理员密码。
 
+3.0.3 起使用 PostgreSQL 内置 SHA-256，无需安装 `pgcrypto`，支持未提供该扩展的宝塔 PostgreSQL 18。应用账号需拥有目标数据库及应用 schema 的建表、建函数和索引权限；业务表和摘要函数由应用启动时自动创建。升级已有 3.0 数据库时，会在事务中重建四个旧 URL 摘要索引，大数据量部署应预留首次启动的维护时间；迁移失败会回滚，不会删除已有 `pgcrypto` 扩展。
+
 ## 输出与订阅
 
 结果固定写入 `IPTV_OUTPUT_DIR` 下的 `result.txt`、`result.m3u` 和 `history.json`。
@@ -120,7 +122,7 @@ npm run check:size
 | PostgreSQL 初始化失败 | 数据卷是否为全新 PG18 卷、私有 YAML 四个秘密是否完整 |
 | 页面无法登录 | 私有 YAML 中的 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD` |
 | 变更请求返回 403 | 公网最终 Origin 是否加入 `IPTV_TRUSTED_ORIGINS` |
-| 页面空白或静态资源 404 | 镜像标签是否为 3.0.2，源码部署是否完成前端构建 |
+| 页面空白或静态资源 404 | 镜像标签是否为 3.0.3，源码部署是否完成前端构建 |
 | 候选源过少 | 测绘平台配额、区域筛选、关键词和质量阈值 |
 
 ## 相关文档
