@@ -4,10 +4,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      full_checks:
+        description: Run bundle budgets, database restart drills, and vulnerability scanning before publishing
+        type: boolean
+        default: false
 
 jobs:
   quality-gate:
     uses: ./.github/workflows/ci.yml
+    with:
+      full_checks: ${{ inputs.full_checks == true }}
 
   build:
     needs: quality-gate
@@ -66,8 +73,10 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/iptv-all-in-one:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/iptv-all-in-one:${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=iptv-release
+            type=gha,scope=iptv-smoke
+          cache-to: type=gha,scope=iptv-release,mode=max
 
       - name: Update Docker Hub description
         env:

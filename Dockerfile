@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Stage 1: Build frontend. Both base images publish amd64 and arm64 variants.
-FROM node:20-slim AS frontend-builder
+# Stage 1: Static assets are platform-independent; build once without QEMU.
+FROM --platform=$BUILDPLATFORM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 

@@ -127,6 +127,8 @@ npm run check:size
 
 源码运行时可通过 `database/db_config.json` 或显式 `DB_*` 环境变量连接开发 PostgreSQL。前端热更新使用 `python -m web --dev`。生产环境保持单进程、多线程 Gunicorn，避免任务状态分散到多个进程。
 
+Docker 发布默认执行前后端测试、PostgreSQL 集成测试和原生镜像 Compose 冒烟验证，通过后构建并发布 amd64/arm64 镜像。体积预算、数据库重启演练和 Trivy 漏洞扫描默认跳过；需要完整检查时，在 GitHub Actions 手动运行 `Quality Gate` 并勾选 `full_checks`，或在 `Test and Publish Docker Image` 中勾选该选项后检查并发布。
+
 ## 常见问题
 
 | 现象 | 首要检查 |
