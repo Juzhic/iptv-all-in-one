@@ -183,7 +183,7 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert 'APP_DB_USER: iptv_app' in compose
     assert 'CREATE EXTENSION' not in compose
     assert 'CREATE EXTENSION' not in ci_workflow
-    assert 'image: juzhic/iptv-all-in-one:3.0.3' in compose
+    assert 'image: juzhic/iptv-all-in-one:3.1.0' in compose
     assert 'DB_HOST: postgres' in compose
     assert 'DB_PORT: "5432"' in compose
     assert 'DB_USER: iptv_app' in compose
@@ -478,6 +478,22 @@ def test_anonymous_feed_cache_headers_and_etag_are_preserved(monkeypatch):
     assert response.status_code == 200
     assert response.headers['Cache-Control'] == 'public, max-age=30'
     assert response.headers['ETag'] == '"feed-v1"'
+
+
+def test_browser_playback_policy_allows_media_without_external_scripts(monkeypatch):
+    app = _make_app(monkeypatch)
+
+    @app.get('/probe-player')
+    def player_page():
+        return '<video controls></video>'
+
+    response = app.test_client().get('/probe-player', headers=_auth_headers())
+    assert response.status_code == 200
+    directives = dict(part.strip().split(' ', 1) for part in response.headers['Content-Security-Policy'].split(';'))
+    assert set(directives['connect-src'].split()) == {"'self'", 'http:', 'https:'}
+    assert set(directives['media-src'].split()) == {"'self'", 'http:', 'https:', 'blob:'}
+    assert set(directives['worker-src'].split()) == {"'self'", 'blob:'}
+    assert 'https:' not in directives['script-src']
 
 
 def test_request_teardown_closes_thread_database_connection(monkeypatch):

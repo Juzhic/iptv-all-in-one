@@ -2,7 +2,7 @@
 
 IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理工具。
 
-当前版本：**3.0.3**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**3.1.0**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要能力
 
@@ -10,6 +10,7 @@ IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理
 - Quake、Hunter 等候选源采集与持久化质量维护
 - 定时测速、历史对比、数据来源质量和任务状态管理
 - TXT/M3U 输出、筛选订阅、缓存、ETag 和每 IP 限流
+- 测速订阅在线播放、频道搜索与分类、多线路切换，支持 HLS / HTTP-TS / FLV
 - Web 配置中心、BasicAuth、敏感 API Key 加密
 - PostgreSQL 18、Docker Compose 和 amd64/arm64 镜像
 
@@ -86,6 +87,12 @@ PostgreSQL 管理员凭据只提供给数据库和一次性初始化服务，常
 | `/api/health` | 健康检查 | 匿名 |
 | Web 管理页及其他 API | 配置、扫描与历史管理 | BasicAuth |
 
+## 在线播放测速订阅
+
+打开“全量测速” → “播放列表订阅地址”，点击 M3U 订阅地址旁的“在线播放”，选择频道即可播放。可搜索频道、筛选分类、切换线路，视频自带音量和全屏控制。“刷新列表”重新读取 `/api/subscribe.m3u`，与外部播放器订阅保持一致（短时缓存可能稍有延迟）。
+
+播放器支持 HLS（M3U8）、HTTP-TS、FLV 及浏览器原生视频；无后缀地址默认按 HLS 尝试，可手动切换格式。浏览器直接连接频道源站，需要本机网络可达，HLS/TS/FLV 源站需允许跨域访问。HTTPS 管理页会拦截 HTTP 线路，H.265 和部分音频编码取决于浏览器支持；不提供转码，无法播放时可切换线路或复制地址到 VLC 等外部播放器。关闭播放器或离开测速页会停止播放。
+
 ## 安全边界
 
 - PostgreSQL 使用 SCRAM 密码认证，管理员与 `iptv_app` 分离，5432 默认只对宿主回环开放。
@@ -122,7 +129,7 @@ npm run check:size
 | PostgreSQL 初始化失败 | 数据卷是否为全新 PG18 卷、私有 YAML 四个秘密是否完整 |
 | 页面无法登录 | 私有 YAML 中的 `IPTV_AUTH_USERNAME` / `IPTV_AUTH_PASSWORD` |
 | 变更请求返回 403 | 公网最终 Origin 是否加入 `IPTV_TRUSTED_ORIGINS` |
-| 页面空白或静态资源 404 | 镜像标签是否为 3.0.3，源码部署是否完成前端构建 |
+| 页面空白或静态资源 404 | 镜像标签是否为 3.1.0，源码部署是否完成前端构建 |
 | 候选源过少 | 测绘平台配额、区域筛选、关键词和质量阈值 |
 
 ## 相关文档

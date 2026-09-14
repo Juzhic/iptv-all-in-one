@@ -68,6 +68,7 @@
           <div class="subscribe-url-row">
             <t-input :value="subscribeUrl" readonly size="small" class="subscribe-input" />
             <t-button theme="primary" size="small" @click="copySubscribeUrl">复制</t-button>
+            <t-button theme="primary" size="small" @click="playerVisible = !playerVisible">{{ playerVisible ? '收起播放器' : '在线播放' }}</t-button>
           </div>
           <div v-if="qrDataUrl" class="qr-section">
             <img :src="qrDataUrl" alt="扫码订阅" class="qr-image" />
@@ -75,6 +76,8 @@
           </div>
         </div>
       </div>
+
+      <SubscriptionPlayer v-if="playerVisible" @close="playerVisible = false" />
 
       <!-- 预览 -->
       <div v-if="previewVisible" class="preview-section">
@@ -93,7 +96,7 @@
 </template>
 
 <script setup>
-import { ref, watch, inject, computed, onMounted } from 'vue'
+import { ref, watch, inject, computed, onMounted, onDeactivated } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
 import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import QRCode from 'qrcode'
@@ -101,6 +104,11 @@ import { apiTriggerTest, apiStopTest, apiPreviewResult, apiDownloadUrl } from '.
 import { useTheme } from '../composables/useTheme.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import LogPanel from './LogPanel.vue'
+import { defineAsyncPage } from '../utils/asyncPage.js'
+
+const SubscriptionPlayer = defineAsyncPage(() => import('./SubscriptionPlayer.vue'))
+const playerVisible = ref(false)
+onDeactivated(() => { playerVisible.value = false })
 
 const emit = defineEmits(['test-finished'])
 defineProps({
