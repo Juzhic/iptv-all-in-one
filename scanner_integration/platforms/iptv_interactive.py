@@ -11,6 +11,7 @@ import aiohttp
 from .. import config_bridge
 from ..config_bridge import API_REQUEST_DELAY
 from ..network import get_session
+from ..hunter_api import read_hunter_response
 from ..logger_bridge import logger
 from .shared import KeyDepletedError, _is_stop_requested
 
@@ -20,9 +21,10 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
         logger.warning("[IPTV互动] 未配置 Hunter API Key，跳过")
         return []
     if session is None:
-        session = get_session(limit=30, force_close=True)
+        async with get_session(limit=30, force_close=True) as owned_session:
+            return await iptv_interactive_scan(api_key, query, target_size, session=owned_session)
     if query is None:
-        query = 'web.title:"首页 - IPTV互动电视系统"'
+        query = 'web.title="首页 - IPTV互动电视系统"'
 
     collected_entries = []
     all_ips = []
@@ -32,7 +34,7 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
     while len(all_ips) < target_size and page <= max_pages:
         try:
             await asyncio.sleep(API_REQUEST_DELAY * 0.5)
-            qb = base64.urlsafe_b64encode(query.encode()).decode().rstrip('=')
+            qb = base64.urlsafe_b64encode(query.encode()).decode()
             async with session.get(
                 "https://hunter.qianxin.com/openApi/search",
                 params={
@@ -42,34 +44,26 @@ async def iptv_interactive_scan(api_key, query=None, target_size=30, session=Non
                     "page_size": page_size,
                     "is_web": 1
                 },
-                timeout=aiohttp.ClientTimeout(total=15)
+                allow_redirects=False, timeout=aiohttp.ClientTimeout(total=15)
             ) as r:
-                if r.status == 200:
-                    j = await r.json()
-                    if j.get("code") in (200, 0):
-                        data = j.get("data") or {}
-                        items = data.get("arr") or []
-                        if not items:
-                            break
-                        logger.info(f"[IPTV互动] 第{page}页，{len(items)} 个IP")
-                        for item in items:
-                            ip = item.get("ip")
-                            port = item.get("port", 8080)
-                            if ip:
-                                all_ips.append((ip, port))
-                        if len(items) < page_size:
-                            break
-                        page += 1
-                    else:
-                        logger.warning(f"[IPTV互动] API 错误: {j.get('message')}")
-                        break
-                elif r.status == 403:
-                    raise KeyDepletedError("[IPTV互动] Hunter API Key 无效或积分耗尽")
-                else:
-                    logger.warning(f"[IPTV互动] HTTP {r.status}")
+                data = await read_hunter_response(r, 'search', api_key)
+                items = data.get("arr") or []
+                if not items:
                     break
+                logger.info(f"[IPTV互动] 第{page}页，{len(items)} 个IP")
+                for item in items:
+                    ip = item.get("ip")
+                    port = item.get("port", 8080)
+                    if ip:
+                        all_ips.append((ip, port))
+                if len(items) < page_size:
+                    break
+                page += 1
         except KeyDepletedError:
             raise
+        except ValueError as exc:
+            logger.warning(str(exc))
+            break
         except asyncio.TimeoutError:
             logger.warning("[IPTV互动] 请求超时")
             break

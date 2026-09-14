@@ -38,14 +38,14 @@ function captureChild(instance) {
 
 async function onSectionChange(next) {
   if (!next || next === section.value) return
-  if (section.value === 'system' && typeof settingsInstance?.canLeave === 'function') {
-    if (!await settingsInstance.canLeave()) return
-  }
+  const instance = section.value === 'system' ? settingsInstance : scanInstance
+  if (typeof instance?.canLeave === 'function' && !await instance.canLeave()) return
   section.value = next
 }
 
 async function canLeave() {
-  if (typeof settingsInstance?.canLeave === 'function') return settingsInstance.canLeave()
+  const instance = section.value === 'system' ? settingsInstance : scanInstance
+  if (typeof instance?.canLeave === 'function') return instance.canLeave()
   return true
 }
 
@@ -58,10 +58,10 @@ defineExpose({ canLeave, save, section })
 </script>
 
 <style scoped>
-.configuration-center { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
+.configuration-center { display: flex; flex-direction: column; gap: var(--app-space-4); min-width: 0; }
 .center-nav :deep(.t-card__body) { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 17px; }
 .center-title { color: var(--app-text); font-size: 16px; font-weight: 700; }
-.center-nav p { margin: 4px 0 0; color: var(--app-text-muted); font-size: 11px; }
+.center-nav p { margin: 4px 0 0; color: var(--app-text-muted); font-size: 13px; line-height: 1.6; }
 .center-tabs { flex: 0 0 auto; min-width: 240px; }
 .center-tabs :deep(.t-tabs__content) { display: none; }
 @media (max-width: 768px) {

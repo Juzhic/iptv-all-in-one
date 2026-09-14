@@ -1,6 +1,6 @@
 <template>
-  <div class="settings-tab" :class="{ 'is-dark-theme': isDarkTheme }">
-    <t-card size="small" :bordered="false" class="editor-card">
+  <div class="settings-tab configuration-page">
+    <t-card size="small" :bordered="false" class="editor-card workspace-card">
       <div class="config-header editor-header">
         <div>
           <div class="section-title section-title--flush">数据文件编辑</div>
@@ -55,7 +55,7 @@
       </div>
     </t-card>
 
-    <t-card size="small" :bordered="false" class="config-card">
+    <t-card size="small" :bordered="false" class="config-card workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">参数配置</div>
@@ -249,7 +249,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
 import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import { apiGetConfig, apiGetText, apiResetDemo, apiSaveConfig, apiSaveText, apiExportConfig, apiImportConfig } from '../api.js'
-import { useTheme } from '../composables/useTheme.js'
 import { hasConfigurationChanges } from '../utils/configDirty.js'
 
 const currentFile = ref('subscribe')
@@ -266,7 +265,6 @@ const runTimesHint = ref('')
 const savedConfigFingerprint = ref('')
 const savedConfigState = ref(null)
 const configLoaded = ref(false)
-const { theme } = useTheme()
 
 const fieldErrors = reactive({})
 
@@ -377,7 +375,6 @@ const editorStatusTone = computed(() => {
   return ''
 })
 
-const isDarkTheme = computed(() => theme.value === 'dark')
 
 async function loadConfig() {
   try {
@@ -690,71 +687,13 @@ onBeforeUnmount(() => {
 })
 </script>
 
+<style scoped src="../styles/configuration.css"></style>
+
 <style scoped>
-.settings-tab {
-  padding-top: 4px;
-  --surface-text-primary: #0f172a;
-  --surface-text-secondary: #475569;
-  --surface-text-muted: #64748b;
-  --surface-text-soft: #94a3b8;
-  --surface-border-strong: rgba(148, 163, 184, 0.18);
-  --surface-border-soft: rgba(226, 232, 240, 0.92);
-  --surface-border-softer: rgba(226, 232, 240, 0.96);
-  --surface-shell-bg: rgba(255, 255, 255, 0.78);
-  --surface-shell-gradient:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
-  --surface-panel-bg: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.97));
-  --surface-panel-accent: linear-gradient(180deg, rgba(239, 246, 255, 0.82), rgba(255, 255, 255, 0.9));
-  --surface-tabs-bg: rgba(248, 250, 252, 0.94);
-  --surface-pill-bg: rgba(15, 23, 42, 0.05);
-  --surface-pill-accent-bg: rgba(37, 99, 235, 0.12);
-  --surface-pill-accent-text: #1d4ed8;
-  --surface-accent: #2563eb;
-  --surface-accent-strong: #1d4ed8;
-  --surface-accent-soft: rgba(37, 99, 235, 0.12);
-  --surface-success: #047857;
-  --surface-success-soft: rgba(4, 120, 87, 0.12);
-  --surface-danger: #b91c1c;
-  --surface-danger-soft: rgba(220, 38, 38, 0.12);
-  --surface-status-bg: rgba(148, 163, 184, 0.12);
-  --surface-shadow: 0 18px 48px rgba(15, 23, 42, 0.05);
-}
-
-.settings-tab.is-dark-theme {
-  --surface-text-primary: #e5edf7;
-  --surface-text-secondary: #9fb0c7;
-  --surface-text-muted: #8fa2ba;
-  --surface-text-soft: #7f90a8;
-  --surface-border-strong: rgba(71, 85, 105, 0.48);
-  --surface-border-soft: rgba(71, 85, 105, 0.58);
-  --surface-border-softer: rgba(71, 85, 105, 0.52);
-  --surface-shell-bg: rgba(15, 23, 42, 0.72);
-  --surface-shell-gradient:
-    radial-gradient(circle at top right, rgba(56, 189, 248, 0.14), transparent 32%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(8, 15, 28, 0.98));
-  --surface-panel-bg: linear-gradient(180deg, rgba(15, 23, 42, 0.8), rgba(8, 15, 28, 0.94));
-  --surface-panel-accent: linear-gradient(180deg, rgba(19, 45, 79, 0.9), rgba(8, 15, 28, 0.95));
-  --surface-tabs-bg: rgba(15, 23, 42, 0.82);
-  --surface-pill-bg: rgba(148, 163, 184, 0.14);
-  --surface-pill-accent-bg: rgba(96, 165, 250, 0.18);
-  --surface-pill-accent-text: #93c5fd;
-  --surface-accent: #60a5fa;
-  --surface-accent-strong: #93c5fd;
-  --surface-accent-soft: rgba(96, 165, 250, 0.16);
-  --surface-success: #6ee7b7;
-  --surface-success-soft: rgba(52, 211, 153, 0.18);
-  --surface-danger: #fca5a5;
-  --surface-danger-soft: rgba(248, 113, 113, 0.18);
-  --surface-status-bg: rgba(148, 163, 184, 0.16);
-  --surface-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-}
-
 .editor-card {
-  margin-bottom: 12px;
-  color: var(--surface-text-primary);
-  border-radius: 18px;
-  background: var(--surface-shell-gradient);
+  color: var(--td-text-color-primary);
+  border-radius: var(--app-radius-md);
+  background: var(--td-bg-color-container);
 }
 
 .editor-header {
@@ -762,55 +701,17 @@ onBeforeUnmount(() => {
 }
 
 .editor-shell {
-  padding: 18px;
-  border: 1px solid var(--surface-border-strong);
-  border-radius: 18px;
-  background: var(--surface-shell-bg);
-  box-shadow: var(--surface-shadow);
-  backdrop-filter: blur(8px);
+  min-width: 0;
 }
 
-.editor-tabs {
-  margin-bottom: 14px;
-  padding: 12px 16px 0;
-  border: 1px solid var(--surface-border-softer);
-  border-radius: 16px;
-  background: var(--surface-tabs-bg);
-}
-
-.editor-tabs :deep(.t-tabs__content) {
-  display: none;
-}
-
-.editor-tabs :deep(.t-tabs__nav-wrap::after) {
-  background-color: var(--surface-border-soft);
-}
-
-.editor-tabs :deep(.t-tabs__nav-item) {
-  height: auto;
-  padding-bottom: 12px;
-  font-weight: 600;
-  color: var(--surface-text-muted);
-}
-
-.editor-tabs :deep(.t-tabs__nav-item:hover) {
-  color: var(--surface-text-primary);
-}
-
-.editor-tabs :deep(.t-tabs__nav-item.t-is-active) {
-  color: var(--surface-accent);
-}
-
-.editor-tabs :deep(.t-tabs__bar) {
-  height: 3px;
-  border-radius: 999px;
-}
+.editor-tabs { margin-bottom: 16px; }
+.editor-tabs :deep(.t-tabs__content) { display: none; }
 
 .editor-surface {
   padding: 14px 16px 16px;
-  border: 1px solid var(--surface-border-softer);
+  border: 1px solid var(--td-component-stroke);
   border-radius: 16px;
-  background: var(--surface-panel-bg);
+  background: var(--td-bg-color-container);
 }
 
 .editor-surface-head {
@@ -822,41 +723,18 @@ onBeforeUnmount(() => {
 }
 
 .editor-surface-title {
-  color: var(--surface-accent);
+  color: var(--td-brand-color);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: normal;
   text-transform: uppercase;
 }
 
-.editor-textarea {
-  min-height: 320px;
-  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 13px;
-}
-
-.editor-textarea :deep(.t-textarea) {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.editor-textarea :deep(.t-textarea__inner),
-.editor-textarea :deep(textarea) {
-  height: clamp(280px, calc(100vh - 520px), 420px) !important;
-  min-height: 280px !important;
-  padding: 0 !important;
-  border: 0 !important;
-  background: transparent !important;
-  color: var(--surface-text-primary);
+.editor-textarea :deep(.t-textarea__inner) {
+  min-height: 280px;
+  font-family: 'Cascadia Code', Consolas, monospace;
   line-height: 1.7;
-  box-shadow: none !important;
   resize: vertical;
-}
-
-.editor-textarea :deep(.t-textarea__limit) {
-  padding-top: 8px;
-  color: var(--surface-text-soft);
 }
 
 .editor-actions {
@@ -866,7 +744,7 @@ onBeforeUnmount(() => {
   gap: 16px;
   margin-top: 18px;
   padding-top: 16px;
-  border-top: 1px solid var(--surface-border-soft);
+  border-top: 1px solid var(--td-component-stroke);
 }
 
 .editor-status {
@@ -875,209 +753,25 @@ onBeforeUnmount(() => {
   min-height: 32px;
   padding: 0 12px;
   border-radius: 999px;
-  background: var(--surface-status-bg);
-  color: var(--surface-text-secondary);
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
   font-weight: 600;
 }
 
 .editor-status--loading {
-  background: var(--surface-accent-soft);
-  color: var(--surface-accent-strong);
+  background: var(--td-brand-color-light);
+  color: var(--td-brand-color);
 }
 
 .editor-status--success {
-  background: var(--surface-success-soft);
-  color: var(--surface-success);
+  background: var(--td-success-color-light);
+  color: var(--td-success-color);
 }
 
 .editor-status--danger {
-  background: var(--surface-danger-soft);
-  color: var(--surface-danger);
-}
-
-.section-title {
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--td-border-level-1-color, #f3f4f6);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.section-title--flush {
-  margin-bottom: 6px;
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-.section-desc {
-  max-width: 720px;
-  margin: 0;
-  color: var(--surface-text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.config-card {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--surface-text-primary);
-  border-radius: 18px;
-  background: var(--surface-shell-gradient);
-}
-
-.config-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.config-header-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.config-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: var(--surface-pill-bg);
-  color: var(--surface-text-primary);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.config-pill--accent {
-  background: var(--surface-pill-accent-bg);
-  color: var(--surface-pill-accent-text);
-}
-
-.config-panel-grid {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.config-panel {
-  min-width: 0;
-  padding: 18px;
-  border: 1px solid var(--surface-border-strong);
-  border-radius: 18px;
-  background: var(--surface-shell-bg);
-  box-shadow: var(--surface-shadow);
-  backdrop-filter: blur(8px);
-}
-
-.config-panel--accent {
-  background: var(--surface-panel-accent);
-}
-
-.config-panel-head {
-  margin-bottom: 16px;
-}
-
-.config-panel-eyebrow {
-  margin-bottom: 6px;
-  color: var(--surface-accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.config-panel-head h3 {
-  margin: 0;
-  color: var(--surface-text-primary);
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.config-panel-head p {
-  margin: 8px 0 0;
-  color: var(--surface-text-muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.config-field-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.config-field {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--surface-border-soft);
-  border-radius: 14px;
-  background: var(--surface-panel-bg);
-}
-
-.config-field--stack {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-.config-field-meta {
-  min-width: 0;
-  flex: 1;
-}
-
-.config-field--stack .config-field-meta {
-  width: 100%;
-  flex: none;
-}
-
-.config-field-meta label {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--surface-text-primary);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.config-field-meta span {
-  display: block;
-  color: var(--surface-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.field-control {
-  width: 220px;
-  max-width: 100%;
-  flex-shrink: 0;
-}
-
-.field-control--wide {
-  width: 280px;
-}
-
-.field-stack {
-  width: 280px;
-  max-width: 100%;
-  flex-shrink: 0;
-}
-
-.field-inline-hint {
-  margin-top: 6px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--surface-accent-soft);
-  color: var(--surface-accent-strong);
-  font-size: 12px;
-  line-height: 1.5;
+  background: var(--td-error-color-light);
+  color: var(--td-error-color);
 }
 
 .config-actions {
@@ -1087,7 +781,7 @@ onBeforeUnmount(() => {
   gap: 16px;
   margin-top: 18px;
   padding-top: 16px;
-  border-top: 1px solid var(--surface-border-soft);
+  border-top: 1px solid var(--td-component-stroke);
 }
 
 .config-pill--dirty {
@@ -1103,7 +797,7 @@ onBeforeUnmount(() => {
 }
 
 .config-actions-tip {
-  color: var(--surface-text-secondary);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1158,7 +852,4 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-.field-stack--switch {
-  width: 100%;
-}
 </style>

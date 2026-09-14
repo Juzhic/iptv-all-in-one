@@ -11,20 +11,9 @@ CENSYS_API_ID = os.environ.get('CENSYS_API_ID', '')
 CENSYS_API_SECRET = os.environ.get('CENSYS_API_SECRET', '')
 CENSYS_BASE_URL = "https://search.censys.io/api/v1"
 
-HOTEL_TARGET_KEYWORDS = [
-    "iptv", "live", "tv", "hotel",
-    "zh_cn.js", "txiptv", "ZHGXTV",
-    "1000.json"
-]
-
-CRT_SH_PATTERNS = [
-    "%.iptv%.cn",
-    "%.hotel%.tv",
-    "%.live%.cn",
-    "%.tv%.cn",
-    "%zhgx%",
-    "%iptv%",
-]
+# Generic "tv", "live" and "hotel" match large amounts of unrelated assets.
+HOTEL_TARGET_KEYWORDS = ['iptv', 'txiptv', 'zhgx']
+CRT_SH_PATTERNS = ['%iptv%', '%zhgx%']
 
 def is_potential_hotel_domain(domain: str) -> bool:
     domain_lower = domain.lower()
@@ -132,7 +121,7 @@ async def domain_ip_scan(
 ) -> List[Dict]:
     all_entries = []
     if target_keywords is None:
-        target_keywords = [f'body="{kw}"' for kw in HOTEL_TARGET_KEYWORDS]
+        target_keywords = [f'"{kw}"' for kw in HOTEL_TARGET_KEYWORDS]
 
     async def _scan(sess: aiohttp.ClientSession):
         entries = []
@@ -168,7 +157,7 @@ async def domain_ip_scan(
             if e['ip'] not in seen:
                 seen.add(e['ip'])
                 unique.append(e)
-        return unique
+        return unique[:max_results]
 
     if session:
         result = await _scan(session)

@@ -1,10 +1,11 @@
 <template>
-  <div class="scan-config-tab" :class="{ 'is-dark-theme': isDarkTheme }">
-    <t-card size="small" :bordered="false" class="keys-card">
+  <div class="scan-config-tab configuration-page">
+    <t-card size="small" :bordered="false" class="keys-card workspace-card">
       <div class="section-header">
         <div>
           <div class="section-title section-title--flush">API Key 管理</div>
-          <p class="section-desc">统一管理 Quake、Hunter、DayDayMap 和 Fofa 的测绘平台 Key，刷新余额后能更快判断是哪一侧额度或权限有问题。</p>
+          <p class="section-desc">刷新余额查看账号配额；“测试可用性”单独验证所选 Key 的真实搜索权限。</p>
+          <p class="section-desc">每次测试用已保存的关键词查询最多 1 条，可能消耗平台额度，不采集频道或测速。</p>
         </div>
 
         <t-space>
@@ -26,19 +27,41 @@
             {{ platformLabelMap[row.platform] || row.platform }}
           </template>
           <template #credit="{ row }">
-            {{ formatCredit(row.credit, row.role_limit) }}
+            <div v-if="row.platform === 'fofa' && row.balances" class="fofa-balances">
+              <span v-for="balance in fofaBalanceLabels" :key="balance.key">
+                {{ balance.label }}：{{ formatCredit(row.balances[balance.key]) }}
+              </span>
+            </div>
+            <template v-else>{{ formatCredit(row.credit, row.role_limit) }}</template>
           </template>
           <template #status="{ row }">
-            <t-tag :theme="statusTheme(row.status)" size="small" variant="light">{{ row.status }}</t-tag>
+            <t-tag :theme="statusTheme(row.status)" size="small" variant="light" class="key-status">{{ row.status }}</t-tag>
           </template>
           <template #actions="{ row }">
             <t-space :size="4">
+              <t-button variant="outline" size="small" :loading="testingKeyId === row._row_key" :disabled="!!testingKeyId && testingKeyId !== row._row_key" @click="testKey(row)">测试可用性</t-button>
               <t-button variant="outline" size="small" @click="editKey(row)">编辑</t-button>
               <t-button variant="outline" size="small" theme="danger" @click="deleteKey(row)">删除</t-button>
             </t-space>
           </template>
         </t-table>
       </div>
+      <section v-if="keyTestTarget" class="key-test-report" aria-live="polite" aria-label="Key 可用性测试结果">
+        <strong>{{ keyTestTarget }} · {{ testingKeyId ? '正在测试…' : '测试结果' }}</strong>
+        <p v-if="testingKeyId">正在检查账号和搜索接口，请等待。本次不轮换其他 Key，不自动重试。</p>
+        <template v-else-if="keyTestResult">
+          <p><t-tag :theme="probeTheme(keyTestResult.state)" class="key-status">{{ keyTestResult.summary }}</t-tag></p>
+          <p class="section-desc">测试时间：{{ new Date(keyTestResult.tested_at).toLocaleString() }}；结果仅代表本次请求。</p>
+          <p class="key-test-query">使用已保存的主查询关键词：{{ keyTestResult.query }}</p>
+          <div v-for="step in keyTestResult.steps" :key="step.kind" class="key-test-step">
+            <strong>{{ step.kind === 'account' ? '账号接口' : '搜索接口' }} · {{ probeStateLabel(step.state) }}</strong>
+            <p v-if="step.endpoint">{{ step.method }} {{ step.endpoint }}</p>
+            <p v-if="step.http_status !== null">HTTP {{ step.http_status }} · 业务码 {{ step.code || '-' }} · {{ step.elapsed_ms }} ms</p>
+            <p>{{ step.message }}</p>
+          </div>
+        </template>
+        <p v-else-if="keyTestError">{{ keyTestError }}。本次未确认可用性，不代表 Key 失效。</p>
+      </section>
     </t-card>
 
     <div class="scan-config-toolbar" aria-label="采集配置操作">
@@ -57,18 +80,18 @@
       </div>
 
       <t-space class="toolbar-actions">
-        <t-button variant="outline" @click="loadConfig">
+        <t-button variant="outline" @click="reloadConfig">
           <template #icon><RefreshIcon /></template>
           重新加载
         </t-button>
-        <t-button class="scan-config-save-button" theme="primary" :loading="saving" @click="saveScanConfig">
+        <t-button class="scan-config-save-button" theme="primary" :loading="saving" :disabled="!configLoaded" @click="saveScanConfig">
           <template #icon><SaveIcon /></template>
           保存配置
         </t-button>
       </t-space>
     </div>
 
-    <t-card size="small" :bordered="false" class="config-card">
+    <t-card size="small" :bordered="false" class="config-card workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">采集参数</div>
@@ -86,7 +109,7 @@
           <div class="config-panel-head">
             <div class="config-panel-eyebrow">范围与来源</div>
             <h3>省份与运营商</h3>
-            <p>控制测绘采集覆盖的地区范围。留空时按全国跑，适合第一次摸底；限定省份时更聚焦，也更省额度。</p>
+            <p>省份与运营商筛选作用于 API 主查询及质量画像。历史热点、社区源、DDGS 和全国补扫使用各自来源范围。</p>
           </div>
 
           <div class="config-field-list">
@@ -185,7 +208,7 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>采集数量</label>
-                <span>各平台每轮搜索接口目标数量，越大覆盖越广，但也会更耗时、更吃积分。</span>
+                <span>各平台在每个所选省份的主查询目标条数；多省份会累加，画像预算另计。</span>
               </div>
 
               <div class="scan-size-grid">
@@ -210,8 +233,15 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
+                <label>采集平台</label>
+                <span>留空按省积分策略自动选择；勾选后仅使用所选平台的 Key。</span>
+              </div>
+              <t-checkbox-group v-model="scanCfg.enabled_platforms" :options="platformOptions" />
+            </div>
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
                 <label>省积分模式</label>
-                <span>未手动指定平台时优先使用 Quake，并跳过最近低收益的平台画像、JSMpeg 和独立补扫。</span>
+                <span>未指定平台时按 Quake、FOFA、Hunter、DayDayMap 顺序选一个；跳过独立补扫和宽泛域名搜索。</span>
               </div>
 
               <div class="field-stack field-stack--switch">
@@ -268,7 +298,7 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>定时采集</label>
-                <span>设置自动采集的星期和时间，适合夜间低峰期定时补源。</span>
+                <span>关闭每天执行并清空星期，即可停用定时采集。时间使用北京时间。</span>
               </div>
 
               <div class="schedule-card">
@@ -288,7 +318,7 @@
       </div>
     </t-card>
 
-    <t-card size="small" :bordered="false" class="config-card">
+    <t-card size="small" :bordered="false" class="config-card workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">搜索关键词</div>
@@ -320,7 +350,7 @@
       </section>
     </t-card>
 
-    <t-card size="small" :bordered="false" class="config-card">
+    <t-card size="small" :bordered="false" class="config-card workspace-card">
       <div class="config-header">
         <div>
           <div class="section-title section-title--flush">高级采集策略</div>
@@ -475,8 +505,8 @@
 
             <div class="config-field">
               <div class="config-field-meta">
-                <label>热点段探测上限</label>
-                <span>最多探测的热点段数量。</span>
+                <label>热点 IP 探测预算</label>
+                <span>本轮在热点网段内最多探测的 IP 数量。</span>
               </div>
               <t-input-number v-model="scanCfg.hot_segment_scan_limit" :min="1" :max="500" :step="10" class="field-control" />
             </div>
@@ -505,7 +535,7 @@
                   </t-tag>
                 </div>
                 <div class="field-inline-hint">
-                  {{ scanCfg.community_sources_enabled ? '将从社区维护的源获取数据，增加覆盖面但会消耗额外时间。' : '当前仅使用 API 平台进行采集。' }}
+                  {{ scanCfg.community_sources_enabled ? '将从社区维护的源获取数据，增加覆盖面但会消耗额外时间。' : '当前不读取社区列表，其余启用的采集来源继续执行。' }}
                 </div>
               </div>
             </div>
@@ -513,11 +543,11 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>社区源 URL</label>
-                <span>每行一个社区源地址，支持 GitHub 仓库地址。</span>
+                <span>每行一个 M3U 文件直链（含 #EXTINF），追加到内置列表；GitHub 请填写 Raw 文件地址。</span>
               </div>
               <t-textarea
                 v-model="scanCfg.community_source_urls"
-                placeholder="https://github.com/user/repo&#10;https://example.com/iptv.txt"
+                placeholder="https://raw.githubusercontent.com/user/repo/main/iptv.m3u&#10;https://example.com/iptv.m3u"
                 :autosize="{ minRows: 3, maxRows: 6 }"
                 class="field-control field-control--wide"
               />
@@ -571,8 +601,8 @@
           />
         </t-form-item>
 
-        <t-form-item v-if="keyForm.platform === 'fofa'" label="Email">
-          <t-input v-model="keyForm.email" placeholder="Fofa 注册邮箱" />
+        <t-form-item v-if="keyForm.platform === 'fofa'" label="Email（选填）">
+          <t-input v-model="keyForm.email" placeholder="兼容旧配置，当前 API 仅需 Key" />
         </t-form-item>
       </t-form>
 
@@ -590,7 +620,6 @@ import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
 import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import RefreshIcon from 'tdesign-icons-vue-next/esm/components/refresh.js'
 import SaveIcon from 'tdesign-icons-vue-next/esm/components/save.js'
-import { useTheme } from '../composables/useTheme.js'
 import {
   apiSaveScanConfig,
   apiScanConfig,
@@ -599,6 +628,7 @@ import {
   apiScanKeys,
   apiScanKeysCredits,
   apiScanKeyUpdate,
+  apiScanKeyTest,
 } from '../api.js'
 
 const saving = ref(false)
@@ -609,7 +639,33 @@ const keyModalTitle = ref('添加 API Key')
 const keyEditMode = ref(false)
 const keyForm = reactive({ platform: 'quake', key: '', email: '' })
 const oldKey = ref('')
-const { theme } = useTheme()
+const testingKeyId = ref('')
+const keyTestTarget = ref('')
+const keyTestResult = ref(null)
+const keyTestError = ref('')
+
+function probeTheme(state) {
+  return state === 'passed' ? 'success' : state === 'auth_failed' ? 'danger' : 'warning'
+}
+function probeStateLabel(state) {
+  return { passed: '通过', auth_failed: '认证失败', permission_denied: '权限受限',
+    quota_exhausted: '额度不足', rate_limited: '请求限流', unavailable: '服务异常',
+    api_error: '平台拒绝请求', unknown: '无法判断', skipped: '未提供 API Key 账号接口' }[state] || '无法判断'
+}
+async function testKey(row) {
+  if (testingKeyId.value) return
+  testingKeyId.value = row._row_key
+  keyTestTarget.value = `${platformLabelMap[row.platform] || row.platform} ${row.key_suffix}`
+  keyTestResult.value = null
+  keyTestError.value = ''
+  try {
+    keyTestResult.value = await apiScanKeyTest(row.platform, row.key_id)
+  } catch (error) {
+    keyTestError.value = error.message || '测试请求失败'
+  } finally {
+    testingKeyId.value = ''
+  }
+}
 
 const platformLabelMap = {
   quake: 'Quake 360',
@@ -627,13 +683,13 @@ const platformLinkMap = {
 
 const DEFAULT_SEARCH_KEYWORDS = [
   '/tsfile/live/ && key=txiptv',
-  '/iptv/live/1000.json?key=txiptv',
   '/iptv/live/zh_cn.js',
   '/iptv/live/1000.json',
   '/ZHGXTV/Public/json/live_interface.txt',
 ]
 
 const scanCfg = reactive({
+  enabled_platforms: [],
   selected_provinces: [],
   operator: '',
   quake_size: 200,
@@ -667,8 +723,8 @@ const scanCfg = reactive({
   deep_check_min_bytes: 131072,
   deep_check_request_timeout: 10,
   isp_intelligence_enabled: false,
-  hot_segment_min_channels: 5,
-  hot_segment_scan_limit: 50,
+  hot_segment_min_channels: 3,
+  hot_segment_scan_limit: 200,
   community_sources_enabled: false,
   community_source_urls: '',
   github_proxy: '',
@@ -676,6 +732,14 @@ const scanCfg = reactive({
   fofa_email: '',
   fofa_size: 200,
 })
+
+const configLoaded = ref(false)
+const savedSnapshot = ref('')
+const isDirty = computed(() => configLoaded.value && JSON.stringify(scanCfg) !== savedSnapshot.value)
+const platformOptions = [
+  { label: 'Quake 360', value: 'quake' }, { label: 'Hunter 鹰图', value: 'hunter' },
+  { label: 'FOFA', value: 'fofa' }, { label: 'DayDayMap', value: 'daydaymap' },
+]
 
 const PROVINCES = [
   '北京', '天津', '上海', '重庆', '河北', '山西', '辽宁', '吉林', '黑龙江', '江苏',
@@ -705,12 +769,20 @@ const weekdayOptions = WEEKDAY_LABELS.map((label, index) => ({
   value: index,
 }))
 
+const fofaBalanceLabels = [
+  { key: 'fofa_point', label: 'F 点' },
+  { key: 'fcoin', label: 'F 币' },
+  { key: 'remain_free_point', label: '免费 F 点' },
+  { key: 'remain_api_query', label: '月度查询剩余次数' },
+  { key: 'remain_api_data', label: '月度数据剩余条数' },
+]
+
 const keyColumns = [
   { colKey: 'platform', title: '平台', width: 120 },
   { colKey: 'key_suffix', title: 'Key', width: 150 },
-  { colKey: 'credit', title: '余额', width: 130 },
+  { colKey: 'credit', title: '余额 / 配额', width: 240 },
   { colKey: 'status', title: '状态', width: 140 },
-  { colKey: 'actions', title: '操作', width: 160 },
+  { colKey: 'actions', title: '操作', width: 260 },
 ]
 
 const provinceSummary = computed(() => {
@@ -743,7 +815,7 @@ const scheduleBadgeText = computed(() => {
   const time = scanCfg.update_time || '03:00'
   if (scanCfg.daily_full_update) return `定时：每天 ${time}`
   const count = scanCfg.update_days?.length || 0
-  return count ? `定时：每周 ${count} 天 ${time}` : '定时：未设置'
+  return count ? `定时：每周 ${count} 天 ${time}` : '定时：已停用'
 })
 
 const enabledStrategyCount = computed(() => ([
@@ -769,8 +841,8 @@ const cScanHint = computed(() => (
 
 const costSaverHint = computed(() => (
   scanCfg.cost_saver_mode
-    ? '当前会优先保留 Quake、TXIPTV 和直播接口画像；Hunter、DayDayMap 需要手动指定平台才会参与采集。'
-    : '当前会按已配置 Key 自动启用所有可用 API 平台，覆盖更广；适合每日免费额度充足时使用。'
+    ? '未选平台时只使用一个可用平台；独立 Tvheadend、IPTV 互动和域名补扫关闭，画像预算仍可单独控制。'
+    : '未选平台时使用所有可用 Key；已勾选平台时遵循勾选范围。独立补扫可能产生额外 API 消耗。'
 ))
 
 const scheduleSummary = computed(() => {
@@ -789,7 +861,6 @@ const scheduleSummary = computed(() => {
   return `执行计划：${labels.join('、')} ${time}（北京时间）`
 })
 
-const isDarkTheme = computed(() => theme.value === 'dark')
 
 function statusTheme(status) {
   if (status === '正常') return 'success'
@@ -905,9 +976,14 @@ function updateCountdown() {
     : `下次采集：${pad(hoursLeft)}:${pad(minutesLeft)}:${pad(secondsLeft)}`
 }
 
+async function reloadConfig() {
+  if (await canLeave()) await loadConfig()
+}
+
 async function loadConfig() {
   try {
     const cfg = await apiScanConfig()
+    scanCfg.enabled_platforms = Array.isArray(cfg.enabled_platforms) ? cfg.enabled_platforms : []
     scanCfg.selected_provinces = Array.isArray(cfg.selected_provinces) ? cfg.selected_provinces : []
     scanCfg.operator = cfg.operator || ''
     scanCfg.quake_size = typeof cfg.quake_size === 'number' ? cfg.quake_size : 200
@@ -917,7 +993,7 @@ async function loadConfig() {
       ? cfg.search_keywords.join('\n')
       : (cfg.search_keywords || DEFAULT_SEARCH_KEYWORDS.join('\n'))
     scanCfg.cost_saver_mode = cfg.cost_saver_mode !== false
-    scanCfg.enable_c_scan = !!cfg.enable_c_scan
+    scanCfg.enable_c_scan = cfg.enable_c_scan !== false
     scanCfg.c_scan_limit = typeof cfg.c_scan_limit === 'number' ? cfg.c_scan_limit : 50
     scanCfg.c_segment_max_segments = typeof cfg.c_segment_max_segments === 'number' ? cfg.c_segment_max_segments : 8
     scanCfg.c_segment_max_total_ips = typeof cfg.c_segment_max_total_ips === 'number' ? cfg.c_segment_max_total_ips : 200
@@ -925,7 +1001,7 @@ async function loadConfig() {
     scanCfg.c_segment_per_source_max_ips = typeof cfg.c_segment_per_source_max_ips === 'number' ? cfg.c_segment_per_source_max_ips : 50
     scanCfg.update_time = cfg.update_time || '03:00'
     scanCfg.update_days = Array.isArray(cfg.update_days) ? cfg.update_days : [0, 1, 2, 3, 4, 5, 6]
-    scanCfg.daily_full_update = !!cfg.daily_full_update
+    scanCfg.daily_full_update = cfg.daily_full_update !== false
     scanCfg.ddgs_enabled = !!cfg.ddgs_enabled
     scanCfg.quality_discovery_enabled = cfg.quality_discovery_enabled !== false
     scanCfg.quality_query_profile_size = typeof cfg.quality_query_profile_size === 'number' ? cfg.quality_query_profile_size : 120
@@ -944,17 +1020,20 @@ async function loadConfig() {
     scanCfg.deep_check_min_bytes = typeof cfg.deep_check_min_bytes === 'number' ? cfg.deep_check_min_bytes : 131072
     scanCfg.deep_check_request_timeout = typeof cfg.deep_check_request_timeout === 'number' ? cfg.deep_check_request_timeout : 10
     scanCfg.isp_intelligence_enabled = !!cfg.isp_intelligence_enabled
-    scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 5
-    scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 50
+    scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 3
+    scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 200
     scanCfg.community_sources_enabled = !!cfg.community_sources_enabled
     scanCfg.community_source_urls = Array.isArray(cfg.community_source_urls) ? cfg.community_source_urls.join('\n') : (cfg.community_source_urls || '')
     scanCfg.github_proxy = cfg.github_proxy || ''
     scanCfg.fofa_api_key = cfg.fofa_api_key || ''
     scanCfg.fofa_email = cfg.fofa_email || ''
     scanCfg.fofa_size = typeof cfg.fofa_size === 'number' ? cfg.fofa_size : 200
+    savedSnapshot.value = JSON.stringify(scanCfg)
+    configLoaded.value = true
     updateCountdown()
   } catch (_) {
-    MessagePlugin.error('加载采集配置失败')
+    configLoaded.value = false
+    MessagePlugin.error('加载采集配置失败，请重新打开页面后再保存')
   }
 }
 
@@ -966,6 +1045,9 @@ function validateScanConfig() {
   if (!searchKeywordCount.value) {
     errors.push('请至少保留一条搜索关键词')
   }
+  if (normalizedSearchKeywords.value.some(rule => rule.split('&&').some(
+    fragment => !fragment.trim().replace(/^(title|body):/i, '').trim(),
+  ))) errors.push('关键词中不能包含空条件（例如 title: 或末尾的 &&）')
   if (searchKeywordCount.value > 100) {
     errors.push('搜索关键词不能超过 100 条')
   }
@@ -1041,9 +1123,6 @@ function validateScanConfig() {
   ) {
     errors.push('定时采集时间格式不正确')
   }
-  if (!scanCfg.daily_full_update && !scanCfg.update_days?.length) {
-    errors.push('请至少选择一个定时采集日期')
-  }
   if (scanCfg.github_proxy && !/^https?:\/\/.+/.test(scanCfg.github_proxy)) {
     errors.push('GitHub 代理地址格式不正确，需以 http:// 或 https:// 开头')
   }
@@ -1062,6 +1141,7 @@ function validateScanConfig() {
 }
 
 async function saveScanConfig() {
+  if (!configLoaded.value || saving.value) return false
   const errors = validateScanConfig()
   if (errors.length) {
     MessagePlugin.warning(errors[0])
@@ -1101,17 +1181,23 @@ async function saveScanConfig() {
       if (Array.isArray(saved.search_keywords)) {
         saved.search_keywords = saved.search_keywords.join('\n')
       }
-      Object.assign(scanCfg, saved)
+      for (const key of Object.keys(scanCfg)) {
+        if (Object.hasOwn(saved, key)) scanCfg[key] = saved[key]
+      }
     }
+    savedSnapshot.value = JSON.stringify(scanCfg)
     updateCountdown()
+    return true
   } catch (_) {
     MessagePlugin.error('保存失败')
+    return false
   } finally {
     saving.value = false
   }
 }
 
 async function loadKeys() {
+  if (keysLoading.value) return
   keysLoading.value = true
   try {
     // 1. 快速加载 Key 列表
@@ -1126,27 +1212,27 @@ async function loadKeys() {
     }))
     
     // 2. 异步获取余额 (不阻塞列表显示)
-    apiScanKeysCredits().then(creditsData => {
+    await apiScanKeysCredits().then(creditsData => {
       const creditsMap = {}
       const creditItems = Array.isArray(creditsData) ? creditsData : (creditsData?.items || [])
       ;creditItems.forEach(item => {
         const suffix = item.suffix || item.key_suffix || ''
         creditsMap[`${item.platform || ''}:${item.key_id || suffix}`] = item
-        if (suffix) creditsMap[`suffix:${suffix}`] = item
+        if (suffix) creditsMap[`suffix:${item.platform}:${suffix}`] = item
       })
         
         keyList.value = keyList.value.map(item => {
           const creditInfo = creditsMap[`${item.platform || ''}:${item.key_id || item.key_suffix}`]
-            || creditsMap[`suffix:${item.key_suffix}`]
+            || creditsMap[`suffix:${item.platform}:${item.key_suffix}`]
           if (creditInfo) {
             let status = '正常'
             const credit = creditInfo.credit != null ? Number(creditInfo.credit) : null
             
             if (creditInfo.error) status = creditInfo.error
+            else if (item.platform === 'fofa') status = creditInfo.verified ? 'Key有效' : '余额未知'
             else if (credit === null) {
               // 各平台无余额查询能力时的友好提示
-              if (item.platform === 'fofa') status = '不支持余额查询'
-              else if (item.platform === 'daydaymap') status = creditInfo.role || 'Key有效 (余额需登录查看)'
+              if (item.platform === 'daydaymap') status = creditInfo.role || 'Key有效 (余额需登录查看)'
               else status = creditInfo.role || '余额未知'
             }
             else if (credit < 100) status = '余额不足'
@@ -1154,7 +1240,7 @@ async function loadKeys() {
             
             return { ...item, ...creditInfo, status }
           }
-          return item
+          return { ...item, status: '余额未知' }
         })
     }).catch(err => {
       console.error('获取余额失败', err)
@@ -1200,11 +1286,7 @@ async function submitKey() {
     return
   }
   const email = keyForm.platform === 'fofa' ? keyForm.email.trim() : ''
-  if (keyForm.platform === 'fofa') {
-    if (!email) {
-      MessagePlugin.error('请输入 Fofa 注册邮箱')
-      return
-    }
+  if (keyForm.platform === 'fofa' && email) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       MessagePlugin.error('Fofa 邮箱格式不正确')
       return
@@ -1247,9 +1329,29 @@ async function deleteKey(row) {
   })
 }
 
-defineExpose({ save: saveScanConfig })
+async function canLeave() {
+  if (!isDirty.value) return true
+  return new Promise(resolve => {
+    const dialog = DialogPlugin.confirm({
+      header: '采集配置尚未保存', body: '离开将丢弃本次修改。',
+      confirmBtn: '放弃修改', cancelBtn: '继续编辑',
+      onConfirm: () => {
+        Object.assign(scanCfg, JSON.parse(savedSnapshot.value))
+        dialog.hide()
+        resolve(true)
+      },
+      onCancel: () => { dialog.hide(); resolve(false) },
+      onClose: () => { dialog.hide(); resolve(false) },
+    })
+  })
+}
+function beforeUnload(event) {
+  if (isDirty.value) { event.preventDefault(); event.returnValue = '' }
+}
+defineExpose({ save: saveScanConfig, canLeave })
 
 onMounted(() => {
+  window.addEventListener('beforeunload', beforeUnload)
   loadConfig()
   loadKeys()
   countdownTimer = setInterval(updateCountdown, 1000)
@@ -1257,63 +1359,23 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', beforeUnload)
   if (countdownTimer) clearInterval(countdownTimer)
 })
 </script>
 
-<style scoped>
-.scan-config-tab {
-  padding-top: 4px;
-  --surface-text-primary: #0f172a;
-  --surface-text-secondary: #475569;
-  --surface-text-muted: #64748b;
-  --surface-border-strong: rgba(148, 163, 184, 0.18);
-  --surface-border-soft: rgba(226, 232, 240, 0.92);
-  --surface-border-softer: rgba(226, 232, 240, 0.96);
-  --surface-shell-bg: rgba(255, 255, 255, 0.8);
-  --surface-shell-gradient:
-    radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
-  --surface-panel-accent: linear-gradient(180deg, rgba(236, 253, 245, 0.9), rgba(255, 255, 255, 0.92));
-  --surface-field-bg: rgba(248, 250, 252, 0.84);
-  --surface-inner-bg: rgba(255, 255, 255, 0.82);
-  --surface-pill-bg: rgba(15, 23, 42, 0.05);
-  --surface-pill-accent-bg: rgba(16, 185, 129, 0.12);
-  --surface-pill-accent-text: #047857;
-  --surface-accent: #0f766e;
-  --surface-accent-strong: #047857;
-  --surface-accent-soft: rgba(16, 185, 129, 0.08);
-  --surface-link-accent: #2563eb;
-  --surface-shadow: 0 18px 48px rgba(15, 23, 42, 0.05);
-}
+<style scoped src="../styles/configuration.css"></style>
 
-.scan-config-tab.is-dark-theme {
-  --surface-text-primary: #e5edf7;
-  --surface-text-secondary: #9fb0c7;
-  --surface-text-muted: #8fa2ba;
-  --surface-border-strong: rgba(71, 85, 105, 0.48);
-  --surface-border-soft: rgba(71, 85, 105, 0.58);
-  --surface-border-softer: rgba(71, 85, 105, 0.52);
-  --surface-shell-bg: rgba(15, 23, 42, 0.72);
-  --surface-shell-gradient:
-    radial-gradient(circle at top right, rgba(45, 212, 191, 0.14), transparent 32%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(8, 15, 28, 0.98));
-  --surface-panel-accent: linear-gradient(180deg, rgba(10, 38, 40, 0.94), rgba(8, 15, 28, 0.95));
-  --surface-field-bg: rgba(15, 23, 42, 0.78);
-  --surface-inner-bg: rgba(15, 23, 42, 0.7);
-  --surface-pill-bg: rgba(148, 163, 184, 0.14);
-  --surface-pill-accent-bg: rgba(45, 212, 191, 0.18);
-  --surface-pill-accent-text: #99f6e4;
-  --surface-accent: #5eead4;
-  --surface-accent-strong: #99f6e4;
-  --surface-accent-soft: rgba(45, 212, 191, 0.16);
-  --surface-link-accent: #93c5fd;
-  --surface-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-}
+<style scoped>
+.fofa-balances { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.key-status { max-width: 100%; height: auto; white-space: normal; overflow-wrap: anywhere; }
+.key-test-report { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--td-component-stroke); overflow-wrap: anywhere; }
+.key-test-report p { margin: 6px 0; }
+.key-test-query, .key-test-step { font-size: 12px; line-height: 1.7; }
+.key-test-step { margin-top: 12px; padding: 12px; border: 1px solid var(--td-component-stroke); border-radius: var(--td-radius-medium); }
 
 .keys-card {
-  margin-bottom: 12px;
-  border-radius: 10px;
+  min-width: 0;
 }
 
 .table-scroll-shell {
@@ -1333,13 +1395,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--surface-border-soft);
+  padding: 16px;
+  border: 1px solid var(--td-component-stroke);
   border-radius: 10px;
-  background: var(--surface-shell-bg);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(12px);
+  background: var(--td-bg-color-container);
+  box-shadow: none;
 }
 
 .toolbar-copy {
@@ -1355,13 +1415,13 @@ onBeforeUnmount(() => {
 }
 
 .toolbar-title {
-  color: var(--surface-text-primary);
+  color: var(--td-text-color-primary);
   font-size: 15px;
   font-weight: 700;
 }
 
 .toolbar-note {
-  color: var(--surface-text-muted);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1377,16 +1437,16 @@ onBeforeUnmount(() => {
   align-items: center;
   min-height: 28px;
   padding: 0 10px;
-  border-radius: 999px;
-  background: var(--surface-pill-bg);
-  color: var(--surface-text-secondary);
+  border-radius: var(--td-radius-default);
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
   font-weight: 600;
 }
 
 .toolbar-pill--accent {
-  background: var(--surface-pill-accent-bg);
-  color: var(--surface-pill-accent-text);
+  background: var(--td-brand-color-light);
+  color: var(--td-brand-color);
 }
 
 .toolbar-actions {
@@ -1394,94 +1454,6 @@ onBeforeUnmount(() => {
 }
 
 .section-header,
-.config-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-
-.section-title {
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--td-border-level-1-color, #f3f4f6);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.section-title--flush {
-  margin-bottom: 6px;
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-.section-desc {
-  max-width: 760px;
-  margin: 0;
-  color: var(--surface-text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.config-card {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--surface-text-primary);
-  border-radius: 18px;
-  background: var(--surface-shell-gradient);
-}
-
-.config-card + .config-card {
-  margin-top: 12px;
-}
-
-.config-header-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.config-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: var(--surface-pill-bg);
-  color: var(--surface-text-primary);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0;
-}
-
-.config-pill--accent {
-  background: var(--surface-pill-accent-bg);
-  color: var(--surface-pill-accent-text);
-}
-
-.config-panel-grid {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.config-panel {
-  min-width: 0;
-  padding: 18px;
-  border: 1px solid var(--surface-border-strong);
-  border-radius: 18px;
-  background: var(--surface-shell-bg);
-  box-shadow: var(--surface-shadow);
-  backdrop-filter: blur(8px);
-}
-
-.config-panel--accent {
-  background: var(--surface-panel-accent);
-}
-
 .search-keywords-panel,
 .search-keywords-editor {
   width: 100%;
@@ -1490,113 +1462,9 @@ onBeforeUnmount(() => {
 .search-keywords-panel code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: var(--surface-pill-bg);
-  color: var(--surface-accent-strong);
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-brand-color);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
-.config-panel-head {
-  margin-bottom: 16px;
-}
-
-.config-panel-eyebrow {
-  margin-bottom: 6px;
-  color: var(--surface-accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.config-panel-head h3 {
-  margin: 0;
-  color: var(--surface-text-primary);
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.config-panel-head p {
-  margin: 8px 0 0;
-  color: var(--surface-text-muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.config-field-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.config-field {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--surface-border-soft);
-  border-radius: 8px;
-  background: var(--surface-field-bg);
-}
-
-.config-field--stack {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-.config-field-meta {
-  min-width: 0;
-  flex: 1;
-}
-
-.config-field--stack .config-field-meta {
-  width: 100%;
-  flex: none;
-}
-
-.config-field-meta label {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--surface-text-primary);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.config-field-meta span {
-  display: block;
-  color: var(--surface-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.field-control {
-  width: 220px;
-  max-width: 100%;
-  flex-shrink: 0;
-}
-
-.field-control--wide {
-  width: 320px;
-}
-
-.field-stack {
-  width: 320px;
-  max-width: 100%;
-  flex-shrink: 0;
-}
-
-.field-stack--switch {
-  width: 100%;
-}
-
-.field-inline-hint {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--surface-accent-soft);
-  color: var(--surface-accent-strong);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .province-card,
@@ -1604,9 +1472,9 @@ onBeforeUnmount(() => {
 .fofa-config-card {
   width: 100%;
   padding: 14px;
-  border: 1px solid var(--surface-border-soft);
+  border: 1px solid var(--td-component-stroke);
   border-radius: 8px;
-  background: var(--surface-inner-bg);
+  background: var(--td-bg-color-secondarycontainer);
 }
 
 .fofa-config-card {
@@ -1617,7 +1485,7 @@ onBeforeUnmount(() => {
 
 .scan-size-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   width: 100%;
 }
@@ -1629,8 +1497,10 @@ onBeforeUnmount(() => {
   gap: 4px;
 }
 
+.scan-size-item :deep(.t-input-number) { width: 100%; }
+
 .scan-size-item label {
-  color: var(--surface-text-primary);
+  color: var(--td-text-color-primary);
   font-size: 13px;
   font-weight: 600;
 }
@@ -1642,7 +1512,7 @@ onBeforeUnmount(() => {
 }
 
 .fofa-field label {
-  color: var(--surface-text-primary);
+  color: var(--td-text-color-primary);
   font-size: 13px;
   font-weight: 600;
 }
@@ -1663,13 +1533,13 @@ onBeforeUnmount(() => {
 }
 
 .province-summary-main {
-  color: var(--surface-text-primary);
+  color: var(--td-text-color-primary);
   font-size: 13px;
   font-weight: 600;
 }
 
 .province-summary-sub {
-  color: var(--surface-text-muted);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
 }
 
@@ -1698,14 +1568,14 @@ onBeforeUnmount(() => {
 
 .schedule-summary {
   margin-top: 10px;
-  color: var(--surface-text-secondary);
+  color: var(--td-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .countdown-text {
   margin-top: 6px;
-  color: var(--surface-link-accent);
+  color: var(--td-brand-color);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1773,9 +1643,7 @@ onBeforeUnmount(() => {
     padding: 16px;
   }
 
-  .config-panel {
-    padding: 15px;
-    border-radius: 14px;
-  }
+  .config-panel { padding: 0; }
+  .scan-config-toolbar { position: static; }
 }
 </style>

@@ -47,7 +47,7 @@ QUALITY_QUERY_PROFILES = (
 # ==================== KeyDepletedError ====================
 
 class KeyDepletedError(Exception):
-    """Raised when all API keys for a platform are exhausted (403)."""
+    """Raised when all API keys for a platform are explicitly exhausted."""
     pass
 
 # ==================== 重试和限流工具 ====================

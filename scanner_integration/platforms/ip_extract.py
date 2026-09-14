@@ -35,21 +35,22 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
     if cached is not None:
         return cached
 
+    url_ip = f'[{ip}]' if addr.version == 6 else ip
     candidate_urls = [
-        f"http://{ip}:{port}/iptv/live/zh_cn.js",
-        f"http://{ip}:{port}/iptv/live/1000.json?key=txiptv",
-        f"http://{ip}:{port}/iptv/live/1000.json",
-        f"http://{ip}:80/iptv/live/1000.json?key=txiptv",
-        f"http://{ip}:8080/iptv/live/1000.json?key=txiptv",
-        f"http://{ip}:{port}/ZHGXTV/Public/json/live_interface.txt",
-        f"http://{ip}:{port}/streamer/list",
-        f"http://{ip}:{port}/api/channels",
-        f"http://{ip}:{port}/channels",
-        f"http://{ip}:{port}/channel_list.json",
-        f"http://{ip}:{port}/getChannelList",
-        f"http://{ip}:{port}/api/live/channels",
-        f"http://{ip}:{port}/live/channels.json",
-        f"http://{ip}:{port}/playlist?profile=pass",
+        f"http://{url_ip}:{port}/iptv/live/zh_cn.js",
+        f"http://{url_ip}:{port}/iptv/live/1000.json?key=txiptv",
+        f"http://{url_ip}:{port}/iptv/live/1000.json",
+        f"http://{url_ip}:80/iptv/live/1000.json?key=txiptv",
+        f"http://{url_ip}:8080/iptv/live/1000.json?key=txiptv",
+        f"http://{url_ip}:{port}/ZHGXTV/Public/json/live_interface.txt",
+        f"http://{url_ip}:{port}/streamer/list",
+        f"http://{url_ip}:{port}/api/channels",
+        f"http://{url_ip}:{port}/channels",
+        f"http://{url_ip}:{port}/channel_list.json",
+        f"http://{url_ip}:{port}/getChannelList",
+        f"http://{url_ip}:{port}/api/live/channels",
+        f"http://{url_ip}:{port}/live/channels.json",
+        f"http://{url_ip}:{port}/playlist?profile=pass",
     ]
     async with global_sem:
         for url in candidate_urls:

@@ -16,7 +16,7 @@ class _EmptyHunterResponse:
     async def __aexit__(self, exc_type, exc, traceback):
         return False
 
-    async def json(self):
+    async def json(self, **kwargs):
         return {'code': 200, 'data': {'arr': []}}
 
 
@@ -63,7 +63,7 @@ class SpecializedHunterScanTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            'web.title:"首页 - IPTV互动电视系统"',
+            'web.title="首页 - IPTV互动电视系统"',
             _decode_search(params['search']),
         )
 

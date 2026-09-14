@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import threading
 from flask import Blueprint, request, jsonify, Response
 
 import database as db
@@ -22,6 +23,8 @@ from scanner_integration.safe_http import (
 
 logger = logging.getLogger(__name__)
 SUPPORTED_KEY_PLATFORMS = ('quake', 'hunter', 'daydaymap', 'fofa')
+_key_probe_lock = threading.Lock()
+_active_key_probes = set()
 _SCAN_RUNTIME_KEY_ALIASES = frozenset(
     ('quake_key', 'hunter_key', 'daydaymap_key', 'fofa_key')
 )
@@ -349,8 +352,8 @@ def api_scan_config_get():
         cfg = get_scan_config()
         return jsonify({'ok': True, 'data': _public_scan_config(cfg)})
     except Exception:
-        from scanner_integration.config_bridge import DEFAULT_SCAN_CONFIG
-        return jsonify({'ok': True, 'data': _public_scan_config(DEFAULT_SCAN_CONFIG)})
+        logger.warning('[ScanConfig] 读取采集配置失败')
+        return jsonify({'ok': False, 'error': '读取采集配置失败，请检查数据库连接后重试'}), 503
 
 
 @scan_bp.route('/api/scan/config', methods=['POST'])
@@ -464,11 +467,51 @@ def api_scan_keys_credits():
                     'role': ci.get('role', ''),
                     'role_limit': _finite_number_or_none(ci.get('role_limit')),
                     'error': _redact_value(ci.get('error', ''), key),
+                    'balances': {name: _finite_number_or_none(value)
+                                 for name, value in ci.get('balances', {}).items()},
+                    'verified': bool(ci.get('verified')),
                     'email': fofa_email if platform == 'fofa' else '',
                 })
         return jsonify({'ok': True, 'data': result})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@scan_bp.route('/api/scan/keys/test', methods=['POST'])
+def api_scan_key_test():
+    """Explicitly test one stored key with one real search, without collecting."""
+    from scanner_integration.config_bridge import get_scan_config
+    from scanner_integration.secure_keys import find_key_by_id, key_suffix
+    from scanner_integration.key_probe import probe_key
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'error': '参数必须是 JSON 对象'}), 400
+    platform, requested_id = data.get('platform'), data.get('key_id')
+    if platform not in SUPPORTED_KEY_PLATFORMS or not isinstance(requested_id, str) or not requested_id:
+        return jsonify({'ok': False, 'error': '需要有效的平台和 key_id'}), 400
+    identity = (platform, requested_id)
+    with _key_probe_lock:
+        if identity in _active_key_probes:
+            return jsonify({'ok': False, 'error': '该 Key 正在测试，请等待结果'}), 409
+        _active_key_probes.add(identity)
+    try:
+        cfg = get_scan_config()
+        match = find_key_by_id(platform, cfg.get(f'{platform}_api_keys', []), requested_id)
+        if match is None:
+            return jsonify({'ok': False, 'error': 'Key 不存在或已更新，请刷新列表'}), 404
+        _, key = match
+        scanner, err, code = _ensure_scan_bridge()
+        if err:
+            return err, code
+        result = scanner.bridge.run_sync(probe_key(platform, key, cfg), timeout=25)
+        result.update(platform=platform, key_id=requested_id, key_suffix=f'...{key_suffix(key)}')
+        return jsonify({'ok': True, 'data': result})
+    except Exception:
+        logger.warning('[KeyTest] 单 Key 测试未完成')
+        return jsonify({'ok': False, 'error': '测试未完成，无法判断 Key 是否有效，请稍后重试'}), 503
+    finally:
+        with _key_probe_lock:
+            _active_key_probes.discard(identity)
 
 
 @scan_bp.route('/api/scan/keys', methods=['POST'])
@@ -494,12 +537,9 @@ def api_scan_keys_add():
         keys_list.append(key)
         cfg[f'{platform}_api_keys'] = keys_list
 
-        # Fofa 需要同步 email
-        if platform == 'fofa':
-            email = data.get('email', '').strip()
-            if not email:
-                return jsonify({'ok': False, 'error': 'Fofa Email 不能为空'}), 400
-            cfg['fofa_email'] = email
+        # 兼容旧客户端的可选邮箱；当前 FOFA API 仅使用 Key 鉴权
+        if platform == 'fofa' and 'email' in data:
+            cfg['fofa_email'] = data.get('email', '').strip()
 
         save_scan_config(cfg)
         init_key_manager()
@@ -564,11 +604,8 @@ def api_scan_keys_update():
         keys_list = cfg.get(f'{platform}_api_keys', [])
         if not isinstance(keys_list, list):
             keys_list = []
-        if platform == 'fofa':
-            email = data.get('email', '').strip()
-            if not email:
-                return jsonify({'ok': False, 'error': 'Fofa Email 不能为空'}), 400
-            cfg['fofa_email'] = email
+        if platform == 'fofa' and 'email' in data:
+            cfg['fofa_email'] = data.get('email', '').strip()
         match = find_key_by_id(platform, keys_list, requested_id)
         if match is None:
             return jsonify({'ok': False, 'error': '原 Key 不存在'}), 404
