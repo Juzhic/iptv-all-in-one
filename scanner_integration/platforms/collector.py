@@ -61,11 +61,13 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
     partial_entries = []
     for key in usable:
         try:
+            _stats_set(kwargs.get('stats'), 'skipped_reason', '')
             result = await scan_func(key, *args, session=session, **kwargs)
             return partial_entries + result
         except KeyDepletedError as exc:
             partial_entries.extend(getattr(exc, 'partial_entries', []))
-            km.mark_depleted(platform, key)
+            if exc.mark_depleted:
+                km.mark_depleted(platform, key)
             continue
         except Exception as e:
             last_error = e

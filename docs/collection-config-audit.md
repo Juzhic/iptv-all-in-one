@@ -57,15 +57,16 @@
 | 社区源开关、URL 列表 | `scan_community_sources` | 全量与增量均执行；自定义 URL 追加到内置列表并去重。输入须为含 EXTINF 的 M3U 内容直链；仓库首页和普通频道 CSV/TXT 不是 M3U |
 | GitHub 代理 | `community_sources._apply_proxy` | 仅社区来源的 GitHub 资源；留空直连，不再自动选择公共代理，也不改变其他 API 的网络代理 |
 
-尚未在页面暴露的 `quality_discovery_platforms`、`quality_query_profiles`、深测并发等高级字段仍由数据库配置维护。表单保存仅提交自己的字段，不会把上次响应中的隐藏高级字段附带覆盖。当前内置画像为 TXIPTV、标准直播接口、ZHGXTV、Tvheadend 四组；历史配置中没有对应实现的画像名称会被清理，全部失效时回到这四个默认画像，避免开启画像却没有任务。
+尚未在页面暴露的 `quality_discovery_platforms`、`quality_query_profiles`、深测并发等高级字段仍由数据库配置维护。表单保存仅提交自己的字段，不会把上次响应中的隐藏高级字段附带覆盖。当前内置画像为 TXIPTV、标准直播接口、ZHGXTV、Tvheadend、直播频道 JSON 列表五组；历史配置中没有对应实现的画像名称会被清理，全部失效时回到这五个默认画像，避免开启画像却没有任务。
 
 ## 关键词调整
 
-- 默认规则保留 `/tsfile/live/ && key=txiptv`、`/iptv/live/zh_cn.js`、`/iptv/live/1000.json`、`/ZHGXTV/Public/json/live_interface.txt`。带 `?key=txiptv` 的 1000.json 规则被不带参数的正文匹配覆盖，从新默认值中移除。
-- 自定义数据库规则不会被新默认值强行覆盖。页面可点击“恢复默认”并保存；同一行重复条件和重复查询表达式在生成时去重。
+- 默认规则为 `/tsfile/live/`、`/iptv/live/zh_cn.js`、`/iptv/live/1000.json`、`/ZHGXTV/Public/json/live_interface.txt`、`/channel_list.json`、`/api/live/channels`、`/live/channels.json`、`title:Tvheadend`。解除 TXIPTV 固定 key 限制，并加入已支持 JSON/M3U 提取的接口族；不加入只有管理入口、没有可用频道列表提取路径的宽泛规则。
+- 完整匹配历史 4 条或 5 条默认组合的配置，在读取时自动升级为新推荐规则，下次保存持久化；完整旧默认画像组合也补入频道列表分类。自定义组合保持原样，可点击“补充推荐规则”追加并保存，也可“恢复默认”替换。
 - Quake 使用 `body:"..."`、`title:"..."`、`AND/OR`、`province_cn:"..."`、`isp:"..."`；Hunter 使用 `web.body="..."`、`web.title="..."`、`&&/||`、`ip.province`、`ip.isp`；FOFA/DayDayMap 使用等号正文/标题条件与 `&&/||`。
 - 主查询不会无条件扩展为 `tv`、`live`、`hotel`。域名候选缩小到 `iptv`、`txiptv`、`zhgx`，去掉宽泛且重复的证书通配项；省积分模式跳过此补扫。Censys 保留独立环境变量鉴权的旧集成，未做真实 Censys 账号兼容性验证。
 - 质量画像与主规则会有部分重叠，这是为不同接口族单独分配检索预算；不等于零额外消费。关闭“质量优先查询”可关闭这部分查询，画像预算不包含非省积分模式的专用补扫。
+- 搜索中加入“高清/4K/CCTV”不等于检测到高画质，还会漏掉无标注的接口。搜索结果条数是候选设备数，不是频道数；同样预算下扩大类型并不保证每类都有命中，应结合分类预算、实际带宽/延迟/稳定性和历史质量热点筛选。
 - 不承诺关键词优化后必然提高有效频道数：平台索引时间、可检索字段权限、源站状态和深测阈值都会影响产出。
 
 ## 验证与来源
@@ -78,3 +79,13 @@
 - [Hunter 基础语法](https://hunter.qianxin.com/home/helpCenter?r=8-1)
 - [Hunter 更新日志](https://hunter.qianxin.com/home/changelog)
 - [Quake 官方帮助：查询语句与 API](https://quake.360.net/quake/#/help)
+
+## FOFA F 点不足与免费额度（3.3.1）
+
+官方搜索文档将 `ip,port,region,city` 列为无额外字段权限要求，`full` 默认为最近一年数据；项目未开启全历史搜索，也没有文档之外的“强制免费”参数。账号接口分别返回 `remain_free_point`、`remain_api_query`、`remain_api_data`，这些数值单位和用途不同，不能把网页查询权益或免费 F 点直接当作可返回的数据条数。
+
+`[820031] F点余额不足` 说明当前请求所需 F 点不能满足。它不能单独定位是 API 次数/数据量超出额度、当前语法/功能涉及额外权益，还是其他账号计费限制。核对余额与当次请求数量后才能进一步判断；本次未对真实账号发起搜索，也不声称已经确定用户账户的具体扣费原因。
+
+该错误现在仅结束当前 Key 对此查询的尝试，允许轮换但不把 Key 全局标零。手动测试在同一报告展示账号额度与 1 条搜索的结果，保留 820031 业务码，不额外重试。减少请求量只能帮助排查是否受条数限制，不能保证免除费用。
+
+来源：[搜索接口及字段权限](https://fofa.info/api)、[账号额度](https://fofa.info/api/info)。

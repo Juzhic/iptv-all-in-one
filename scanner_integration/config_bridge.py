@@ -35,11 +35,23 @@ AUTO_REFILL_QUAKE_SIZE = 10
 STABILITY_THRESHOLD_NATIONAL = 60
 STABILITY_THRESHOLD_LOCAL = 30
 
-DEFAULT_SEARCH_KEYWORDS = [
+LEGACY_DEFAULT_SEARCH_KEYWORDS = [
     '/tsfile/live/ && key=txiptv',
     '/iptv/live/zh_cn.js',
     '/iptv/live/1000.json',
     '/ZHGXTV/Public/json/live_interface.txt',
+]
+
+CHANNEL_LIST_SEARCH_KEYWORDS = [
+    '/channel_list.json',
+    '/api/live/channels',
+    '/live/channels.json',
+]
+DEFAULT_SEARCH_KEYWORDS = [
+    '/tsfile/live/',
+    *LEGACY_DEFAULT_SEARCH_KEYWORDS[1:],
+    *CHANNEL_LIST_SEARCH_KEYWORDS,
+    'title:Tvheadend',
 ]
 
 QUALITY_PROFILE_NAMES = [
@@ -47,6 +59,7 @@ QUALITY_PROFILE_NAMES = [
     'live_interface',
     'zhgx',
     'tvheadend',
+    'channel_list',
 ]
 LEGACY_DEFAULT_QUALITY_PROFILE_NAMES = [
     'live_interface',
@@ -196,6 +209,11 @@ DEFAULT_SCAN_CONFIG = {
     "selected_provinces": [],
     "cost_saver_mode": True,
     "enable_c_scan": True,
+    "detection_expansion_enabled": True,
+    "detection_expansion_max_ips": 50,
+    "detection_expansion_max_segments": 2,
+    "detection_expansion_cooldown_hours": 24,
+    "detection_expansion_max_channels": 50,
     "c_scan_limit": 50,
     "c_segment_max_segments": 8,
     "c_segment_max_total_ips": 200,
@@ -499,9 +517,17 @@ def _normalize_scan_config(raw_cfg):
     cfg['search_keywords'] = _normalize_search_keywords(
         cfg.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
     )
+    # Only upgrade complete historical defaults, never a custom rule selection.
+    legacy_rules = set(LEGACY_DEFAULT_SEARCH_KEYWORDS)
+    if set(cfg['search_keywords']) in (
+        legacy_rules,
+        legacy_rules | {'/iptv/live/1000.json?key=txiptv'},
+    ):
+        cfg['search_keywords'] = list(DEFAULT_SEARCH_KEYWORDS)
 
     cfg['enabled_platforms'] = _normalize_string_list(cfg.get('enabled_platforms', []), allowed=SUPPORTED_SEARCH_PLATFORMS)
     cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
+    cfg['detection_expansion_enabled'] = cfg.get('detection_expansion_enabled') is True
     cfg['quality_discovery_platforms'] = _normalize_string_list(
         cfg.get('quality_discovery_platforms', []),
         allowed=SUPPORTED_SEARCH_PLATFORMS,
@@ -515,6 +541,8 @@ def _normalize_scan_config(raw_cfg):
         normalized_profiles = list(QUALITY_PROFILE_NAMES)
     normalized_profiles = [name for name in normalized_profiles if name in SUPPORTED_QUALITY_PROFILE_NAMES]
     cfg['quality_query_profiles'] = normalized_profiles or list(QUALITY_PROFILE_NAMES)
+    if set(cfg['quality_query_profiles']) == set(QUALITY_PROFILE_NAMES) - {'channel_list'}:
+        cfg['quality_query_profiles'] = list(QUALITY_PROFILE_NAMES)
     cfg['quality_thresholds'] = _normalize_quality_thresholds(
         cfg.get('quality_thresholds')
     )
@@ -527,6 +555,10 @@ def _normalize_scan_config(raw_cfg):
         'deep_check_min_bytes': (4096, 10485760),
         'deep_check_request_timeout': (2, 120),
         'c_scan_limit': (1, 5000),
+        'detection_expansion_max_ips': (1, 200),
+        'detection_expansion_max_segments': (1, 10),
+        'detection_expansion_cooldown_hours': (1, 720),
+        'detection_expansion_max_channels': (1, 200),
         'c_segment_max_segments': (1, 50),
         'c_segment_max_total_ips': (1, 5000),
         'c_segment_per_source_max_segments': (1, 50),

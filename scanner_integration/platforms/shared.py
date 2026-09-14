@@ -29,7 +29,7 @@ def _quality_query_profile(name, label, keywords):
 QUALITY_QUERY_PROFILES = (
     _quality_query_profile(
         'txiptv_live', 'TXIPTV 直播接口',
-        ['/tsfile/live/ && key=txiptv', '/iptv/live/1000.json?key=txiptv'],
+        ['/tsfile/live/'],
     ),
     _quality_query_profile(
         'live_interface', '标准直播接口',
@@ -42,13 +42,18 @@ QUALITY_QUERY_PROFILES = (
     _quality_query_profile(
         'tvheadend', 'Tvheadend', ['title:Tvheadend'],
     ),
+    _quality_query_profile(
+        'channel_list', '直播频道列表', config_bridge.CHANNEL_LIST_SEARCH_KEYWORDS,
+    ),
 )
 
 # ==================== KeyDepletedError ====================
 
 class KeyDepletedError(Exception):
-    """Raised when all API keys for a platform are explicitly exhausted."""
-    pass
+    """Try another key; query-specific billing failures must not disable a key."""
+    def __init__(self, message, *, mark_depleted=True):
+        super().__init__(message)
+        self.mark_depleted = mark_depleted
 
 # ==================== 重试和限流工具 ====================
 

@@ -43,9 +43,28 @@ def with_fofa_filters(query, province=None, operator=None):
 
 
 class FofaAPIError(Exception):
-    def __init__(self, message, *, depleted=False):
+    def __init__(self, message, *, depleted=False, rotate_key=False):
         super().__init__(message)
         self.depleted = depleted
+        self.rotate_key = rotate_key or depleted
+
+
+def fofa_error_code(data):
+    code = data.get('code')
+    if code is not None:
+        return str(code)
+    match = re.search(r'\[(\d+)\]', str(data.get('errmsg') or data.get('message') or ''))
+    return match.group(1) if match else None
+
+
+def fofa_points_insufficient(data):
+    message = str(data.get('errmsg') or data.get('message') or '')
+    return fofa_error_code(data) == '820031' or bool(re.search(
+        r'F\s*点.{0,12}(?:不足|耗尽|用完)|insufficient\s+fofa\s*points?', message, re.I,
+    ))
+
+
+FOFA_POINTS_HINT = '本次请求所需 F 点不足，不代表免费/月度 API 额度全部耗尽；请核对剩余次数、数据条数、单次请求数量及当前查询权益'
 
 
 def _error_message(data, status, key):
@@ -79,14 +98,17 @@ async def request_fofa(session, endpoint, key, **params):
                     raise FofaAPIError('FOFA 返回数据格式异常')
                 if response.status != 200 or data.get('error') is not False:
                     message = _error_message(data, response.status, key.strip())
+                    points_insufficient = fofa_points_insufficient(data)
                     # HTTP 403 alone means forbidden, not necessarily exhausted credit.
-                    depleted = bool(re.search(
+                    depleted = not points_insufficient and bool(re.search(
                         r'(?:余额|积分|F点|F币|额度).{0,12}(?:不足|耗尽|用完)|'
                         r'insufficient (?:fofa\s*)?(?:credits?|points?|fcoins?|balance)|'
                         r'(?:quota|credits?|points?).{0,12}(?:exhausted|depleted)',
                         message, re.IGNORECASE,
                     ))
-                    raise FofaAPIError(message, depleted=depleted)
+                    if points_insufficient:
+                        message = f'{message}；{FOFA_POINTS_HINT}'
+                    raise FofaAPIError(message, depleted=depleted, rotate_key=points_insufficient)
                 return data
         except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
             if attempt == 2:

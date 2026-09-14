@@ -228,6 +228,7 @@ class DetectionManager:
                 if should_run:
                     await self._run_resurrection_check()
 
+    @config_bridge.scan_config_snapshot
     async def _run_detection_cycle(self, trigger_source='auto'):
         """执行一次完整的检测周期，结果持久化到数据库。"""
         cfg = config_bridge.get_scan_config()
@@ -308,6 +309,7 @@ class DetectionManager:
         skipped_count = 0
         results_list = []
         updates_to_apply = []
+        expansion_seeds = []
         finalized = False
 
         def processed_count():
@@ -397,6 +399,8 @@ class DetectionManager:
                                 delay = perf['delay']
                                 bandwidth = perf['bandwidth']
                                 quality_status = _evaluate_quality_safe(_db, stability, delay, bandwidth)
+                                if quality_status in ('good', 'poor'):
+                                    expansion_seeds.append({**item, **perf})
                                 updates_to_apply.append({
                                     'url': url, 'ok': True, 'name': name,
                                     'stability': stability,
@@ -504,6 +508,14 @@ class DetectionManager:
                 _db.clear_detection_logs()
             except Exception:
                 pass
+            if cfg.get('detection_expansion_enabled') and cfg.get('enable_c_scan'):
+                try:
+                    from .detection_expansion import expand_after_detection
+                    self._last_cycle_result['expansion'] = await expand_after_detection(expansion_seeds, cfg, self._log)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._log('WARNING', f'[复检拓展] 失败，已完成的复检结果不受影响：{type(exc).__name__}')
         except asyncio.CancelledError:
             elapsed = (_local_now() - start_time).total_seconds()
             error = "检测被取消或超时"

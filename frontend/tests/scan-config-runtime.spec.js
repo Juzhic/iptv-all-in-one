@@ -35,6 +35,48 @@ afterEach(() => {
 })
 
 describe('scan configuration page', () => {
+  it('loads and saves daily expansion controls and rejects invalid budgets', async () => {
+    apiMocks.apiScanConfig.mockResolvedValueOnce({ detection_expansion_enabled: false, detection_expansion_max_ips: 17 })
+    wrapper = mount(ScanConfigTab)
+    await flushPromises()
+    const state = wrapper.vm.$.setupState
+    expect(state.scanCfg.detection_expansion_enabled).toBe(false)
+    expect(state.scanCfg.detection_expansion_max_ips).toBe(17)
+    state.scanCfg.detection_expansion_max_ips = 201
+    await wrapper.vm.save()
+    expect(apiMocks.apiSaveScanConfig).not.toHaveBeenCalled()
+    state.scanCfg.detection_expansion_max_ips = 20
+    state.scanCfg.detection_expansion_enabled = true
+    apiMocks.apiSaveScanConfig.mockResolvedValueOnce({})
+    await wrapper.vm.save()
+    expect(apiMocks.apiSaveScanConfig.mock.calls[0][0]).toMatchObject({ detection_expansion_enabled: true,
+      detection_expansion_max_ips: 20, detection_expansion_cooldown_hours: 24 })
+  })
+
+  it('appends recommended rules without losing custom text and saves them only on request', async () => {
+    apiMocks.apiScanConfig.mockResolvedValueOnce({ search_keywords: ['# 自定义规则', 'title:自定义直播', '/iptv/live/1000.json'] })
+    wrapper = mount(ScanConfigTab)
+    await flushPromises()
+    const button = wrapper.findAll('button').find(b => b.text() === '补充推荐规则')
+    await button.trigger('click')
+    const state = wrapper.vm.$.setupState
+    const first = state.scanCfg.search_keywords
+    expect(first).toContain('# 自定义规则\ntitle:自定义直播')
+    expect(first).toContain('/api/live/channels')
+    expect(first).toContain('title:Tvheadend')
+    expect(first.split('\n').filter(line => line === '/iptv/live/1000.json')).toHaveLength(1)
+    expect(state.isDirty).toBe(true)
+    expect(apiMocks.apiSaveScanConfig).not.toHaveBeenCalled()
+    await button.trigger('click')
+    expect(state.scanCfg.search_keywords).toBe(first)
+    apiMocks.apiSaveScanConfig.mockResolvedValueOnce({})
+    await wrapper.vm.save()
+    const saved = apiMocks.apiSaveScanConfig.mock.calls[0][0].search_keywords
+    expect(saved).toContain('title:自定义直播')
+    expect(saved).toContain('/tsfile/live/')
+    expect(saved).not.toContain('# 自定义规则')
+  })
+
   it('tests only the clicked key and shows account and search results separately', async () => {
     apiMocks.apiScanKeys.mockResolvedValueOnce([{ platform: 'hunter', key_id: 'h-1', key_suffix: '...sample' }])
     let resolveProbe

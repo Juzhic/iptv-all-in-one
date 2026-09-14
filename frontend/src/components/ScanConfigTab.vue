@@ -278,6 +278,22 @@
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
+                <label>复检后自动拓展</label>
+                <span>定时或手动复检结束后，从本轮质量达标的候选源探测同一 C 段。需要同时开启“C 段探测”；不消耗 FOFA 等搜索 API 额度。</span>
+              </div>
+              <t-switch v-model="scanCfg.detection_expansion_enabled" :label="['开启', '关闭']" />
+              <div class="field-inline-hint">仅处理公网 IPv4 的 HTTP 源及原端口，跳过内网、域名和 HTTPS 源。新频道经过深测后入池，每轮最多运行 120 秒；同一网段/端口的冷却记录在重启后仍有效。</div>
+            </div>
+            <div v-for="field in expansionFields" :key="field.key" class="config-field">
+              <div class="config-field-meta">
+                <label>{{ field.label }}</label>
+                <span>{{ field.hint }}</span>
+              </div>
+              <t-input-number v-model="scanCfg[field.key]" :min="1" :max="field.max" class="field-control" />
+            </div>
+
+            <div class="config-field config-field--stack">
+              <div class="config-field-meta">
                 <label>DDGS 搜索</label>
                 <span>通过 DuckDuckGo 搜索引擎发现 IPTV 源站，作为 API 平台之外的补充来源。</span>
               </div>
@@ -327,6 +343,7 @@
 
         <div class="config-header-pills">
           <span class="config-pill">当前 {{ searchKeywordCount }} 条</span>
+          <t-button variant="outline" size="small" @click="appendRecommendedKeywords">补充推荐规则</t-button>
           <t-button variant="outline" size="small" @click="resetSearchKeywords">恢复默认</t-button>
         </div>
       </div>
@@ -335,16 +352,22 @@
         <div class="config-field config-field--stack">
           <div class="config-field-meta">
             <label>主采集搜索规则</label>
-            <span>每行一条，默认搜索正文；用 <code>&amp;&amp;</code> 连接表示同一页面必须同时包含多个关键词，用 <code>title:</code> 前缀可改为标题搜索。空行、重复项和以 # 开头的注释会自动忽略。</span>
+            <span>每行一条，各行之间为“或”，匹配任意一条即可；默认搜索正文，用 <code>&amp;&amp;</code> 连接同一页面必须同时包含的特征，用 <code>title:</code> 搜索标题。空行、重复项和以 # 开头的注释会自动忽略。</span>
           </div>
           <t-textarea
             v-model="scanCfg.search_keywords"
-            placeholder="/iptv/live/zh_cn.js&#10;/tsfile/live/ && key=txiptv&#10;title:Tvheadend"
+            placeholder="/iptv/live/zh_cn.js&#10;/tsfile/live/&#10;title:Tvheadend"
             :autosize="{ minRows: 7, maxRows: 14 }"
             class="search-keywords-editor"
           />
           <div class="field-inline-hint">
-            参考项目的核心特征是 <code>/iptv/live/zh_cn.js</code>；当前默认规则还覆盖 TXIPTV、1000.json 与 ZHGXTV 接口。
+            推荐规则覆盖酒店 IPTV、TXIPTV、ZHGXTV、直播频道 JSON 列表和 Tvheadend；TXIPTV 不再限定固定 key。点击“补充推荐规则”会保留现有内容，保存后用于下一轮采集。
+          </div>
+          <div class="field-inline-hint">
+            更多规则用于扩大候选来源，不保证每类结果都被取回。可开启下方“质量优先查询”，按接口类型分配画像预算；预算总量不变，覆盖更多类型时每类分到的数量会减少。
+          </div>
+          <div class="field-inline-hint">
+            “高清 / 4K / CCTV”等正文关键词不能证明实际画质，还可能漏掉未标注的好源。频道质量以实际测速和后续复检为准；建议结合下方最低带宽、最大延迟、最低稳定性及历史质量热点筛选。
           </div>
         </div>
       </section>
@@ -682,13 +705,26 @@ const platformLinkMap = {
 }
 
 const DEFAULT_SEARCH_KEYWORDS = [
-  '/tsfile/live/ && key=txiptv',
+  '/tsfile/live/',
   '/iptv/live/zh_cn.js',
   '/iptv/live/1000.json',
   '/ZHGXTV/Public/json/live_interface.txt',
+  '/channel_list.json',
+  '/api/live/channels',
+  '/live/channels.json',
+  'title:Tvheadend',
+]
+
+const expansionFields = [
+  { key: 'detection_expansion_max_ips', label: '复检拓展 IP 上限', hint: '每轮探测的相邻 IP 总数，与采集时的 C 段预算分别计算。', max: 200, default: 50 },
+  { key: 'detection_expansion_max_segments', label: '复检拓展网段上限', hint: '每轮最多处理的网段/端口组合，优先从稳定性较高的源拓展。', max: 10, default: 2 },
+  { key: 'detection_expansion_cooldown_hours', label: '网段冷却时间（小时）', hint: '同一网段/端口两次拓展的最短间隔，超时或取消也进入冷却。', max: 720, default: 24 },
+  { key: 'detection_expansion_max_channels', label: '新候选深测上限', hint: '每轮最多检测的新频道数；质量不达标不入池，重复 URL 跳过。', max: 200, default: 50 },
 ]
 
 const scanCfg = reactive({
+  detection_expansion_enabled: true,
+  ...Object.fromEntries(expansionFields.map(field => [field.key, field.default])),
   enabled_platforms: [],
   selected_provinces: [],
   operator: '',
@@ -901,6 +937,18 @@ function resetSearchKeywords() {
   scanCfg.search_keywords = DEFAULT_SEARCH_KEYWORDS.join('\n')
 }
 
+function appendRecommendedKeywords() {
+  const existing = scanCfg.search_keywords || ''
+  const rules = new Set(existing.split('\n').map(line => line.trim()))
+  const additions = DEFAULT_SEARCH_KEYWORDS.filter(rule => !rules.has(rule))
+  if (!additions.length) {
+    MessagePlugin.success('已包含全部推荐规则')
+    return
+  }
+  scanCfg.search_keywords = [existing.trimEnd(), ...additions].filter(Boolean).join('\n')
+  MessagePlugin.success(`已补充 ${additions.length} 条推荐规则，保存后生效`)
+}
+
 function onDailyFullChange() {
   if (scanCfg.daily_full_update) {
     scanCfg.update_days = [0, 1, 2, 3, 4, 5, 6]
@@ -994,6 +1042,10 @@ async function loadConfig() {
       : (cfg.search_keywords || DEFAULT_SEARCH_KEYWORDS.join('\n'))
     scanCfg.cost_saver_mode = cfg.cost_saver_mode !== false
     scanCfg.enable_c_scan = cfg.enable_c_scan !== false
+    scanCfg.detection_expansion_enabled = cfg.detection_expansion_enabled !== false
+    for (const field of expansionFields) {
+      scanCfg[field.key] = typeof cfg[field.key] === 'number' ? cfg[field.key] : field.default
+    }
     scanCfg.c_scan_limit = typeof cfg.c_scan_limit === 'number' ? cfg.c_scan_limit : 50
     scanCfg.c_segment_max_segments = typeof cfg.c_segment_max_segments === 'number' ? cfg.c_segment_max_segments : 8
     scanCfg.c_segment_max_total_ips = typeof cfg.c_segment_max_total_ips === 'number' ? cfg.c_segment_max_total_ips : 200
@@ -1099,6 +1151,11 @@ function validateScanConfig() {
   }
   if (thresholds.stability_low < 0 || thresholds.stability_low > 100) {
     errors.push('深测最低稳定性需要在 0 到 100 之间')
+  }
+  for (const field of expansionFields) {
+    if (!Number.isInteger(scanCfg[field.key]) || scanCfg[field.key] < 1 || scanCfg[field.key] > field.max) {
+      errors.push(`${field.label}应为 1～${field.max} 的整数`)
+    }
   }
   if (scanCfg.deep_check_duration < 1 || scanCfg.deep_check_duration > 120) {
     errors.push('深测时长需要在 1 到 120 秒之间')

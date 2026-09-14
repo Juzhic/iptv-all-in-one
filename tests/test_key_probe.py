@@ -16,6 +16,21 @@ class ProbeSession(Session):
 
 
 class KeyProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fofa_points_failure_keeps_free_and_monthly_balances_visible(self):
+        session = ProbeSession(Response({'error': False, 'fofa_point': 0, 'remain_free_point': 20,
+                                         'remain_api_query': 30, 'remain_api_data': 100,
+                                         'email': 'private@example.com'}),
+                               Response({'error': True, 'errmsg': '[820031] F点余额不足'}))
+        result = await probe_key('fofa', 'secret', {}, session)
+        account, search = result['steps']
+        self.assertEqual(100, account['balances']['remain_api_data'])
+        self.assertIn('免费 F 点：20', account['message'])
+        self.assertEqual('820031', search['code'])
+        self.assertIn('不代表免费/月度 API 额度全部耗尽', search['message'])
+        self.assertEqual('quota_exhausted', search['state'])
+        self.assertNotIn('private@example.com', json.dumps(result))
+        self.assertEqual(2, len(session.calls))
+
     def setUp(self):
         sleep = patch('asyncio.sleep', new_callable=AsyncMock)
         sleep.start()

@@ -4240,7 +4240,8 @@ def get_all_persistent_for_check():
     """获取所有持久化结果用于检测循环（不含已软删除的）。"""
     conn = _get_conn()
     rows = conn.execute(
-        """SELECT id, url, name, stability, delay, bandwidth
+        """SELECT id, url, name, stability, delay, bandwidth,
+                  platform, province, city, source_ip
            FROM persistent_scan_results
            WHERE deleted_at IS NULL
            ORDER BY id"""
@@ -4266,7 +4267,8 @@ def get_persistent_for_check_tiered():
 
     conn = _get_conn()
     rows = conn.execute("""
-        SELECT id, url, name, stability, delay, bandwidth, jitter
+        SELECT id, url, name, stability, delay, bandwidth, jitter,
+               platform, province, city, source_ip
         FROM persistent_scan_results
         WHERE deleted_at IS NULL
           AND (

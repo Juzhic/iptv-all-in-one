@@ -20,7 +20,7 @@ from .shared import (
 )
 
 
-async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5):
+async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5, *, include_fallback_ports=True):
     """探测单个 IP 的常见 IPTV 接口，提取频道列表。"""
     # SSRF protection: reject private/internal IPs
     try:
@@ -31,6 +31,8 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
         return []
 
     cache_key = _extract_cache_key(ip, port, timeout)
+    if not include_fallback_ports:
+        cache_key = ('same_port', *cache_key)
     cached = _get_extract_cache(cache_key)
     if cached is not None:
         return cached
@@ -40,8 +42,8 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
         f"http://{url_ip}:{port}/iptv/live/zh_cn.js",
         f"http://{url_ip}:{port}/iptv/live/1000.json?key=txiptv",
         f"http://{url_ip}:{port}/iptv/live/1000.json",
-        f"http://{url_ip}:80/iptv/live/1000.json?key=txiptv",
-        f"http://{url_ip}:8080/iptv/live/1000.json?key=txiptv",
+        *([f"http://{url_ip}:80/iptv/live/1000.json?key=txiptv",
+           f"http://{url_ip}:8080/iptv/live/1000.json?key=txiptv"] if include_fallback_ports else []),
         f"http://{url_ip}:{port}/ZHGXTV/Public/json/live_interface.txt",
         f"http://{url_ip}:{port}/streamer/list",
         f"http://{url_ip}:{port}/api/channels",
