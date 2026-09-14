@@ -12,7 +12,7 @@ from engine.utils import safe_number as _safe_number
 
 
 def _credit_rank(value):
-    if value is None:
+    if value is None or value == -1:
         return float('inf')
     try:
         return float(value)
@@ -81,7 +81,7 @@ class KeyManager:
         return self._keys.get(platform, [])
 
     def mark_depleted(self, platform, key):
-        """标记某个 key 积分耗尽（收到 403 时调用）。"""
+        """标记某个 key 积分耗尽（平台明确报告额度不足时调用）。"""
         if platform not in self._credits:
             self._credits[platform] = {}
         self._credits[platform][key] = 0
@@ -194,88 +194,42 @@ async def check_quake_credit(api_key, session=None):
 
 
 async def check_hunter_credit(api_key, session=None):
-    """Query Hunter openApi userInfo to get remaining points.
-    Uses api-key parameter (openApi format).
-    Response: data.rest_free_point (remaining), data.personal_info.user_name
-    """
+    """Read account balances only; never spend search quota to check a key."""
+    from .hunter_api import read_hunter_response
+    from .platforms.shared import KeyDepletedError
     own_session = session is None
     if own_session:
         from .network import get_session
         session = get_session(limit=5, timeout=15)
     try:
         key = api_key.strip()
-        # 1) openApi/userInfo — 直接返回剩余积分
-        try:
-            url = "https://hunter.qianxin.com/openApi/userInfo"
-            async with session.get(url, params={"api-key": key}) as resp:
-                logger.debug(f"[Hunter] userInfo status={resp.status}")
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    logger.debug(f"[Hunter] RAW: {json.dumps(data, ensure_ascii=False)[:500]}")
-                    d = data.get('data') or {}
-                    # 兼容 code 为 "0" / "200" / "2000" / 0 / 200
-                    if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
-                        points = _first_number(d, (
-                            'rest_free_point', 'rest_equity_point',
-                            'free_point', 'rest_point',
-                        ))
-                        day_limit = _first_number(d, ('day_free_point', 'daily_free_point'))
-                        personal = d.get('personal_info') or {}
-                        role = (personal.get('user_name', '')
-                                if isinstance(personal, dict) else '')
-                        logger.info(f"[Hunter] points={points} day_limit={day_limit} role={role}")
-                        return {
-                            'ok': True,
-                            'points': points,
-                            'day_limit': day_limit,
-                            'role': role,
-                        }
-                    else:
-                        logger.warning(f"[Hunter] userInfo unexpected: code={data.get('code')} message={data.get('message', '')}")
-                else:
-                    text = await resp.text()
-                    logger.warning(f"[Hunter] userInfo HTTP {resp.status}: {text[:300]}")
-        except asyncio.TimeoutError:
-            logger.debug("[Hunter] userInfo 请求超时 (15s)")
-        except Exception as e:
-            logger.debug(f"[Hunter] userInfo exception: {e}")
-
-        # 2) 回退：openApi/search 最小查询，从 rest_quota 解析
-        try:
-            import base64
-            dummy_query = base64.urlsafe_b64encode(b'test').decode().rstrip('=')
-            async with session.get("https://hunter.qianxin.com/openApi/search",
-                             params={"api-key": key, "search": dummy_query,
-                                     "page": 1, "page_size": 1, "is_web": 1},
-                             timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                logger.debug(f"[Hunter] search fallback status={resp.status}")
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    d = data.get('data') or {}
-                    if isinstance(d, dict) and str(data.get('code')) in ('0', '200', '2000'):
-                        rq = str(d.get('rest_quota', ''))
-                        import re
-                        m = re.search(r'(\d+)', rq)
-                        points = int(m.group(1)) if m else None
-                        logger.debug(f"[Hunter] search rest_quota={rq} -> points={points}")
-                        return {'ok': True, 'points': points, 'role': ''}
-                    logger.warning(f"[Hunter] search unexpected: code={data.get('code')} message={data.get('message', '')}")
-                    return {'error': data.get('message', 'query failed')}
-                elif resp.status == 403:
-                    return {'ok': True, 'points': 0, 'role': '',
-                            'error': '积分耗尽 (HTTP 403)'}
-                text = await resp.text()
-                logger.warning(f"[Hunter] search HTTP {resp.status}: {text[:300]}")
-                return {'error': f'HTTP {resp.status}'}
-        except asyncio.TimeoutError:
-            logger.debug("[Hunter] search fallback 请求超时 (10s)")
-            return {'error': 'userInfo+search both timeout'}
-        except Exception as e:
-            logger.debug(f"[Hunter] search fallback exception: {e}")
-            return {'error': f'userInfo+search both failed: {e}'}
-    except Exception as e:
-        logger.warning(f"[Hunter] check_hunter_credit fatal: {e}")
-        return {'error': str(e)}
+        async with session.get(
+            "https://hunter.qianxin.com/openApi/userInfo",
+            params={"api-key": key}, allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            d = await read_hunter_response(resp, 'userInfo', key)
+        free = _first_number(d, ('rest_free_point', 'free_point'))
+        equity = _first_number(d, ('rest_equity_point',))
+        # Missing pools are unknown, not zero. -1 means unlimited in Hunter docs.
+        pools = [n for n in (free, equity) if n is not None]
+        points = (-1 if -1 in pools else sum(pools)) if pools else None
+        if points == 0 and (free is None or equity is None):
+            points = None
+        personal = d.get('personal_info') or {}
+        return {
+            'ok': True, 'points': points,
+            'free_points': free, 'equity_points': equity,
+            'day_limit': _first_number(d, ('day_free_point', 'daily_free_point')),
+            'role': personal.get('username', personal.get('user_name', '')) if isinstance(personal, dict) else '',
+        }
+    except asyncio.TimeoutError:
+        return {'error': 'Hunter /openApi/userInfo 请求超时 (15s)'}
+    except (ValueError, KeyDepletedError) as exc:
+        return {'error': str(exc)}
+    except Exception as exc:
+        # Client exceptions can contain request URLs with api-key query strings.
+        return {'error': f'Hunter /openApi/userInfo 请求失败 ({type(exc).__name__})'}
     finally:
         if own_session:
             await session.close()
@@ -425,8 +379,7 @@ async def check_all_hunter_credits():
         for key in keys:
             info = await check_hunter_credit(key, session=session)
             credit = _safe_number(info.get('points')) if info.get('ok') else None
-            if credit is not None:
-                km.update_credit('hunter', key, credit)
+            km.update_credit('hunter', key, credit)
             results.append({
                 'key_suffix': f"...{key[-6:]}",
                 'credit': credit,
@@ -459,20 +412,81 @@ async def check_all_daydaymap_credits():
     return results
 
 
+async def check_fofa_credit(api_key, session=None):
+    """Query account balances only; never spend search quota to check a key."""
+    from .fofa_api import FofaAPIError, request_fofa
+    from .network import get_session
+    own_session = session is None
+    if own_session:
+        session = get_session(limit=5, timeout=15)
+    try:
+        async with asyncio.timeout(15):
+            data = await request_fofa(session, 'info/my', api_key)
+        balances = {
+            name: _safe_number(data.get(name)) for name in (
+                'fcoin', 'fofa_point', 'remain_free_point',
+                'remain_api_query', 'remain_api_data',
+            )
+        }
+        level = data.get('vip_level')
+        return {
+            'ok': True, 'credit': balances['fofa_point'],
+            'balances': balances,
+            'role': f'会员等级 {level}' if level is not None else '',
+        }
+    except FofaAPIError as exc:
+        return {'error': str(exc)}
+    except asyncio.TimeoutError:
+        return {'error': 'FOFA 账号查询超时'}
+    finally:
+        if own_session:
+            await session.close()
+
+
 async def check_all_fofa_credits():
-    """Query all Fofa key/token points.
-    Fofa 没有标准的积分查询 API，返回固定结构标记不支持。
-    """
+    """Keep F coins, points and monthly API quotas in their own units."""
+    from .network import get_session
     km = KeyManager.instance()
     keys = km.get_all_keys('fofa')
+    if not keys:
+        return []
     results = []
-    for key in keys:
-        # Fofa 没有标准的积分查询 API，返回基本结构
-        results.append({
-            'key_suffix': f"...{key[-6:]}",
-            'credit': None,
-            'role': '不支持余额查询',
-            'role_limit': None,
-            'error': '',
-        })
+    async with get_session(limit=5, timeout=15) as session:
+        semaphore = asyncio.Semaphore(5)
+
+        async def check(key, index):
+            await asyncio.sleep(index * 0.6)
+            async with semaphore:
+                return await check_fofa_credit(key, session=session)
+
+        tasks = [asyncio.create_task(check(key, index)) for index, key in enumerate(keys)]
+        try:
+            # The HTTP route has a 50-second bridge deadline. Preserve completed
+            # accounts even when another key times out or there are many keys.
+            await asyncio.wait(tasks, timeout=45)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for key, task in zip(keys, tasks):
+            if task.cancelled():
+                info = {'error': 'FOFA 账号查询超时'}
+            elif task.exception() is not None:
+                info = {'error': 'FOFA 账号查询失败'}
+            else:
+                info = task.result()
+            if info.get('ok'):
+                # Account balances do not prove search eligibility; only an explicit
+                # exhausted-search response should exclude this key from rotation.
+                km.update_credit('fofa', key, None)
+            results.append({
+                'key_suffix': f"...{key[-6:]}",
+                'credit': info.get('credit'),
+                'balances': info.get('balances', {}),
+                'verified': bool(info.get('ok')),
+                'role': info.get('role', ''),
+                'role_limit': None,
+                'error': info.get('error', ''),
+            })
     return results

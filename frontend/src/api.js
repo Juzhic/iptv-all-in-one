@@ -272,6 +272,9 @@ export function apiScanKeys(opts = {}) {
 export function apiScanKeysCredits(opts = {}) {
   return fetchJSON('/api/scan/keys/credits', { timeout: 60000, ...opts })
 }
+export function apiScanKeyTest(platform, keyId, opts = {}) {
+  return postJSON('/api/scan/keys/test', { platform, key_id: keyId }, { timeout: 30000, ...opts })
+}
 export function apiScanKeyAdd(platform, key, email, opts = {}) {
   const body = { platform, key }
   if (email) body.email = email

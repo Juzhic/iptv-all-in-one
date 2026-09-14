@@ -2,7 +2,7 @@
 
 IPTV 频道测速、候选源采集、健康复检和 TXT/M3U 播放列表管理工具。
 
-当前版本：**3.1.0**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**3.2.0**。3.0 起数据库已切换为 PostgreSQL，旧 MySQL 数据卷不能直接复用。完整升级步骤见 [MIGRATING-3.0.md](MIGRATING-3.0.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 主要能力
 
@@ -75,6 +75,12 @@ PostgreSQL 管理员凭据只提供给数据库和一次性初始化服务，常
 
 3.0.3 起使用 PostgreSQL 内置 SHA-256，无需安装 `pgcrypto`，支持未提供该扩展的宝塔 PostgreSQL 18。应用账号需拥有目标数据库及应用 schema 的建表、建函数和索引权限；业务表和摘要函数由应用启动时自动创建。升级已有 3.0 数据库时，会在事务中重建四个旧 URL 摘要索引，大数据量部署应预留首次启动的维护时间；迁移失败会回滚，不会删除已有 `pgcrypto` 扩展。
 
+## FOFA 配置
+
+在“配置中心 → 采集配置 → API Key 管理”添加 FOFA Key 即可，邮箱为兼容旧配置保留的选填项。“刷新余额”调用[官方账号接口](https://fofa.info/api/info)，分别显示 F 币、F 点、免费 F 点和月度 API 剩余次数/条数；`0` 表示零余额，`-` 表示接口未提供该值。Key 有效仅表示账号鉴权通过，实际搜索仍受会员权限和配额限制。
+
+搜索参数遵循[官方查询接口](https://fofa.info/api)。运营商筛选按 FOFA `org` 字段匹配常见组织名称，覆盖范围取决于 FOFA 的 ASN 归属数据；需要尽可能完整的结果时可选择“全部运营商”。
+
 ## 输出与订阅
 
 结果固定写入 `IPTV_OUTPUT_DIR` 下的 `result.txt`、`result.m3u` 和 `history.json`。
@@ -142,3 +148,9 @@ npm run check:size
 ## License
 
 [MIT](LICENSE)
+
+### 采集配置与接口核对
+
+Hunter 余额仅调用 `/openApi/userInfo`，搜索调用 `/openApi/search`。采集任务使用启动时的配置，后续保存影响下一轮；关闭“每天”并清空星期可停用定时采集。各平台主查询数量按每个省份计算，画像预算另计。详细配置作用范围、8 月 24 日版本对比和关键词说明见 [采集配置审计](docs/collection-config-audit.md)。
+
+在“配置中心 → 采集配置 → API Key 管理”中点击对应 Key 的“测试可用性”，可分别查看账号和真实搜索结果。每次使用已保存的主查询关键词请求最多 1 条，可能消耗平台额度；不会访问搜索结果中的源站。返回 0 条仍表示搜索接口可用；超时或限流会显示无法确认，而不是 Key 失效。

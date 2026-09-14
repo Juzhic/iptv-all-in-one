@@ -175,9 +175,6 @@ async def scan_community_sources(session=None, extra_urls=None):
     try:
         # 应用 GitHub 反代
         github_proxy = cfg.get('github_proxy', '')
-        if not github_proxy:
-            # 自动探测可用的反代（复用已有的 session）
-            github_proxy = await _detect_github_proxy(session)
         if github_proxy:
             urls = [_apply_proxy(url, github_proxy) for url in urls]
             logger.info(f"[Community] 已启用 GitHub 反代: {github_proxy}")

@@ -617,6 +617,10 @@ async def _run_scheduled_scan():
     )
 
 
+from .config_bridge import scan_config_snapshot
+
+
+@scan_config_snapshot
 async def _do_scan(platforms_override=None, provinces_override=None):
     """执行完整的扫描流程：采集 -> 快速过滤 -> 深度检测 -> 保存数据库。"""
     from .platforms import collect_all
@@ -866,6 +870,7 @@ async def _do_scan(platforms_override=None, provinces_override=None):
     return scan_id
 
 
+@scan_config_snapshot
 async def _do_incremental_scan(platforms_override=None, provinces_override=None):
     """增量扫描：先检查现有频道，再采集新源，仅对新 URL 做快速过滤和深度检测。"""
     from .platforms import collect_all
@@ -963,6 +968,25 @@ async def _do_incremental_scan(platforms_override=None, provinces_override=None)
             except Exception as e:
                 _scan_log(f"[Incremental:{scan_id}] 质量热点异常: {e}")
                 logger.warning(f"[Incremental:{scan_id}] 质量热点异常: {e}")
+
+        for flag, module_name, function_name, label in (
+            ('isp_intelligence_enabled', 'isp_intelligence', 'scan_hot_segments', 'ISP 热点'),
+            ('community_sources_enabled', 'community_sources', 'scan_community_sources', '社区源'),
+        ):
+            if not cfg.get(flag) or scan_state.stop_requested:
+                continue
+            try:
+                from importlib import import_module
+                scan_source = getattr(import_module(f'.{module_name}', __package__), function_name)
+                async with get_session(limit=30, force_close=True) as source_session:
+                    additional = await scan_source(session=source_session)
+                raw.extend(additional)
+                uniq = _deduplicate_and_normalize(raw)
+                new_channels = [ch for ch in uniq if ch['url'] not in existing_urls]
+                _db.update_scan_run(scan_id, total_raw=len(raw), total_deduped=len(uniq))
+                _scan_log(f"[Incremental:{scan_id}] {label}补充 {len(additional)} 条，新频道 {len(new_channels)} 条。")
+            except Exception as exc:
+                _scan_log(f"[Incremental:{scan_id}] {label}异常: {exc}")
 
         prepared_yield_stats = _prepare_yield_stats(yield_stats, raw, uniq, new_channels)
         if prepared_yield_stats:

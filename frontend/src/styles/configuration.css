@@ -1,0 +1,67 @@
+/* Shared by both configuration pages; colors follow the TDesign theme. */
+.configuration-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-space-4);
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.config-card { min-width: 0; }
+.section-header, .config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.section-header > div, .config-header > div { min-width: 0; }
+.section-title { margin-bottom: 8px; font-size: 16px; font-weight: 600; }
+.section-title--flush { margin-bottom: 6px; }
+.section-desc, .config-panel-head p {
+  margin: 0;
+  color: var(--td-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.config-header-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.config-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: var(--td-radius-default);
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
+  font-size: 12px;
+}
+.config-pill--accent { background: var(--td-brand-color-light); color: var(--td-brand-color); }
+.config-panel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; min-width: 0; }
+.config-panel { min-width: 0; }
+.config-panel-head { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--td-component-stroke); }
+.config-panel-eyebrow { margin-bottom: 4px; font-size: 12px; color: var(--td-text-color-secondary); }
+.config-panel-head h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: var(--td-text-color-primary); }
+.config-field-list { display: flex; flex-direction: column; gap: 16px; }
+.config-field { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.config-field--stack { flex-direction: column; align-items: stretch; }
+.config-field-meta { flex: 1; min-width: 0; }
+.config-field--stack .config-field-meta { flex: none; width: 100%; }
+.config-field-meta label { display: block; margin-bottom: 4px; font-size: 14px; color: var(--td-text-color-primary); }
+.config-field-meta span { display: block; color: var(--td-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.field-control { width: 180px; max-width: 100%; flex-shrink: 0; }
+.field-control--wide, .field-stack { width: 240px; max-width: 100%; flex-shrink: 0; }
+.field-stack--switch { width: 100%; }
+.field-inline-hint { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--td-text-color-secondary); }
+
+/* Use actual available content width, including the app sidebar. */
+@container (max-width: 1050px) {
+  .config-panel-grid { grid-template-columns: 1fr; }
+}
+@container (max-width: 560px) {
+  .config-field { flex-direction: column; align-items: stretch; }
+  .field-control, .field-control--wide, .field-stack { width: 100%; }
+}
+@media (max-width: 768px) {
+  .section-header, .config-header { flex-direction: column; align-items: stretch; }
+  .config-panel { padding: 0; }
+}

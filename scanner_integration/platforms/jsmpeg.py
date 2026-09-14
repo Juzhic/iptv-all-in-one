@@ -10,26 +10,28 @@ import aiohttp
 from .. import config_bridge
 from ..network import get_session
 from ..logger_bridge import logger
+from ..hunter_api import read_hunter_response
 from .shared import KeyDepletedError, _is_stop_requested, normalize_cctv_name, classify_channel_full
 
 
-async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=None):
+async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=None, platforms=None):
     logger.info(f"[JSMpeg] 开始扫描, province={province}, operator={operator}, size={size}")
     if session is None:
-        session = get_session(limit=30, force_close=True)
-    quake_key = config_bridge.get_scan_config().get("quake_key")
-    hunter_key = config_bridge.get_scan_config().get("hunter_key")
-    ddm_key = config_bridge.get_scan_config().get("daydaymap_api_key")
+        async with get_session(limit=30, force_close=True) as owned_session:
+            return await jsmpeg_streamer_scan(province, operator, size, session=owned_session, platforms=platforms)
+    quake_key = config_bridge.get_scan_config().get("quake_key") if platforms is None or "quake" in platforms else None
+    hunter_key = config_bridge.get_scan_config().get("hunter_key") if platforms is None or "hunter" in platforms else None
+    ddm_key = config_bridge.get_scan_config().get("daydaymap_api_key") if platforms is None or "daydaymap" in platforms else None
 
     collected_ips = {}  # (ip, port) -> 来源平台名（Quake/Hunter/DayDayMap）
 
     one_month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    base_query = 'body="jsmpeg-streamer"'
-    op_cond = f' AND isp="{operator}"' if operator else ''
-    hunter_prov_cond = f' && ip.province=="{province}"' if province else ''
+    base_query = 'body:"jsmpeg-streamer"'
+    op_cond = f' AND isp:"{operator}"' if operator else ''
+    hunter_prov_cond = f' && ip.province="{province}"' if province else ''
     ddm_prov_cond = f' && province=="{province}"' if province else ''
-    quake_prov_cond = f' AND province="{province}"' if province else ''
+    quake_prov_cond = f' AND province_cn:"{province}"' if province else ''
 
     hunter_time_cond = f' && after="{one_month_ago}"'
     # 注意：Quake 不再使用 after 条件，避免高级会员限制
@@ -62,35 +64,22 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
 
     if hunter_key and len(collected_ips) < size:
         try:
-            query = f'web.body="jsmpeg-streamer"{hunter_prov_cond}{hunter_time_cond}{op_cond}'
+            query = f'web.body="jsmpeg-streamer"{hunter_prov_cond}{hunter_time_cond}'
+            if operator: query += f' && ip.isp="{config_bridge._escape_query_value(operator)}"'
             logger.info(f"[JSMpeg] Hunter 查询语句: {query}")
-            qb = base64.urlsafe_b64encode(query.encode()).decode().rstrip('=')
+            qb = base64.urlsafe_b64encode(query.encode()).decode()
             hunter_page_size = min(10, size)
             async with session.get(
                 "https://hunter.qianxin.com/openApi/search",
-                params={"api-key": hunter_key, "search": qb, "page": 1, "page_size": hunter_page_size, "is_web": 1},
+                allow_redirects=False, params={"api-key": hunter_key, "search": qb, "page": 1, "page_size": hunter_page_size, "is_web": 1},
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
-                if resp.status == 200:
-                    j = await resp.json()
-                    if j.get("code") in (200, 0):
-                        data = j.get("data")
-                        if data is None:
-                            items = []
-                        else:
-                            items = data.get("arr", [])
-                        for item in items:
-                            ip = item.get("ip")
-                            port = item.get("port", 8080)
-                            if ip and (ip, port) not in collected_ips:
-                                collected_ips[(ip, port)] = 'Hunter'
-                        logger.info(f"[JSMpeg] Hunter 发现 {len(items)} 个IP")
-                    else:
-                        logger.warning(f"[JSMpeg] Hunter 返回错误: {j.get('message')}")
-                elif resp.status == 403:
-                    raise KeyDepletedError("Hunter key 积分耗尽")
-                else:
-                    logger.warning(f"[JSMpeg] Hunter HTTP {resp.status}")
+                data = await read_hunter_response(resp, 'search', hunter_key)
+                items = data.get('arr') or []
+                for item in items:
+                    ip, port = item.get('ip'), item.get('port', 8080)
+                    if ip and (ip, port) not in collected_ips:
+                        collected_ips[(ip, port)] = 'Hunter'
         except KeyDepletedError:
             raise
         except Exception as e:
@@ -98,7 +87,8 @@ async def jsmpeg_streamer_scan(province=None, operator=None, size=30, session=No
 
     if ddm_key and len(collected_ips) < size:
         try:
-            query = f'body="jsmpeg-streamer"{ddm_prov_cond}{op_cond}'
+            query = f'body="jsmpeg-streamer"{ddm_prov_cond}'
+            if operator: query += f' && isp="{config_bridge._escape_query_value(operator)}"'
             logger.info(f"[JSMpeg] DayDayMap 查询语句: {query}")
             keyword_base64 = base64.b64encode(query.encode()).decode()
             async with session.post(

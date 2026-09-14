@@ -11,13 +11,17 @@ from .. import config_bridge
 from ..config_bridge import API_REQUEST_DELAY
 from ..network import global_sem, get_session
 from ..logger_bridge import logger
+from ..hunter_api import read_hunter_response
 from .shared import is_valid_stream_url, _is_stop_requested, classify_channel_full
 from .ip_extract import smart_c_segment_scan
 
 
-async def zhgx_scan(size=10, session=None):
+async def zhgx_scan(size=10, session=None, platforms=None):
+    if session is None:
+        async with get_session(limit=30, force_close=True) as owned_session:
+            return await zhgx_scan(size, session=owned_session, platforms=platforms)
     ips = set()
-    quake_key = config_bridge.get_scan_config().get("quake_key")
+    quake_key = config_bridge.get_scan_config().get("quake_key") if platforms is None or "quake" in platforms else None
     if quake_key:
         await asyncio.sleep(API_REQUEST_DELAY)
         try:
@@ -25,7 +29,7 @@ async def zhgx_scan(size=10, session=None):
             async with session.post(
                 "https://quake.360.net/api/v3/search/quake_service",
                 headers={"X-QuakeToken": quake_key, "Content-Type": "application/json"},
-                json={"query": 'body="ZHGXTV"', "start": 0, "size": size, "latest": True},
+                json={"query": 'body:"/ZHGXTV/Public/json/live_interface.txt"', "start": 0, "size": size, "latest": True},
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status == 200:
@@ -36,23 +40,21 @@ async def zhgx_scan(size=10, session=None):
                             if ip: ips.add((ip, port))
         except Exception as e:
             logger.debug(f"[ZHGX] Quake 查询失败: {e}")
-    hunter_key = config_bridge.get_scan_config().get("hunter_key")
+    hunter_key = config_bridge.get_scan_config().get("hunter_key") if platforms is None or "hunter" in platforms else None
     if hunter_key:
         await asyncio.sleep(API_REQUEST_DELAY)
         try:
-            qb = base64.urlsafe_b64encode('web.body="ZHGXTV"'.encode()).decode().rstrip('=')
+            qb = base64.urlsafe_b64encode('web.body="ZHGXTV"'.encode()).decode()
             if session is None: session = get_session(limit=30, force_close=True)
             async with session.get(
                 "https://hunter.qianxin.com/openApi/search",
-                params={"api-key": hunter_key, "search": qb, "page": 1, "page_size": min(10, size), "is_web": 1},
+                allow_redirects=False, params={"api-key": hunter_key, "search": qb, "page": 1, "page_size": min(10, size), "is_web": 1},
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
-                if resp.status == 200:
-                    j = await resp.json()
-                    if j.get("code") in (200, 0):
-                        for item in j.get("data", {}).get("arr", []):
-                            ip = item.get("ip"); port = item.get("port", 80)
-                            if ip: ips.add((ip, port))
+                data = await read_hunter_response(resp, 'search', hunter_key)
+                for item in data.get('arr', []):
+                    ip, port = item.get('ip'), item.get('port', 80)
+                    if ip: ips.add((ip, port))
         except Exception as e:
             logger.debug(f"[ZHGX] Hunter 查询失败: {e}")
     if not ips:

@@ -10,9 +10,9 @@ class SearchKeywordConfigTests(unittest.TestCase):
         })
 
         self.assertIn('title:"IPTV"', queries['quake'])
-        self.assertIn('web.title:"IPTV"', queries['hunter'])
+        self.assertIn('web.title="IPTV"', queries['hunter'])
         self.assertIn('title="IPTV"', queries['fofa'])
-        self.assertIn('(body="/iptv/live/" && body="key=txiptv")', queries['quake'])
+        self.assertIn('(body:"/iptv/live/" AND body:"key=txiptv")', queries['quake'])
         self.assertIn('(web.body="/iptv/live/" && web.body="key=txiptv")', queries['hunter'])
 
     def test_keywords_are_trimmed_deduplicated_and_comments_are_ignored(self):

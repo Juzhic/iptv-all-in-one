@@ -7,6 +7,9 @@
 import json
 import logging
 import re
+from copy import deepcopy
+from contextvars import ContextVar
+from functools import wraps
 
 from .secure_keys import (
     decrypt_api_key,
@@ -34,7 +37,6 @@ STABILITY_THRESHOLD_LOCAL = 30
 
 DEFAULT_SEARCH_KEYWORDS = [
     '/tsfile/live/ && key=txiptv',
-    '/iptv/live/1000.json?key=txiptv',
     '/iptv/live/zh_cn.js',
     '/iptv/live/1000.json',
     '/ZHGXTV/Public/json/live_interface.txt',
@@ -54,19 +56,7 @@ LEGACY_DEFAULT_QUALITY_PROFILE_NAMES = [
     'multicast_proxy',
     'tvheadend',
 ]
-SUPPORTED_QUALITY_PROFILE_NAMES = [
-    'txiptv_live',
-    'live_interface',
-    'zhgx',
-    'jsmpeg',
-    'channel_api',
-    'm3u_playlist',
-    'multicast_proxy',
-    'tvheadend',
-    'middleware_brand',
-    'operator_playlist',
-    'xtream',
-]
+SUPPORTED_QUALITY_PROFILE_NAMES = list(QUALITY_PROFILE_NAMES)
 SUPPORTED_SEARCH_PLATFORMS = ['quake', 'hunter', 'daydaymap', 'fofa']
 
 
@@ -101,7 +91,7 @@ def _escape_query_value(value):
     return value.replace('\\', '\\\\').replace('"', '\\"')
 
 
-def _format_search_keyword(keyword, body_field='body', title_field='title', title_operator=':'):
+def _format_search_keyword(keyword, body_field='body', title_field='title', title_operator='=', body_operator='=', and_operator='&&'):
     """Convert one editable rule into a platform-specific query expression.
 
     Rules use a deliberately small syntax: one rule per line, ``&&`` means all
@@ -113,7 +103,7 @@ def _format_search_keyword(keyword, body_field='body', title_field='title', titl
         if not fragment:
             continue
         field = body_field
-        operator = '='
+        operator = body_operator
         lower = fragment.lower()
         if lower.startswith('title:'):
             field = title_field
@@ -125,24 +115,25 @@ def _format_search_keyword(keyword, body_field='body', title_field='title', titl
             continue
         fragments.append(f'{field}{operator}"{_escape_query_value(fragment)}"')
 
+    fragments = list(dict.fromkeys(fragments))
     if not fragments:
         return ''
     if len(fragments) == 1:
         return fragments[0]
-    return '(' + ' && '.join(fragments) + ')'
+    return '(' + f' {and_operator} '.join(fragments) + ')'
 
 
-def _join_search_keywords(keywords, body_field='body', title_field='title', title_operator=':'):
+def _join_search_keywords(keywords, body_field='body', title_field='title', title_operator='=', body_operator='=', and_operator='&&', or_operator='||'):
     expressions = [
         _format_search_keyword(
             keyword,
             body_field=body_field,
             title_field=title_field,
-            title_operator=title_operator,
+            title_operator=title_operator, body_operator=body_operator, and_operator=and_operator,
         )
         for keyword in _normalize_search_keywords(keywords)
     ]
-    return ' || '.join(expression for expression in expressions if expression)
+    return f' {or_operator} '.join(dict.fromkeys(expression for expression in expressions if expression))
 
 
 def build_search_queries(scan_config=None):
@@ -151,7 +142,7 @@ def build_search_queries(scan_config=None):
         scan_config = get_scan_config()
     keywords = scan_config.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
     return {
-        'quake': _join_search_keywords(keywords),
+        'quake': _join_search_keywords(keywords, title_operator=':', body_operator=':', and_operator='AND', or_operator='OR'),
         'hunter': _join_search_keywords(keywords, body_field='web.body', title_field='web.title'),
         'daydaymap': _join_search_keywords(keywords),
         'fofa': _join_search_keywords(keywords, title_operator='='),
@@ -491,7 +482,7 @@ def get_quality_thresholds(scan_config=None):
 
 def _normalize_scan_config(raw_cfg):
     """Merge defaults and legacy aliases into a single canonical config."""
-    cfg = dict(DEFAULT_SCAN_CONFIG)
+    cfg = deepcopy(DEFAULT_SCAN_CONFIG)
     if isinstance(raw_cfg, dict):
         cfg.update(raw_cfg)
 
@@ -509,6 +500,7 @@ def _normalize_scan_config(raw_cfg):
         cfg.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
     )
 
+    cfg['enabled_platforms'] = _normalize_string_list(cfg.get('enabled_platforms', []), allowed=SUPPORTED_SEARCH_PLATFORMS)
     cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
     cfg['quality_discovery_platforms'] = _normalize_string_list(
         cfg.get('quality_discovery_platforms', []),
@@ -517,11 +509,11 @@ def _normalize_scan_config(raw_cfg):
     )
     normalized_profiles = _normalize_string_list(
         cfg.get('quality_query_profiles', QUALITY_PROFILE_NAMES),
-        allowed=SUPPORTED_QUALITY_PROFILE_NAMES,
         default=QUALITY_PROFILE_NAMES,
     )
     if normalized_profiles == LEGACY_DEFAULT_QUALITY_PROFILE_NAMES:
         normalized_profiles = list(QUALITY_PROFILE_NAMES)
+    normalized_profiles = [name for name in normalized_profiles if name in SUPPORTED_QUALITY_PROFILE_NAMES]
     cfg['quality_query_profiles'] = normalized_profiles or list(QUALITY_PROFILE_NAMES)
     cfg['quality_thresholds'] = _normalize_quality_thresholds(
         cfg.get('quality_thresholds')
@@ -597,7 +589,32 @@ def _normalize_scan_config(raw_cfg):
     return cfg
 
 
+_TASK_CONFIG = ContextVar('scan_config_snapshot', default=None)
+
+
+def scan_config_snapshot(func):
+    """A running collection uses one saved configuration across all stages."""
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        cfg = deepcopy(get_scan_config())
+        for argument, field in (('platforms_override', 'enabled_platforms'),
+                                ('provinces_override', 'selected_provinces')):
+            if kwargs.get(argument) is not None:
+                cfg[field] = deepcopy(kwargs[argument])
+        token = _TASK_CONFIG.set(cfg)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _TASK_CONFIG.reset(token)
+    return wrapped
+
+
 def get_scan_config():
+    snapshot = _TASK_CONFIG.get()
+    return deepcopy(snapshot if snapshot is not None else _read_scan_config())
+
+
+def _read_scan_config():
     """从数据库读取扫描配置，合并默认值后返回 dict。使用缓存机制避免重复读取。"""
     global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
     from database import get_config_data_with_mtime
@@ -614,8 +631,10 @@ def get_scan_config():
     if raw:
         try:
             loaded = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            loaded = {}
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError('数据库中的采集配置不是有效 JSON，请修复后重试') from exc
+        if not isinstance(loaded, dict):
+            raise ValueError('数据库中的采集配置必须是 JSON 对象')
     else:
         loaded = {}
     
@@ -647,10 +666,24 @@ def save_scan_config(cfg):
     """保存扫描配置到数据库。"""
     global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
     from database import set_config_data
-    current = get_scan_config()
+    current = deepcopy(_read_scan_config())
     merged = dict(current)
     if isinstance(cfg, dict):
         merged.update(cfg)
+    if isinstance(cfg, dict) and 'search_keywords' in cfg:
+        rules = cfg['search_keywords']
+        if isinstance(rules, str):
+            rules = rules.splitlines()
+        if not isinstance(rules, list) or not rules:
+            raise ValueError('请至少保留一条搜索关键词')
+        for rule in rules:
+            if not isinstance(rule, str) or len(rule) > 256:
+                raise ValueError('单条关键词必须是最多 256 字符的文本')
+            if rule.strip().startswith('#') or not rule.strip():
+                continue
+            for fragment in rule.split('&&'):
+                if not re.sub(r'^(title|body):', '', fragment.strip(), flags=re.I).strip():
+                    raise ValueError('关键词中不能包含空条件')
     normalized = _normalize_scan_config(merged)
 
     # Do not persist runtime-only compatibility aliases back to the database.

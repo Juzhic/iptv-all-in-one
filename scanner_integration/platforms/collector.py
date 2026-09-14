@@ -20,6 +20,7 @@ from .ip_extract import (
 )
 from .quake import quake_scan
 from .fofa import fofa_scan
+from ..fofa_api import with_fofa_filters
 from .hunter import hunter_scan
 from .daydaymap import daydaymap_scan
 from .zhgx import zhgx_scan
@@ -33,7 +34,7 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
     """
     用 KeyManager 轮换 key 执行扫描函数。
     scan_func 的第一个参数必须是 api_key。
-    按积分余额降序使用 key，跳过已耗尽的 key，403 时自动切换下一个 key 重试。
+    按积分余额降序使用 key，平台明确报告额度耗尽时轮换。
     """
     from ..key_manager import KeyManager, _credit_is_usable, _credit_rank
     km = KeyManager.instance()
@@ -57,11 +58,13 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
                     f"剩余 {len(usable)} 个可用")
 
     last_error = None
+    partial_entries = []
     for key in usable:
         try:
             result = await scan_func(key, *args, session=session, **kwargs)
-            return result
-        except KeyDepletedError:
+            return partial_entries + result
+        except KeyDepletedError as exc:
+            partial_entries.extend(getattr(exc, 'partial_entries', []))
             km.mark_depleted(platform, key)
             continue
         except Exception as e:
@@ -71,7 +74,7 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
     if last_error:
         logger.warning(f"[{platform}] 扫描异常: {last_error}")
         _stats_set(kwargs.get('stats'), 'skipped_reason', str(last_error))
-    return []
+    return partial_entries
 
 
 # ---------- 主收集函数（串行化平台，JSMpeg 全国扫描一次） ----------
@@ -104,7 +107,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         if km.get_all_keys('quake'): available_platforms.append("quake")
         if km.get_all_keys('hunter'): available_platforms.append("hunter")
         if km.get_all_keys('daydaymap'): available_platforms.append("daydaymap")
-        if km.get_all_keys('fofa') and scan_cfg.get("fofa_email"): available_platforms.append("fofa")
+        if km.get_all_keys('fofa'): available_platforms.append("fofa")
         if scan_cfg.get("cost_saver_mode", True):
             preferred_order = ("quake", "fofa", "hunter", "daydaymap")
             enabled_platforms = [
@@ -129,30 +132,26 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         except (TypeError, ValueError):
             return 200
 
-    def _quality_target_for(platform, profile_count=None):
-        budget = scan_cfg.get("quality_query_profile_size", 120)
-        try:
-            budget = max(10, int(budget))
-        except (TypeError, ValueError):
-            budget = 120
-        split_count = max(1, (profile_count or len(QUALITY_QUERY_PROFILES)) * len(selected_provs))
-        per_profile = max(1, budget // split_count)
-        return min(_target_for(platform), per_profile)
-
     def _with_filters(query, platform, prov=None):
+        if platform == 'fofa':
+            return with_fofa_filters(query, prov, operator)
         if not operator and not prov:
             return query
-        connector = "AND" if platform == "quake" else "&&"
+        escape = config_bridge._escape_query_value
+        if platform == 'quake':
+            filtered = f'({query})'
+            if operator:
+                filtered += f' AND isp:"{escape(operator)}"'
+            if prov:
+                filtered += f' AND province_cn:"{escape(prov)}"'
+            return filtered
         filtered = f"({query})"
         if operator:
-            filtered += f' {connector} isp="{operator}"'
+            field = 'ip.isp' if platform == 'hunter' else 'isp'
+            filtered += f' && {field}="{escape(operator)}"'
         if prov:
-            if platform == "fofa":
-                filtered += f' {connector} region="{prov}"'
-            elif platform == "daydaymap":
-                filtered += f' {connector} province=="{prov}"'
-            else:
-                filtered += f' {connector} province="{prov}"'
+            field = 'ip.province' if platform == 'hunter' else 'province'
+            filtered += f' && {field}="{escape(prov)}"'
         return filtered
 
     def _profile_label(platform_name, profile_label, prov):
@@ -263,7 +262,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 p for p in (scan_cfg.get("quality_discovery_platforms") or [])
                 if p in enabled_platforms
             ]
-            if not quality_platforms:
+            if not scan_cfg.get("quality_discovery_platforms"):
                 if scan_cfg.get("cost_saver_mode", True) and not explicit_platforms and "quake" in enabled_platforms:
                     quality_platforms = ["quake"]
                 else:
@@ -277,76 +276,34 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                     "[采集] 质量优先查询平台: "
                     f"{quality_platforms}，画像: {', '.join(p['label'] for p in enabled_profiles)}"
                 )
-            for prov in selected_provs:
-                for profile in enabled_profiles:
-                    if "quake" in quality_platforms and quake_key:
-                        stats = {}
-                        target = _quality_target_for("quake", len(enabled_profiles))
-                        query = _with_filters(profile["quake"], "quake", prov)
-                        stat_key = _yield_stat_key('quality_profile', 'quake', profile["name"], prov)
-                        profile_tasks.append((
-                            stat_key,
-                            _profile_label("Quake 360", profile['label'], prov),
-                            "Quake 360",
-                            "quake",
-                            profile["name"],
-                            profile["label"],
-                            prov,
-                            _run_with_key_rotation('quake', quake_scan, query, target, session=scan_session, stats=stats),
-                            stats,
-                            target,
-                        ))
-                    if "hunter" in quality_platforms and hunter_key:
-                        stats = {}
-                        target = _quality_target_for("hunter", len(enabled_profiles))
-                        query = _with_filters(profile["hunter"], "hunter", prov)
-                        stat_key = _yield_stat_key('quality_profile', 'hunter', profile["name"], prov)
-                        profile_tasks.append((
-                            stat_key,
-                            _profile_label("Hunter", profile['label'], prov),
-                            "Hunter",
-                            "hunter",
-                            profile["name"],
-                            profile["label"],
-                            prov,
-                            _run_with_key_rotation('hunter', hunter_scan, query, target, session=scan_session, stats=stats),
-                            stats,
-                            target,
-                        ))
-                    if "daydaymap" in quality_platforms and ddm_key:
-                        stats = {}
-                        target = _quality_target_for("daydaymap", len(enabled_profiles))
-                        query = _with_filters(profile["daydaymap"], "daydaymap", prov)
-                        stat_key = _yield_stat_key('quality_profile', 'daydaymap', profile["name"], prov)
-                        profile_tasks.append((
-                            stat_key,
-                            _profile_label("DayDayMap", profile['label'], prov),
-                            "DayDayMap",
-                            "daydaymap",
-                            profile["name"],
-                            profile["label"],
-                            prov,
-                            _run_with_key_rotation('daydaymap', daydaymap_scan, query, target, session=scan_session, stats=stats),
-                            stats,
-                            target,
-                        ))
-                    if "fofa" in quality_platforms and fofa_key:
-                        stats = {}
-                        target = _quality_target_for("fofa", len(enabled_profiles))
-                        query = _with_filters(profile["fofa"], "fofa", prov)
-                        stat_key = _yield_stat_key('quality_profile', 'fofa', profile["name"], prov)
-                        profile_tasks.append((
-                            stat_key,
-                            _profile_label("Fofa", profile['label'], prov),
-                            "Fofa",
-                            "fofa",
-                            profile["name"],
-                            profile["label"],
-                            prov,
-                            _run_with_key_rotation('fofa', fofa_scan, query, target, session=scan_session, stats=stats),
-                            stats,
-                            target,
-                        ))
+            # Allocate each platform's budget once across province/profile pairs.
+            # Zero allocations are skipped instead of forcing one request each.
+            candidates = [(prov, profile) for prov in selected_provs for profile in enabled_profiles]
+            platform_functions = {
+                'quake': ('Quake 360', quake_key, quake_scan),
+                'hunter': ('Hunter', hunter_key, hunter_scan),
+                'daydaymap': ('DayDayMap', ddm_key, daydaymap_scan),
+                'fofa': ('Fofa', fofa_key, fofa_scan),
+            }
+            for platform in quality_platforms:
+                name, key, scan_function = platform_functions[platform]
+                if not key or not candidates:
+                    continue
+                budget = max(0, int(scan_cfg.get('quality_query_profile_size', 120)))
+                base, remainder = divmod(budget, len(candidates))
+                for index, (prov, profile) in enumerate(candidates):
+                    target = min(_target_for(platform), base + (index < remainder))
+                    if target <= 0:
+                        continue
+                    stats = {}
+                    query = _with_filters(profile[platform], platform, prov)
+                    stat_key = _yield_stat_key('quality_profile', platform, profile['name'], prov)
+                    profile_tasks.append((
+                        stat_key, _profile_label(name, profile['label'], prov), name,
+                        platform, profile['name'], profile['label'], prov,
+                        _run_with_key_rotation(platform, scan_function, query, target, session=scan_session, stats=stats),
+                        stats, target,
+                    ))
 
             if profile_tasks:
                 labels = ', '.join(f"{name}(目标{target})" for _, name, _, _, _, _, _, _, _, target in profile_tasks)
@@ -385,20 +342,25 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         independent_tasks = []
         indep_size = size or scan_cfg.get("quake_size", 200)
 
-        if enabled_platforms and not scan_cfg.get("cost_saver_mode", True):
-            independent_tasks.append(('ZHGX', zhgx_scan(indep_size, session=scan_session)))
+        if enabled_platforms and scan_cfg.get("quality_discovery_enabled", True) and not scan_cfg.get("cost_saver_mode", True):
+            independent_tasks.append(('ZHGX', zhgx_scan(indep_size, session=scan_session, platforms=enabled_platforms)))
         elif enabled_platforms:
             _log("[采集] 省积分模式：跳过独立 ZHGX 扫描")
 
         # JSMpeg 全国扫描（只执行一次，不限省份）
-        if scan_cfg.get("cost_saver_mode", True) and 'jsmpeg' not in (scan_cfg.get("quality_query_profiles") or []):
+        if scan_cfg.get("cost_saver_mode", True) or not scan_cfg.get("quality_discovery_enabled", True):
             _log("[采集] 省积分模式：跳过独立 JSMpeg 扫描")
         else:
-            independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=indep_size, session=scan_session)))
+            independent_tasks.append(('JSMpeg', jsmpeg_streamer_scan(province=None, operator=operator if operator else None, size=indep_size, session=scan_session, platforms=enabled_platforms)))
 
-        if hunter_key and "hunter" in enabled_platforms:
-            independent_tasks.append(('Tvheadend', _run_with_key_rotation('hunter', tvheadend_scan, None, 30, session=scan_session)))
-            independent_tasks.append(('IPTV互动', _run_with_key_rotation('hunter', iptv_interactive_scan, None, 30, session=scan_session)))
+        if (hunter_key and "hunter" in enabled_platforms
+                and scan_cfg.get("quality_discovery_enabled", True)
+                and not scan_cfg.get("cost_saver_mode", True)):
+            for prov in selected_provs:
+                independent_tasks.append(('Tvheadend', _run_with_key_rotation(
+                    'hunter', tvheadend_scan, _with_filters('web.title="Tvheadend"', 'hunter', prov), 30, session=scan_session)))
+                independent_tasks.append(('IPTV互动', _run_with_key_rotation(
+                    'hunter', iptv_interactive_scan, _with_filters('web.title="首页 - IPTV互动电视系统"', 'hunter', prov), 30, session=scan_session)))
 
         if ddgs_enabled:
             independent_tasks.append(('DDGS', ddgs_scan(None, indep_size, session=scan_session)))
@@ -426,25 +388,26 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 all_raw.extend(res)
             _log(f"[采集] 独立平台完成，本轮获得 {sum(len(r) for r in results)} 条，累计 {len(all_raw)} 条")
 
-        # 域名/IP 扫描
-        _log(f"[采集] ({len(all_raw)}条) 开始域名/IP补探测...")
-        try:
-            from ..domain_ip_scanner import domain_ip_scan
-            domain_entries = await domain_ip_scan(session=scan_session)
-            scan_ports = scan_cfg.get(
-                'scan_ports', [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443])
-            for ent in domain_entries:
-                ip = ent['ip']
-                for port in scan_ports:
-                    ch = await extract_channels_from_ip(ip, port, scan_session)
-                    if ch:
-                        for c in ch:
-                            c['platform'] = '域名/IP'
-                        all_raw.extend(ch)
-                        break
-            _log(f"[采集] 域名/IP补探测完成，累计 {len(all_raw)} 条")
-        except Exception as e:
-            _log(f"[采集] 域名/IP补探测失败: {e}")
+        if not scan_cfg.get('cost_saver_mode', True):
+            # 域名/IP 扫描
+            _log(f"[采集] ({len(all_raw)}条) 开始域名/IP补探测...")
+            try:
+                from ..domain_ip_scanner import domain_ip_scan
+                domain_entries = await domain_ip_scan(session=scan_session)
+                scan_ports = scan_cfg.get(
+                    'scan_ports', [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443])
+                for ent in domain_entries:
+                    ip = ent['ip']
+                    for port in scan_ports:
+                        ch = await extract_channels_from_ip(ip, port, scan_session)
+                        if ch:
+                            for c in ch:
+                                c['platform'] = '域名/IP'
+                            all_raw.extend(ch)
+                            break
+                _log(f"[采集] 域名/IP补探测完成，累计 {len(all_raw)} 条")
+            except Exception as e:
+                _log(f"[采集] 域名/IP补探测失败: {e}")
 
     clean = []
     invalid_url_count = 0
