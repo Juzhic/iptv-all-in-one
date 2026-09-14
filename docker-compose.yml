@@ -82,7 +82,6 @@ services:
 
         psql --dbname="$${APP_DB_NAME}" --set=ON_ERROR_STOP=1 \
           --set=app_user="$${APP_DB_USER}" <<'SQL'
-        CREATE EXTENSION IF NOT EXISTS pgcrypto;
         REVOKE CREATE ON SCHEMA public FROM PUBLIC;
         SELECT format('GRANT USAGE, CREATE ON SCHEMA public TO %I', :'app_user')
         \gexec
@@ -101,7 +100,7 @@ services:
     restart: "no"
 
   iptv-all-in-one:
-    image: juzhic/iptv-all-in-one:3.0.2
+    image: juzhic/iptv-all-in-one:3.0.3
     depends_on:
       postgres-init:
         condition: service_completed_successfully

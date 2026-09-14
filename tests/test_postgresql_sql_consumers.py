@@ -82,7 +82,7 @@ class PostgreSQLSQLConsumerTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / 'web' / 'routes' / 'scan.py'
         ).read_text(encoding='utf-8')
 
-        self.assertIn("digest(url, 'sha256') = digest(%s, 'sha256')", source)
+        self.assertIn("iptv_url_sha256(url) = iptv_url_sha256(%s)", source)
         self.assertIn('AND url = %s', source)
         self.assertNotIn(
             'UPDATE persistent_scan_results SET priority = %s WHERE url = %s',

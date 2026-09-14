@@ -89,7 +89,7 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(1, page['total'])
         self.assertEqual('https://example.com/•••', page['items'][0]['source_url'])
         self.assertTrue(any(
-            "digest(psr.url, 'sha256') = digest(rr.url, 'sha256')" in sql
+            "iptv_url_sha256(psr.url) = iptv_url_sha256(rr.url)" in sql
             and 'psr.url = rr.url' in sql
             for sql in connection.queries
         ))

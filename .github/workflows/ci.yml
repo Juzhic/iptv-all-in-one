@@ -66,7 +66,6 @@ jobs:
           $do$;
           ALTER DATABASE iptv_test OWNER TO iptv_app;
           \connect iptv_test
-          CREATE EXTENSION IF NOT EXISTS pgcrypto;
           GRANT USAGE, CREATE ON SCHEMA public TO iptv_app;
           SQL
       - name: Install backend dependencies
@@ -77,6 +76,11 @@ jobs:
         run: python -m compileall -q database engine scanner_integration web
       - name: Run backend unit and PostgreSQL 18 integration tests
         run: python -m pytest -q
+      - name: Verify startup does not install pgcrypto
+        run: |
+          docker exec '${{ job.services.postgres.id }}' \
+            psql -U iptv_admin -d iptv_test -At \
+            -c "SELECT count(*) FROM pg_extension WHERE extname = 'pgcrypto'" | grep -Fx 0
 
   frontend:
     runs-on: ubuntu-latest
@@ -127,7 +131,7 @@ jobs:
             -e 's#__POSTGRES_APP_PASSWORD__#ci-app-db-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_AUTH_PASSWORD__#ci-basic-auth-password-with-32-bytes-3.0#g' \
             -e 's#__IPTV_SECRET_KEY__#ci-secret-key-with-at-least-thirty-two-bytes-3.0#g' \
-            -e 's#juzhic/iptv-all-in-one:3.0.2#iptv-test:ci#g' \
+            -e 's#juzhic/iptv-all-in-one:3.0.3#iptv-test:ci#g' \
             ci-compose/docker-compose.yml
           docker compose -f ci-compose/docker-compose.yml config --quiet
           if grep -Eq '__[A-Z0-9_]+__' ci-compose/docker-compose.yml; then
@@ -152,7 +156,7 @@ jobs:
           "${compose[@]}" ps --all
           "${compose[@]}" logs --no-color
           exit 1
-      - name: Verify database roles, extension, and idempotent initialization
+      - name: Verify database roles, built-in hashing, and idempotent initialization
         run: |
           set -euo pipefail
           export COMPOSE_PROJECT_NAME=iptvci
@@ -169,7 +173,10 @@ jobs:
           test "$database_owner" = 'iptv_app'
           docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
             "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
-            -c "SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'" | grep -Fx pgcrypto
+            -c "SELECT count(*) FROM pg_extension WHERE extname = 'pgcrypto'" | grep -Fx 0
+          docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
+            "$postgres_container" psql -h 127.0.0.1 -U iptv_app -d iptv_all_in_one -At \
+            -c "SELECT octet_length(iptv_url_sha256('https://example.test/live'))" | grep -Fx 32
 
           "${compose[@]}" run --rm postgres-init
           docker exec -e PGPASSWORD=ci-app-db-password-with-32-bytes-3.0 \
