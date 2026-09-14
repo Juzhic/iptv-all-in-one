@@ -185,6 +185,30 @@ class FofaTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(KeyDepletedError):
             await fofa_scan('key', 'query', 1, session)
 
+    async def test_points_error_rotates_without_disabling_other_free_queries(self):
+        self.km.load_keys('fofa', ['first', 'second'])
+        stats = {}
+        session = Session(Response({'error': True, 'errmsg': '[820031] F点余额不足'}),
+                          Response({'error': False, 'results': []}))
+        self.assertEqual([], await _run_with_key_rotation('fofa', fofa_scan, 'query', 200,
+                                                        session=session, stats=stats))
+        self.assertEqual(['first', 'second'], [args['params']['key'] for _, args in session.calls])
+        self.assertNotEqual(0, self.km.get_credits_info('fofa')['first'])
+        self.assertFalse(stats.get('skipped_reason'))
+
+    async def test_points_error_is_not_proof_that_every_quota_pool_is_empty(self):
+        for payload in ({'error': True, 'errmsg': '[820031] F点余额不足'},
+                        {'error': True, 'code': 820031, 'errmsg': 'Cannot fund this request'},
+                        {'error': True, 'errmsg': 'F 点不足'}):
+            with self.assertRaises(FofaAPIError) as error:
+                await request_fofa(Session(Response(payload)), 'search/all', 'key')
+            self.assertFalse(error.exception.depleted)
+            self.assertTrue(error.exception.rotate_key)
+            self.assertIn('不代表免费/月度 API 额度全部耗尽', str(error.exception))
+        with self.assertRaises(FofaAPIError) as error:
+            await request_fofa(Session(Response({'error': True, 'errmsg': 'API 额度耗尽'})), 'search/all', 'key')
+        self.assertTrue(error.exception.depleted)
+
     async def test_owned_search_session_is_closed(self):
         session = Session(Response({'error': False, 'results': []}))
         with patch('scanner_integration.platforms.fofa.get_session', return_value=session):

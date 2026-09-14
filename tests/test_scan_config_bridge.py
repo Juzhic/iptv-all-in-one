@@ -4,6 +4,28 @@ from scanner_integration import config_bridge
 
 
 class SearchKeywordConfigTests(unittest.TestCase):
+    def test_complete_legacy_defaults_upgrade_but_custom_rules_survive(self):
+        legacy = config_bridge.LEGACY_DEFAULT_SEARCH_KEYWORDS
+        for rules in (legacy, [*legacy, '/iptv/live/1000.json?key=txiptv']):
+            cfg = config_bridge._normalize_scan_config({'search_keywords': list(reversed(rules))})
+            self.assertEqual(config_bridge.DEFAULT_SEARCH_KEYWORDS, cfg['search_keywords'])
+            query = config_bridge.build_search_queries(cfg)['hunter']
+            self.assertIn('web.body="/tsfile/live/"', query)
+            self.assertNotIn('key=txiptv', query)
+            self.assertIn('web.title="Tvheadend"', query)
+            self.assertIn('web.body="/api/live/channels"', query)
+        for rules in (legacy[:2], [*legacy, 'title:自定义直播']):
+            cfg = config_bridge._normalize_scan_config({'search_keywords': rules})
+            self.assertEqual(rules, cfg['search_keywords'])
+
+    def test_channel_list_profile_is_added_to_old_defaults_only(self):
+        cfg = config_bridge._normalize_scan_config({
+            'quality_query_profiles': ['txiptv_live', 'live_interface', 'zhgx', 'tvheadend'],
+        })
+        self.assertIn('channel_list', cfg['quality_query_profiles'])
+        cfg = config_bridge._normalize_scan_config({'quality_query_profiles': ['zhgx']})
+        self.assertEqual(['zhgx'], cfg['quality_query_profiles'])
+
     def test_platform_queries_use_platform_specific_fields(self):
         queries = config_bridge.build_search_queries({
             'search_keywords': ['title:IPTV', '/iptv/live/ && key=txiptv'],

@@ -76,6 +76,29 @@ class HunterContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SavedConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recommended_channel_lists_and_tvheadend_are_actually_extracted(self):
+        from scanner_integration.platforms import ip_extract
+        paths = [*config.CHANNEL_LIST_SEARCH_KEYWORDS, '/playlist?profile=pass']
+        for path in paths:
+            with self.subTest(path=path):
+                session = Session()
+                def get(url, **kwargs):
+                    session.calls.append((url, kwargs))
+                    response = Response({}, 200 if url.endswith(path) else 404)
+                    response.url = url
+                    return response
+                session.get = get
+                raw = (b'#EXTM3U\n#EXTINF:-1,CCTV1\n/stream/channel/1\n'
+                       if path.startswith('/playlist') else
+                       b'{"channels":[{"name":"CCTV1","url":"/tsfile/live/1.m3u8"}]}')
+                with patch.object(ip_extract, '_get_extract_cache', return_value=None), \
+                     patch.object(ip_extract, '_set_extract_cache'), \
+                     patch.object(ip_extract, 'read_response_limited', new_callable=AsyncMock, return_value=raw):
+                    entries = await ip_extract.extract_channels_from_ip('8.8.8.8', 8080, session)
+                self.assertEqual(1, len(entries))
+                self.assertTrue(entries[0]['url'].startswith('http://8.8.8.8:8080/'))
+                self.assertTrue(session.calls[-1][0].endswith(path))
+
     async def test_save_reload_and_task_snapshot_propagate_to_deep_check(self):
         store = {'raw': '{}'}
         def write(key, raw):
@@ -132,6 +155,7 @@ class SavedConfigurationTests(unittest.IsolatedAsyncioTestCase):
             calls = quake.call_args_list
             self.assertEqual([23] * 4, [c.args[2] for c in calls[:4]])
             self.assertEqual(10, sum(c.args[2] for c in calls[4:]))
+            self.assertTrue(any('/channel_list.json' in c.args[1] for c in calls[4:]))
             self.assertIn('AND province_cn:"浙江"', calls[0].args[1])
             self.assertIn('AND isp:"电信"', calls[0].args[1])
             hunter_scan.assert_not_called()

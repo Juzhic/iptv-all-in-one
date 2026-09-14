@@ -9,6 +9,8 @@ import aiohttp
 
 from .config_bridge import build_search_queries
 from .network import get_session
+from .fofa_api import FOFA_POINTS_HINT, fofa_error_code, fofa_points_insufficient
+from engine.utils import safe_number
 
 
 def _redact(value, key):
@@ -52,12 +54,16 @@ async def _step(session, platform, kind, method, endpoint, key, **kwargs):
                 result.update(state='unknown', message='响应格式异常，无法判断 Key 是否有效')
                 return result
             result['code'] = _redact(data.get('code', data.get('error')), key)
+            if platform == 'fofa' and fofa_error_code(data):
+                result['code'] = _redact(fofa_error_code(data), key)
             message = _redact(data.get('message') or data.get('errmsg') or data.get('msg'), key)
             success = (data.get('error') is False if platform == 'fofa' else
                        str(data.get('code')) in ({'0'} if platform == 'quake' else {'0', '200', '2000'}))
             if response.status != 200 or not success:
                 result.update(state=_failure_state(response.status, message),
                               message=message or f'HTTP {response.status}，平台未确认成功')
+                if platform == 'fofa' and fofa_points_insufficient(data):
+                    result.update(state='quota_exhausted', message=f'{message}；{FOFA_POINTS_HINT}')
                 return result
             if kind == 'search':
                 inner = data.get('data')
@@ -72,6 +78,14 @@ async def _step(session, platform, kind, method, endpoint, key, **kwargs):
                 result.update(state='unknown', message='账号响应结构异常，无法确认认证结果')
             else:
                 result.update(state='passed', message='账号接口认证成功；搜索权限见下一项')
+                if platform == 'fofa':
+                    labels = {'fofa_point': 'F 点', 'remain_free_point': '免费 F 点',
+                              'remain_api_query': '月度 API 剩余次数', 'remain_api_data': '月度 API 剩余条数'}
+                    balances = {name: safe_number(data.get(name)) for name in labels}
+                    result['balances'] = balances
+                    display = '，'.join(f'{label}：{balances[name] if balances[name] is not None else "未知"}'
+                                        for name, label in labels.items())
+                    result['message'] += f'；{display}'
     except asyncio.TimeoutError:
         result.update(state='unknown', message='请求超时，无法判断 Key 是否失效')
     except (aiohttp.ClientError, OSError):

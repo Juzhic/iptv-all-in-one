@@ -103,8 +103,8 @@ async def fofa_scan(api_key=None, query=None, target_size=None, session=None, st
         except FofaAPIError as exc:
             logger.warning(f"[Fofa] 第{page}页失败: {exc}")
             _stats_set(stats, 'skipped_reason', str(exc))
-            if exc.depleted:
-                error = KeyDepletedError(str(exc))
+            if exc.rotate_key:
+                error = KeyDepletedError(str(exc), mark_depleted=exc.depleted)
                 error.partial_entries = collected_entries
                 raise error from None
             break
