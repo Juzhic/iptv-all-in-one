@@ -588,6 +588,8 @@
       </div>
     </t-card>
 
+    <MulticastConfig :config="scanCfg" :catalog="multicastCatalog" :province-options="provinceOptions" />
+
     <t-dialog
       v-model:visible="keyModalVisible"
       :header="keyModalTitle"
@@ -639,6 +641,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import MulticastConfig from './MulticastConfig.vue'
 import { MessagePlugin } from 'tdesign-vue-next/es/message/index.mjs'
 import { DialogPlugin } from 'tdesign-vue-next/es/dialog/index.mjs'
 import RefreshIcon from 'tdesign-icons-vue-next/esm/components/refresh.js'
@@ -722,7 +725,20 @@ const expansionFields = [
   { key: 'detection_expansion_max_channels', label: '新候选深测上限', hint: '每轮最多检测的新频道数；质量不达标不入池，重复 URL 跳过。', max: 200, default: 50 },
 ]
 
+const MULTICAST_DEFAULTS = {
+  multicast_enabled: false,
+  multicast_quake_enabled: true,
+  multicast_use_builtin: true,
+  multicast_search_size: 60,
+  multicast_max_proxies: 20,
+  multicast_max_channels: 500,
+  multicast_proxy_urls: '',
+  multicast_templates: [],
+}
+const multicastCatalog = ref([])
+
 const scanCfg = reactive({
+  ...structuredClone(MULTICAST_DEFAULTS),
   detection_expansion_enabled: true,
   ...Object.fromEntries(expansionFields.map(field => [field.key, field.default])),
   enabled_platforms: [],
@@ -1075,6 +1091,11 @@ async function loadConfig() {
     scanCfg.hot_segment_min_channels = typeof cfg.hot_segment_min_channels === 'number' ? cfg.hot_segment_min_channels : 3
     scanCfg.hot_segment_scan_limit = typeof cfg.hot_segment_scan_limit === 'number' ? cfg.hot_segment_scan_limit : 200
     scanCfg.community_sources_enabled = !!cfg.community_sources_enabled
+    const multicastDefaults = structuredClone(MULTICAST_DEFAULTS)
+    for (const key of Object.keys(multicastDefaults)) {
+      scanCfg[key] = cfg[key] ?? multicastDefaults[key]
+    }
+    multicastCatalog.value = cfg.multicast_builtin_catalog || []
     scanCfg.community_source_urls = Array.isArray(cfg.community_source_urls) ? cfg.community_source_urls.join('\n') : (cfg.community_source_urls || '')
     scanCfg.github_proxy = cfg.github_proxy || ''
     scanCfg.fofa_api_key = cfg.fofa_api_key || ''
@@ -1091,6 +1112,21 @@ async function loadConfig() {
 
 function validateScanConfig() {
   const errors = []
+  for (const [key, max] of [['multicast_search_size', 300], ['multicast_max_proxies', 50], ['multicast_max_channels', 2000]]) {
+    if (!Number.isInteger(scanCfg[key]) || scanCfg[key] < 1 || scanCfg[key] > max) {
+      errors.push(`组播预算需要是 1 到 ${max} 之间的整数`)
+    }
+  }
+  const multicastGroups = new Set()
+  for (const template of scanCfg.multicast_templates) {
+    const group = `${template.province}-${template.operator}`
+    if (!template.province || !template.operator || !template.content?.trim()) {
+      errors.push('请填写组播模板的省份、运营商和频道表，或删除空白模板')
+    } else if (multicastGroups.has(group)) {
+      errors.push('同一省份和运营商只能保存一组自定义组播模板')
+    }
+    multicastGroups.add(group)
+  }
   if (scanCfg.fofa_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(scanCfg.fofa_email)) {
     errors.push('Fofa 邮箱格式不正确')
   }
@@ -1245,8 +1281,8 @@ async function saveScanConfig() {
     savedSnapshot.value = JSON.stringify(scanCfg)
     updateCountdown()
     return true
-  } catch (_) {
-    MessagePlugin.error('保存失败')
+  } catch (error) {
+    MessagePlugin.error(error.message || '保存失败')
     return false
   } finally {
     saving.value = false

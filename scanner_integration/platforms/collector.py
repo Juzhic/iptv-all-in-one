@@ -28,6 +28,7 @@ from .jsmpeg import jsmpeg_streamer_scan
 from .ddgs import ddgs_scan
 from .tvheadend import tvheadend_scan
 from .iptv_interactive import iptv_interactive_scan
+from .udpxy import collect_multicast
 
 
 async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwargs):
@@ -182,7 +183,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         _log(f"[采集] 省积分模式：未手动选择平台，本轮仅使用 {enabled_platforms or '无可用平台'}")
     _log(f"[采集] 启用平台: {enabled_platforms}，省份数: {len(selected_provs)}")
 
-    if not enabled_platforms and not ddgs_enabled and not km.get_all_keys('hunter'):
+    if (not enabled_platforms and not ddgs_enabled and not km.get_all_keys('hunter')
+            and not scan_cfg.get('multicast_enabled')):
         _log("[采集] 未启用任何平台且无 Hunter Key，请检查配置")
         return [], [], []
 
@@ -190,6 +192,14 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     all_raw = []
     yield_stats = []
     async with get_session(limit=30, force_close=True) as scan_session:
+        if scan_cfg.get('multicast_enabled') and not _is_stop_requested():
+            try:
+                multicast_channels, multicast_stats = await collect_multicast(
+                    scan_cfg, enabled_platforms, selected_provs, session=scan_session, log_fn=_log)
+                all_raw.extend(multicast_channels)
+                yield_stats.extend(multicast_stats)
+            except Exception as error:
+                _log(f'[组播] 采集异常（{type(error).__name__}），继续其他采集来源')
         for prov_idx, prov in enumerate(selected_provs, 1):
             if len(selected_provs) > 1:
                 _log(f"[采集] === 省份 ({prov_idx}/{len(selected_provs)}): {prov or '全国'} ===")
@@ -437,6 +447,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     actual_platforms = []
     if ddgs_enabled:
         actual_platforms.append('ddgs')
+    if scan_cfg.get('multicast_enabled'):
+        actual_platforms.append('udpxy')
     if enabled_platforms:
         actual_platforms.extend(enabled_platforms)
 

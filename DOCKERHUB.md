@@ -2,7 +2,7 @@
 
 镜像：`juzhic/iptv-all-in-one`
 
-- `3.1.0`：固定的 PostgreSQL 18 版本
+- `3.5.0`：固定的 PostgreSQL 18 版本
 - `latest`：当前稳定版
 - 平台：`linux/amd64`、`linux/arm64`
 

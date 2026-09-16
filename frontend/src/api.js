@@ -227,6 +227,9 @@ export function apiDownloadUrl(fmt) {
 export function apiPreviewResult(fmt, opts = {}) {
   return fetchText(`/api/download/${encodeURIComponent(fmt)}`, opts)
 }
+export function apiCreatePlaybackSession(url, type, opts = {}) {
+  return postJSON('/api/player/session', { url, type }, opts)
+}
 
 // ─── 扫描 ───
 export function apiScanTrigger(provinces, opts = {}) {

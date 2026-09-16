@@ -239,6 +239,14 @@ DEFAULT_SCAN_CONFIG = {
     "hot_segment_scan_limit": 200,
     "community_sources_enabled": False,
     "community_source_urls": [],
+    "multicast_enabled": False,
+    "multicast_quake_enabled": True,
+    "multicast_use_builtin": True,
+    "multicast_search_size": 60,
+    "multicast_max_proxies": 20,
+    "multicast_max_channels": 500,
+    "multicast_proxy_urls": "",
+    "multicast_templates": [],
     "github_proxy": "",
     "scan_ports": [8080, 80, 443, 9981, 8888, 8000, 9090, 3000, 5000, 8443],
     "stability_weights": {
@@ -528,6 +536,9 @@ def _normalize_scan_config(raw_cfg):
     cfg['enabled_platforms'] = _normalize_string_list(cfg.get('enabled_platforms', []), allowed=SUPPORTED_SEARCH_PLATFORMS)
     cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
     cfg['detection_expansion_enabled'] = cfg.get('detection_expansion_enabled') is True
+    cfg['multicast_enabled'] = cfg.get('multicast_enabled') is True
+    cfg['multicast_quake_enabled'] = cfg.get('multicast_quake_enabled') is True
+    cfg['multicast_use_builtin'] = cfg.get('multicast_use_builtin') is True
     cfg['quality_discovery_platforms'] = _normalize_string_list(
         cfg.get('quality_discovery_platforms', []),
         allowed=SUPPORTED_SEARCH_PLATFORMS,
@@ -549,6 +560,9 @@ def _normalize_scan_config(raw_cfg):
 
     # 数值范围验证
     int_ranges = {
+        'multicast_search_size': (1, 300),
+        'multicast_max_proxies': (1, 50),
+        'multicast_max_channels': (1, 2000),
         'deep_concurrent': (1, 200),
         'deep_batch_size': (1, 500),
         'deep_check_duration': (1, 120),
@@ -701,7 +715,10 @@ def save_scan_config(cfg):
     current = deepcopy(_read_scan_config())
     merged = dict(current)
     if isinstance(cfg, dict):
+        from .multicast_templates import validate_config
+        validate_config(cfg)
         merged.update(cfg)
+    merged.pop('multicast_builtin_catalog', None)
     if isinstance(cfg, dict) and 'search_keywords' in cfg:
         rules = cfg['search_keywords']
         if isinstance(rules, str):

@@ -29,16 +29,18 @@
           @playing="onPlaying" @waiting="onWaiting" @pause="onPause" @ended="onEnded" @error="onVideoError" />
         <template v-if="selected">
           <div class="now-playing"><strong>{{ selected.name }}</strong><span>{{ selected.group }}</span></div>
+          <p class="playback-mode">{{ usingProxy ? '代理播放 · 使用服务器 / FRP 带宽' : '直连试看 · 视频不经过服务器转发' }}</p>
           <div class="playback-controls">
             <t-select :value="routeIndex" aria-label="播放线路" :options="routeOptions" @change="changeRoute" />
             <t-select :value="mode" aria-label="播放格式" :options="formatOptions" @change="changeMode" />
             <t-button variant="outline" size="small" @click="startPlayback">重新播放</t-button>
             <t-button variant="outline" size="small" @click="copyRoute">复制线路地址</t-button>
+            <t-button v-if="usingProxy" variant="outline" size="small" @click="stopProxy">停止代理，改为直连</t-button>
           </div>
         </template>
         <p v-if="playError" role="alert" class="player-error">{{ playError }}</p>
         <p v-else role="status">{{ status }}</p>
-        <p class="player-hint">支持 HLS、HTTP-TS、FLV 及浏览器原生视频。无后缀地址识别不正确时，可手动选择格式。源站需允许跨域访问；H.265、音频编码和 HTTP 线路是否可播取决于浏览器。</p>
+        <p class="player-hint">默认直连试看，失败后自动尝试代理播放（使用服务器 / FRP 带宽）。切换频道、线路或格式后重新优先直连。支持 HLS、HTTP-TS、FLV 及原生视频，H.265 和音频编码支持取决于浏览器。</p>
       </div>
     </div>
   </section>
@@ -46,7 +48,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
-import { fetchText } from '../api.js'
+import { fetchText, apiCreatePlaybackSession } from '../api.js'
 import { useClipboard } from '../composables/useClipboard.js'
 import { parseSubscription, playbackSource } from '../utils/playlist.js'
 
@@ -62,13 +64,21 @@ const mode = ref('auto')
 const video = ref(null)
 const status = ref('请选择频道开始播放')
 const playError = ref('')
+const usingProxy = ref(false)
+const proxyAvailable = ref(false)
 const { copyText } = useClipboard()
 let requestController = null
+let playbackController = null
 let engine = null
 let generation = 0
 let startupTimer = null
 let mediaActive = false
-const failureHint = '播放失败，请切换线路或格式。请检查源站跨域许可、网络连接及浏览器编码支持，也可复制地址到外部播放器。'
+let autoProxyAllowed = true
+function failureHint() {
+  return usingProxy.value
+    ? '代理播放失败，请检查服务器到源站的连接，或切换线路、格式。代理无法解决浏览器编码不兼容的问题。'
+    : '直连播放失败，可能是源站跨域限制、网络连接或编码不兼容。请切换线路或格式。'
+}
 const formatOptions = [
   { label: '自动识别格式', value: 'auto' }, { label: 'HLS / M3U8', value: 'hls' },
   { label: 'HTTP-TS', value: 'mpegts' }, { label: 'FLV', value: 'flv' }, { label: '原生视频', value: 'native' },
@@ -80,6 +90,8 @@ const routeOptions = computed(() => (selected.value?.urls || []).map((_, value) 
 
 function stopPlayback() {
   generation += 1
+  playbackController?.abort()
+  playbackController = null
   mediaActive = false
   clearTimeout(startupTimer)
   if (engine) { engine.destroy(); engine = null }
@@ -90,8 +102,13 @@ function stopPlayback() {
   }
 }
 
-function failPlayback(message = failureHint) {
+function failPlayback(message = failureHint()) {
   stopPlayback()
+  if (!usingProxy.value && proxyAvailable.value && autoProxyAllowed) {
+    usingProxy.value = true
+    startPlayback()
+    return
+  }
   playError.value = message
   status.value = ''
 }
@@ -104,6 +121,8 @@ async function loadPlaylist() {
   loadError.value = ''
   stopPlayback()
   selected.value = null
+  usingProxy.value = false
+  proxyAvailable.value = false
   channels.value = []
   playError.value = ''
   status.value = '请选择频道开始播放'
@@ -124,23 +143,43 @@ function selectChannel(channel) {
   selected.value = channel
   routeIndex.value = 0
   mode.value = 'auto'
+  startDirect()
+}
+function changeRoute(value) { routeIndex.value = value; startDirect() }
+function changeMode(value) { mode.value = value; startDirect() }
+function startDirect() { autoProxyAllowed = true; usingProxy.value = false; startPlayback() }
+function stopProxy() {
+  // An explicit stop must not immediately reopen the proxy on another error.
+  autoProxyAllowed = false
+  usingProxy.value = false
   startPlayback()
 }
-function changeRoute(value) { routeIndex.value = value; startPlayback() }
-function changeMode(value) { mode.value = value; startPlayback() }
 async function copyRoute() { await copyText(selected.value.urls[routeIndex.value]) }
 
 async function startPlayback() {
   stopPlayback()
   const current = generation
   playError.value = ''
+  proxyAvailable.value = false
   if (!selected.value || !video.value) return
-  status.value = '正在连接频道…'
+  status.value = usingProxy.value ? '正在通过代理连接频道…' : '正在直连频道…'
   try {
     const source = playbackSource(selected.value.urls[routeIndex.value], mode.value)
+    proxyAvailable.value = true
+    if (usingProxy.value) {
+      playbackController = new AbortController()
+      const session = await apiCreatePlaybackSession(selected.value.urls[routeIndex.value], source.type, { signal: playbackController.signal })
+      if (current !== generation) return
+      // Blob workers need an absolute URL even for same-origin requests.
+      source.url = new URL(session.url, window.location.origin).href
+    } else if (window.location.protocol === 'https:' && new URL(source.url).protocol === 'http:') {
+      throw new Error('当前页面为 HTTPS，浏览器会拦截 HTTP 线路直连。')
+    }
     mediaActive = true
     startupTimer = setTimeout(() => {
-      if (current === generation) failPlayback('连接超时，请切换线路，或检查源站跨域许可和网络连接。')
+      if (current === generation) failPlayback(usingProxy.value
+        ? '代理连接超时，请切换线路，或检查服务器到源站的网络连接。'
+        : '直连连接超时，请切换线路。')
     }, 20000)
     const play = async () => {
       if (current !== generation) return
@@ -175,7 +214,7 @@ async function startPlayback() {
       await play()
     }
   } catch (error) {
-    if (current === generation) failPlayback(error.message || failureHint)
+    if (current === generation) failPlayback(error.message || failureHint())
   }
 }
 
@@ -192,6 +231,7 @@ function cleanup() {
   requestController?.abort()
   loading.value = false
   stopPlayback()
+  usingProxy.value = false
   status.value = selected.value ? '播放已停止，点击重新播放继续。' : '请选择频道开始播放'
 }
 onMounted(loadPlaylist)
@@ -218,6 +258,7 @@ video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #080b12; 
 .now-playing { margin: 12px 0; }
 .playback-controls :deep(.t-select__wrap) { width: 150px; }
 .player-error { color: var(--td-error-color); }
+.playback-mode { color: var(--td-text-color-secondary); }
 @media (max-width: 768px) {
   .player-layout { grid-template-columns: minmax(0, 1fr); }
   .video-panel { grid-row: 1; }

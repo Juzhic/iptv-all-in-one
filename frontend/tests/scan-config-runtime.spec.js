@@ -35,6 +35,50 @@ afterEach(() => {
 })
 
 describe('scan configuration page', () => {
+  it('edits multicast templates, preserves saved controls, and keeps catalog out of updates', async () => {
+    const template = { province: '广东', operator: '电信', content: 'CCTV1,rtp://239.1.1.1:1234' }
+    apiMocks.apiScanConfig.mockResolvedValueOnce({
+      multicast_enabled: true, multicast_quake_enabled: false,
+      multicast_proxy_urls: '广东,电信,http://8.8.8.8:4022', multicast_templates: [template],
+      multicast_builtin_catalog: [{ province: '广东', operator: '电信', channels: 400 }],
+    })
+    wrapper = mount(ScanConfigTab)
+    await flushPromises()
+    const state = wrapper.vm.$.setupState
+    const card = wrapper.get('[data-testid="multicast-config"]')
+    expect(card.text()).toContain('广东 · 电信 · 400 频道')
+    expect(state.scanCfg.multicast_quake_enabled).toBe(false)
+    const add = card.findAll('button').find(button => button.text() === '添加组播模板')
+    await add.trigger('click')
+    expect(state.scanCfg.multicast_templates).toHaveLength(2)
+    await wrapper.vm.save()
+    expect(apiMocks.apiSaveScanConfig).not.toHaveBeenCalled()
+    await card.get('[aria-label="删除模板 2"]').trigger('click')
+    state.scanCfg.multicast_max_channels = 72
+    apiMocks.apiSaveScanConfig.mockResolvedValueOnce({ multicast_max_channels: 72, multicast_builtin_catalog: [] })
+    await wrapper.vm.save()
+    const payload = apiMocks.apiSaveScanConfig.mock.calls[0][0]
+    expect(payload).toMatchObject({ multicast_enabled: true, multicast_quake_enabled: false,
+      multicast_templates: [template], multicast_max_channels: 72, multicast_max_proxies: 20 })
+    expect(payload).not.toHaveProperty('multicast_builtin_catalog')
+    expect(state.isDirty).toBe(false)
+  })
+
+  it('defaults multicast to off and rejects duplicate templates and excessive budgets', async () => {
+    wrapper = mount(ScanConfigTab)
+    await flushPromises()
+    const state = wrapper.vm.$.setupState
+    expect(state.scanCfg.multicast_enabled).toBe(false)
+    state.scanCfg.multicast_max_proxies = 51
+    await wrapper.vm.save()
+    expect(apiMocks.apiSaveScanConfig).not.toHaveBeenCalled()
+    state.scanCfg.multicast_max_proxies = 20
+    const template = { province: '广东', operator: '电信', content: 'CCTV1,udp://239.1.1.1:1234' }
+    state.scanCfg.multicast_templates = [template, { ...template }]
+    await wrapper.vm.save()
+    expect(apiMocks.apiSaveScanConfig).not.toHaveBeenCalled()
+  })
+
   it('loads and saves daily expansion controls and rejects invalid budgets', async () => {
     apiMocks.apiScanConfig.mockResolvedValueOnce({ detection_expansion_enabled: false, detection_expansion_max_ips: 17 })
     wrapper = mount(ScanConfigTab)
