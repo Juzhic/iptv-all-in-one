@@ -47,7 +47,10 @@ describe('scan configuration page', () => {
     const state = wrapper.vm.$.setupState
     const card = wrapper.get('[data-testid="multicast-config"]')
     expect(card.text()).toContain('广东 · 电信 · 400 频道')
-    expect(state.scanCfg.multicast_quake_enabled).toBe(false)
+    expect(state.scanCfg).not.toHaveProperty('multicast_quake_enabled')
+    expect(wrapper.text()).not.toContain('Quake 自动发现')
+    expect(wrapper.get('[data-testid="udpxy-discovery"]').text()).toContain('UDPXY 组播识别')
+    expect(card.text()).not.toContain('组播搜索预算')
     const add = card.findAll('button').find(button => button.text() === '添加组播模板')
     await add.trigger('click')
     expect(state.scanCfg.multicast_templates).toHaveLength(2)
@@ -58,9 +61,11 @@ describe('scan configuration page', () => {
     apiMocks.apiSaveScanConfig.mockResolvedValueOnce({ multicast_max_channels: 72, multicast_builtin_catalog: [] })
     await wrapper.vm.save()
     const payload = apiMocks.apiSaveScanConfig.mock.calls[0][0]
-    expect(payload).toMatchObject({ multicast_enabled: true, multicast_quake_enabled: false,
+    expect(payload).toMatchObject({ multicast_enabled: true,
       multicast_templates: [template], multicast_max_channels: 72, multicast_max_proxies: 20 })
     expect(payload).not.toHaveProperty('multicast_builtin_catalog')
+    expect(payload).not.toHaveProperty('multicast_quake_enabled')
+    expect(payload).not.toHaveProperty('multicast_search_size')
     expect(state.isDirty).toBe(false)
   })
 

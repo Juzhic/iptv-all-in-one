@@ -183,7 +183,7 @@ def test_docker_assets_enforce_postgresql_production_contract():
     assert 'APP_DB_USER: iptv_app' in compose
     assert 'CREATE EXTENSION' not in compose
     assert 'CREATE EXTENSION' not in ci_workflow
-    assert 'image: juzhic/iptv-all-in-one:3.5.0' in compose
+    assert 'image: juzhic/iptv-all-in-one:3.6.1' in compose
     assert 'DB_HOST: postgres' in compose
     assert 'DB_PORT: "5432"' in compose
     assert 'DB_USER: iptv_app' in compose

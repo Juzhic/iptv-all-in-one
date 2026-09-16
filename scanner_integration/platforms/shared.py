@@ -45,6 +45,7 @@ QUALITY_QUERY_PROFILES = (
     _quality_query_profile(
         'channel_list', '直播频道列表', config_bridge.CHANNEL_LIST_SEARCH_KEYWORDS,
     ),
+    _quality_query_profile('udpxy', 'UDPXY 组播', ['title:udpxy']),
 )
 
 # ==================== KeyDepletedError ====================

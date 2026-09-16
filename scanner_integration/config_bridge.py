@@ -60,6 +60,7 @@ QUALITY_PROFILE_NAMES = [
     'zhgx',
     'tvheadend',
     'channel_list',
+    'udpxy',
 ]
 LEGACY_DEFAULT_QUALITY_PROFILE_NAMES = [
     'live_interface',
@@ -153,7 +154,9 @@ def build_search_queries(scan_config=None):
     """Build a per-platform query snapshot from database-backed scan config."""
     if scan_config is None:
         scan_config = get_scan_config()
-    keywords = scan_config.get('search_keywords', DEFAULT_SEARCH_KEYWORDS)
+    keywords = _normalize_search_keywords(scan_config.get('search_keywords', DEFAULT_SEARCH_KEYWORDS))
+    if scan_config.get('multicast_enabled'):
+        keywords = list(dict.fromkeys([*keywords, 'title:udpxy']))
     return {
         'quake': _join_search_keywords(keywords, title_operator=':', body_operator=':', and_operator='AND', or_operator='OR'),
         'hunter': _join_search_keywords(keywords, body_field='web.body', title_field='web.title'),
@@ -240,9 +243,7 @@ DEFAULT_SCAN_CONFIG = {
     "community_sources_enabled": False,
     "community_source_urls": [],
     "multicast_enabled": False,
-    "multicast_quake_enabled": True,
     "multicast_use_builtin": True,
-    "multicast_search_size": 60,
     "multicast_max_proxies": 20,
     "multicast_max_channels": 500,
     "multicast_proxy_urls": "",
@@ -537,7 +538,9 @@ def _normalize_scan_config(raw_cfg):
     cfg['cost_saver_mode'] = cfg.get('cost_saver_mode') is not False
     cfg['detection_expansion_enabled'] = cfg.get('detection_expansion_enabled') is True
     cfg['multicast_enabled'] = cfg.get('multicast_enabled') is True
-    cfg['multicast_quake_enabled'] = cfg.get('multicast_quake_enabled') is True
+    # Search now follows the selected platforms and their existing budgets.
+    cfg.pop('multicast_quake_enabled', None)
+    cfg.pop('multicast_search_size', None)
     cfg['multicast_use_builtin'] = cfg.get('multicast_use_builtin') is True
     cfg['quality_discovery_platforms'] = _normalize_string_list(
         cfg.get('quality_discovery_platforms', []),
@@ -552,7 +555,8 @@ def _normalize_scan_config(raw_cfg):
         normalized_profiles = list(QUALITY_PROFILE_NAMES)
     normalized_profiles = [name for name in normalized_profiles if name in SUPPORTED_QUALITY_PROFILE_NAMES]
     cfg['quality_query_profiles'] = normalized_profiles or list(QUALITY_PROFILE_NAMES)
-    if set(cfg['quality_query_profiles']) == set(QUALITY_PROFILE_NAMES) - {'channel_list'}:
+    if set(cfg['quality_query_profiles']) in (set(QUALITY_PROFILE_NAMES) - {'channel_list', 'udpxy'},
+                                             set(QUALITY_PROFILE_NAMES) - {'udpxy'}):
         cfg['quality_query_profiles'] = list(QUALITY_PROFILE_NAMES)
     cfg['quality_thresholds'] = _normalize_quality_thresholds(
         cfg.get('quality_thresholds')
@@ -560,7 +564,6 @@ def _normalize_scan_config(raw_cfg):
 
     # 数值范围验证
     int_ranges = {
-        'multicast_search_size': (1, 300),
         'multicast_max_proxies': (1, 50),
         'multicast_max_channels': (1, 2000),
         'deep_concurrent': (1, 200),

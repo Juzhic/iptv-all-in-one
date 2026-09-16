@@ -19,6 +19,31 @@ class _Result:
 
 
 class BackendHardeningTests(unittest.TestCase):
+    def test_deletion_count_survives_cursor_close(self):
+        for affected in (0, 1, 37):
+            with self.subTest(affected=affected):
+                class Cursor:
+                    rowcount = affected
+
+                    def execute(self, query, args):
+                        self.query = query
+                        self.args = args
+
+                    def close(self):
+                        self.rowcount = -1
+
+                cursor = Cursor()
+                connection = db.PostgreSQLConnection.__new__(db.PostgreSQLConnection)
+                connection._conn = SimpleNamespace(closed=False)
+                connection._cursor = cursor
+                connection._in_transaction = False
+                with patch.object(db, '_get_conn', return_value=connection):
+                    self.assertEqual(db.delete_persistent_by_threshold(3), affected)
+                self.assertEqual(cursor.rowcount, -1)
+                self.assertIsNone(connection._cursor)
+                self.assertEqual(cursor.args[1], 3)
+                self.assertIn('deleted_at IS NULL', cursor.query)
+
     def test_channel_source_lookup_uses_digest_index_and_original_url_check(self):
         class Connection:
             def __init__(self):

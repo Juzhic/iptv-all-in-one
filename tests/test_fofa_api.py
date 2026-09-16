@@ -22,7 +22,7 @@ from scanner_integration.platforms.shared import KeyDepletedError
 from scanner_integration.secure_keys import key_id
 
 
-def load_scan_routes():
+def load_scan_routes(module_name='web.routes.scan'):
     """Import the real routes without executing the WSGI startup module."""
     previous = {name: module for name, module in sys.modules.items()
                 if name == 'web' or name.startswith('web.')}
@@ -32,7 +32,7 @@ def load_scan_routes():
     package.__path__ = [str(Path(__file__).resolve().parents[1] / 'web')]
     sys.modules['web'] = package
     try:
-        return importlib.import_module('web.routes.scan')
+        return importlib.import_module(module_name)
     finally:
         for name in list(sys.modules):
             if name == 'web' or name.startswith('web.'):

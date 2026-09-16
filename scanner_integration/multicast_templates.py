@@ -29,6 +29,9 @@ def normalize_province(value):
 
 def normalize_operator(value):
     value = str(value or '').strip()
+    aliases = {'CHINANET': '电信', 'CHINA TELECOM': '电信', 'CHINA UNICOM': '联通',
+               'CHINA MOBILE': '移动', 'CMCC': '移动'}
+    value = aliases.get(value.upper(), value)
     return next((operator for operator in OPERATORS
                  if value in (operator, '中国' + operator)), '')
 
@@ -171,10 +174,10 @@ def parse_manual_proxies(value):
 
 def validate_config(cfg):
     """Validate before persistence so malformed edits are never silently discarded."""
-    for key in ('multicast_enabled', 'multicast_quake_enabled', 'multicast_use_builtin'):
+    for key in ('multicast_enabled', 'multicast_use_builtin'):
         if key in cfg and not isinstance(cfg[key], bool):
             raise ValueError('组播开关必须为布尔值')
-    for key, maximum in (('multicast_search_size', 300), ('multicast_max_proxies', 50),
+    for key, maximum in (('multicast_max_proxies', 50),
                          ('multicast_max_channels', 2000)):
         if key in cfg and (type(cfg[key]) is not int or not 1 <= cfg[key] <= maximum):
             raise ValueError(f'组播预算必须为 1 到 {maximum} 之间的整数')

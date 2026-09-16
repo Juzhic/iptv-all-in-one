@@ -49,6 +49,13 @@
         <t-checkbox-group v-model="scanTypes" :options="scanTypeOptions" />
       </div>
 
+      <div v-if="scanTypes.includes('MULTICAST') || scanTypes.includes('ALL')" class="config-row udpxy-scope">
+        <label class="config-label">UDPXY 模板范围：</label>
+        <t-select v-model="multicastProvince" :options="multicastProvinceOptions" clearable placeholder="省份（留空沿用采集配置）" aria-label="UDPXY 省份" />
+        <t-select v-model="multicastOperator" :options="multicastOperatorOptions" clearable placeholder="运营商（留空沿用采集配置）" aria-label="UDPXY 运营商" />
+        <span class="config-hint">使用配置中心的频道模板；公网 IP 无需 Key。全部探测遵循组播识别开关，单选 UDPXY 可直接探测，结果为待测速候选。</span>
+      </div>
+
       <!-- 扫描参数 -->
       <div class="params-grid">
         <div class="param-item">
@@ -263,6 +270,10 @@ const targets = ref('')
 const portsInput = ref('4022,7088,5140,8888,2380')
 const portPreset = ref('常用IPTV')
 const scanTypes = ref(['ALL'])
+const multicastProvince = ref('')
+const multicastOperator = ref('')
+const multicastProvinceOptions = '北京 天津 上海 重庆 河北 山西 辽宁 吉林 黑龙江 江苏 浙江 安徽 福建 江西 山东 河南 湖北 湖南 广东 海南 四川 贵州 云南 陕西 甘肃 青海 台湾 内蒙古 广西 西藏 宁夏 新疆 香港 澳门'.split(' ').map(value => ({ label: value, value }))
+const multicastOperatorOptions = ['电信', '联通', '移动'].map(value => ({ label: value, value }))
 
 // 扫描参数
 const workers = ref(16)
@@ -317,7 +328,7 @@ const scanTypeOptions = [
   { label: 'ALL（全部）', value: 'ALL' },
   { label: '2380', value: '2380' },
   { label: 'HOTEL（酒店）', value: 'HOTEL' },
-  { label: 'MULTICAST（组播）', value: 'MULTICAST' },
+  { label: 'UDPXY（组播）', value: 'MULTICAST' },
   { label: 'MIGU（咪咕）', value: 'MIGU' },
   { label: 'ICNTV', value: 'ICNTV' },
   { label: 'SOCKS5', value: 'SOCKS5' },
@@ -524,6 +535,8 @@ async function startScan() {
     const result = await apiIpScanTrigger({
       targets: targets.value,
       scan_types: scanTypes.value,
+      multicast_province: multicastProvince.value || '',
+      multicast_operator: multicastOperator.value || '',
       ports: parsedPorts.value,
       workers: workers.value,
       rate_limit: rateLimit.value,
@@ -823,6 +836,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.udpxy-scope { flex-wrap: wrap; }
+.udpxy-scope :deep(.t-select__wrap) { flex: 1; min-width: 180px; }
 .ip-scan-tab {
   display: flex;
   flex-direction: column;

@@ -40,6 +40,10 @@
             {{ detRunStatus(row).label }}
           </t-tag>
         </template>
+        <template #deleted_count="{ row }">
+          <span v-if="row.deleted_count == null || row.deleted_count < 0" title="该轮删除数量未正确记录，无法还原">未知</span>
+          <span v-else>{{ row.deleted_count }}</span>
+        </template>
         <template #duration_seconds="{ row }">
           {{ row.duration_seconds != null ? row.duration_seconds.toFixed(1) + 's' : '-' }}
         </template>
