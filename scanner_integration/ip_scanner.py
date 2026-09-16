@@ -92,8 +92,38 @@ class IPScanner:
         if log_fn:
             log_fn(f"[IP扫描] 端口展开后 {len(expanded)} 个目标")
         
+        from . import config_bridge
+        from .platforms.udpxy import MulticastDiscovery
+        from .network import get_session
+
+        cfg = dict(self.config.get('scan_config') or config_bridge.get_scan_config())
+        if 'MULTICAST' in scan_types:
+            cfg['multicast_enabled'] = True
+        elif 'ALL' not in scan_types:
+            cfg['multicast_enabled'] = False
+        province = self.config.get('multicast_province', '')
+        if self.config.get('multicast_operator'):
+            cfg['operator'] = self.config['multicast_operator']
+        provinces = [province] if province else cfg.get('selected_provinces') or [cfg.get('province', '')]
+        self._multicast = MulticastDiscovery(cfg, provinces, log_fn, lambda: self._stop_requested)
+        if self._multicast.enabled and log_fn:
+            log_fn('[IP扫描] UDPXY 使用本轮省份/运营商及配置中心模板；未知地区请指定省份，结果为待测速候选')
+
         # 3. 并发扫描
         results = await self._concurrent_scan(expanded, scan_types, log_fn, progress_fn)
+
+        async with get_session(limit=5) as session:
+            channels = await self._multicast.finish(session)
+        by_target = {result['target']: result for result in results}
+        for channel in channels:
+            result = by_target.get(channel.pop('yield_stat_key', ''))
+            if result is None:
+                continue
+            existing = json.loads(result['channels_json'])
+            if channel['url'] not in {item['url'] for item in existing}:
+                existing.append(channel)
+            result.update(alive=True, scan_type_matched='MULTICAST', channel_count=len(existing),
+                          channels_json=json.dumps(existing, ensure_ascii=False), error='')
         
         # 4. 汇总结果
         alive_count = sum(1 for r in results if r['alive'])
@@ -370,6 +400,13 @@ class IPScanner:
         }
         
         try:
+            discovery = getattr(self, '_multicast', None)
+            if discovery and discovery.enabled:
+                await discovery.offer(self._build_url(host, port, ''),
+                                      direct='MULTICAST' in scan_types,
+                                      source={'platform': 'IP 探测', 'stat_key': result['target']})
+                if scan_types == ['MULTICAST']:
+                    return result
             # HTTP存活检测
             url = self._build_url(host, port, '/')
             response = await safe_fetch(

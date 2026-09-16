@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from . import config_bridge
 from .network import get_session
 from .platforms.ip_extract import _pick_c_segment_ips, extract_channels_from_ip
+from .platforms.udpxy import channel_proxy, seed_template, probe_neighbor
 from .video_check import deep_filter_batch, filter_hd, quality_gate_failure
 
 COOLDOWN_KEY = 'detection_expansion_cooldowns'
@@ -34,6 +35,8 @@ def plan_expansion(seeds, cfg, cooldowns, now):
     for seed in sorted(seeds, key=lambda s: -(s.get('stability') or 0)):
         endpoint = public_http_endpoint(seed.get('url', ''))
         if not endpoint or quality_gate_failure(seed, thresholds):
+            continue
+        if channel_proxy(seed.get('url', '')) and not cfg.get('multicast_enabled'):
             continue
         ip, port = endpoint
         segment = str(ipaddress.ip_network(f'{ip}/24', strict=False))
@@ -85,12 +88,21 @@ async def expand_after_detection(seeds, cfg, log_fn):
         known = {row['url'] for row in db.get_all_persistent_for_check()}
         thresholds = config_bridge.get_quality_thresholds(cfg)
         remaining = cfg['detection_expansion_max_channels']
+        multicast_proxies_left = cfg.get('multicast_max_proxies', 20)
+        multicast_channels_left = cfg.get('multicast_max_channels', 500)
         log_fn('INFO', f'[复检拓展] 开始：{len(plans)} 个网段/端口，最多 {cfg["detection_expansion_max_ips"]} 个 IP，最多检测 {remaining} 条新频道')
         try:
             async with asyncio.timeout(120), get_session(limit=5, timeout=5, force_close=True) as session:
                 for key, seed, endpoints in plans:
                     if remaining <= 0:
                         break
+                    multicast = seed_template(seed, cfg) if cfg.get('multicast_enabled') else None
+                    if multicast:
+                        if multicast_proxies_left <= 0 or multicast_channels_left <= 0:
+                            continue
+                        endpoints = endpoints[:multicast_proxies_left]
+                        log_fn('INFO', f'[复检拓展] UDPXY：沿用原端口与代理前缀，'
+                               f'使用{"匹配模板" if multicast[1].get("source") != "verified" else "已验证频道地址"}')
                     # Persist before probing so failed/cancelled runs also cool down.
                     cooldowns[key] = time.time()
                     cooldowns = dict(sorted(cooldowns.items(), key=lambda item: item[1])[-2048:])
@@ -99,13 +111,25 @@ async def expand_after_detection(seeds, cfg, log_fn):
                     for start in range(0, len(endpoints), 5):
                         if remaining <= 0:
                             break
+                        if multicast and (multicast_proxies_left <= 0 or multicast_channels_left <= 0):
+                            break
                         batch = endpoints[start:start + 5]
                         result['probed_ips'] += len(batch)
-                        responses = await asyncio.gather(*[
-                            extract_channels_from_ip(ip, port, session, seed.get('province', ''),
-                                                     seed.get('city', ''), timeout=2, include_fallback_ports=False)
-                            for ip, port in batch
-                        ], return_exceptions=True)
+                        if multicast:
+                            multicast_proxies_left -= len(batch)
+                            proxy, template = multicast
+                            semaphore = asyncio.Semaphore(5)
+                            responses = await asyncio.gather(*[
+                                probe_neighbor(proxy, template, ip, port, session, semaphore,
+                                               min(remaining, multicast_channels_left))
+                                for ip, port in batch
+                            ], return_exceptions=True)
+                        else:
+                            responses = await asyncio.gather(*[
+                                extract_channels_from_ip(ip, port, session, seed.get('province', ''),
+                                                         seed.get('city', ''), timeout=2, include_fallback_ports=False)
+                                for ip, port in batch
+                            ], return_exceptions=True)
                         candidates = []
                         for endpoint, channels in zip(batch, responses):
                             if not isinstance(channels, list):
@@ -113,10 +137,13 @@ async def expand_after_detection(seeds, cfg, log_fn):
                             for channel in channels:
                                 url = channel.get('url', '')
                                 if (remaining <= 0 or url in known
+                                        or (multicast and multicast_channels_left <= 0)
                                         or public_http_endpoint(url) != endpoint):
                                     continue
                                 known.add(url)
                                 remaining -= 1
+                                if multicast:
+                                    multicast_channels_left -= 1
                                 candidates.append({**channel, 'platform': seed.get('platform') or '复检C段拓展'})
                         result['discovered'] += len(candidates)
                         checked = await deep_filter_batch(candidates, asyncio.Semaphore(5), session)

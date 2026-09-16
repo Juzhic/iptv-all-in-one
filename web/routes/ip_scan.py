@@ -102,6 +102,13 @@ def api_ip_scan_trigger():
     rate_limit = bounded_int(data.get('rate_limit', 5000), 5000, 100, 50000)
     http_concurrent = bounded_int(data.get('http_concurrent', 50), 50, 1, 500)
     timeout = bounded_int(data.get('timeout', 3600), 3600, 60, 86400)
+
+    from scanner_integration.multicast_templates import normalize_province, normalize_operator
+    province = normalize_province(data.get('multicast_province'))
+    operator = normalize_operator(data.get('multicast_operator'))
+    if ((data.get('multicast_province') and not province)
+            or (data.get('multicast_operator') and not operator)):
+        return jsonify({'ok': False, 'error': 'UDPXY 省份或运营商无效'}), 400
     
     # 调用扫描模块
     result = scanner.trigger_ip_scan(
@@ -111,7 +118,9 @@ def api_ip_scan_trigger():
         workers=workers,
         rate_limit=rate_limit,
         http_concurrent=http_concurrent,
-        timeout=timeout
+        timeout=timeout,
+        multicast_province=province,
+        multicast_operator=operator,
     )
     
     if 'error' in result:

@@ -398,7 +398,7 @@
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
                 <label>质量优先查询</label>
-                <span>额外执行 TXIPTV、直播接口、ZHGXTV、Tvheadend 等高价值画像查询。</span>
+                <span>额外执行 TXIPTV、直播接口、ZHGXTV、Tvheadend 等画像查询；开启组播识别时包含 UDPXY。</span>
               </div>
 
               <div class="field-stack field-stack--switch">
@@ -418,6 +418,27 @@
               </div>
               <t-input-number v-model="scanCfg.quality_query_profile_size" :min="10" :max="2000" :step="10" class="field-control" />
             </div>
+
+            <div class="config-field config-field--stack" data-testid="udpxy-discovery">
+              <div class="config-field-meta">
+                <label>UDPXY 组播识别</label>
+                <span>为主查询增加 UDPXY 规则，质量优先查询按原有画像预算分配；使用已选平台、省份和运营商，发现代理后匹配下方模板并逐条检测。</span>
+              </div>
+              <t-switch v-model="scanCfg.multicast_enabled" :label="['开启', '关闭']" aria-label="UDPXY 组播识别" />
+            </div>
+            <details class="udpxy-limits">
+              <summary>UDPXY 展开限制</summary>
+              <div class="config-field">
+                <div class="config-field-meta"><label>代理探测上限</label><span>每轮所有平台共用的代理与模板组合上限。</span></div>
+                <t-input-number v-model="scanCfg.multicast_max_proxies" :min="1" :max="50" class="field-control" />
+              </div>
+              <div class="config-field">
+                <div class="config-field-meta"><label>组播候选上限</label><span>各可用代理轮流分配，生成后仍需逐条测速。</span></div>
+                <t-input-number v-model="scanCfg.multicast_max_channels" :min="1" :max="2000" class="field-control" />
+              </div>
+              <p class="field-inline-hint">代理验证最多 120 秒、5 个并发；不另设搜索预算。旧版保存的手动代理继续有效，可在此清空后改用 IP 探测。</p>
+              <t-textarea v-if="scanCfg.multicast_proxy_urls" v-model="scanCfg.multicast_proxy_urls" aria-label="旧版已保存代理" :autosize="{ minRows: 2, maxRows: 5 }" />
+            </details>
 
             <div class="config-field config-field--stack">
               <div class="config-field-meta">
@@ -727,9 +748,7 @@ const expansionFields = [
 
 const MULTICAST_DEFAULTS = {
   multicast_enabled: false,
-  multicast_quake_enabled: true,
   multicast_use_builtin: true,
-  multicast_search_size: 60,
   multicast_max_proxies: 20,
   multicast_max_channels: 500,
   multicast_proxy_urls: '',
@@ -1112,7 +1131,7 @@ async function loadConfig() {
 
 function validateScanConfig() {
   const errors = []
-  for (const [key, max] of [['multicast_search_size', 300], ['multicast_max_proxies', 50], ['multicast_max_channels', 2000]]) {
+  for (const [key, max] of [['multicast_max_proxies', 50], ['multicast_max_channels', 2000]]) {
     if (!Number.isInteger(scanCfg[key]) || scanCfg[key] < 1 || scanCfg[key] > max) {
       errors.push(`组播预算需要是 1 到 ${max} 之间的整数`)
     }
@@ -1460,6 +1479,9 @@ onBeforeUnmount(() => {
 <style scoped src="../styles/configuration.css"></style>
 
 <style scoped>
+.udpxy-limits { width: 100%; }
+.udpxy-limits summary { cursor: pointer; margin-bottom: 12px; }
+[data-testid="udpxy-discovery"] :deep(.t-switch) { align-self: flex-start; }
 .fofa-balances { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .key-status { max-width: 100%; height: auto; white-space: normal; overflow-wrap: anywhere; }
 .key-test-report { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--td-component-stroke); overflow-wrap: anywhere; }

@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from test_fofa_api import Response, Session, scan_routes
+from test_fofa_api import Response, Session, scan_routes, load_scan_routes
 from flask import Flask
 from scanner_integration import config_bridge as config
 from scanner_integration.multicast_templates import (
@@ -12,7 +12,8 @@ from scanner_integration.multicast_templates import (
     parse_manual_proxies, parse_playlist, selected_templates, validate_config,
 )
 from scanner_integration.platforms import collector, udpxy
-from scanner_integration.platforms.shared import KeyDepletedError
+from scanner_integration.platforms import ip_extract, quake, fofa, hunter, daydaymap
+from scanner_integration.ip_scanner import IPScanner
 from scanner_integration.safe_http import SafeResponse
 
 
@@ -24,7 +25,7 @@ def settings(**overrides):
             'content': 'CCTV1,rtp://239.1.1.1:1234\nCCTV2,udp://239.1.1.2:1234\n广东卫视,rtp://239.1.1.3:1234',
         }],
         'multicast_proxy_urls': '广东,电信,http://8.8.8.8:4022',
-        'cost_saver_mode': True, 'quality_discovery_enabled': False,
+        'cost_saver_mode': True, 'quality_discovery_enabled': False, 'enable_c_scan': False,
         **overrides,
     })
 
@@ -83,7 +84,7 @@ class TemplateTests(unittest.TestCase):
     def test_validation_rejects_bad_templates_and_preserves_limits(self):
         validate_config(settings())
         for update in ({'multicast_enabled': 'false'}, {'multicast_max_proxies': 0},
-                       {'multicast_max_channels': True}, {'multicast_search_size': float('inf')},
+                       {'multicast_max_channels': True},
                        {'multicast_templates': [{}]}, {'multicast_templates': 'invalid'},
                        {'multicast_templates': settings()['multicast_templates'] * 2},
                        {'multicast_templates': [{'province': '广东', 'operator': '电信', 'content': 'CCTV1,https://example.com/a.m3u8'}]}):
@@ -109,47 +110,79 @@ class MulticastRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.stop.stop)
         self.log = MagicMock()
 
-    async def test_manual_discovery_is_bounded_and_preserves_source_without_quality(self):
-        cfg = settings(multicast_max_proxies=1, multicast_max_channels=2,
-                       multicast_proxy_urls='广东,电信,http://8.8.8.8:4022\n广东,电信,http://1.1.1.1:4022')
-        async def probe(proxy, *args):
-            return {**proxy, 'active_clients': None}
-        with patch.object(udpxy, 'probe_proxy', side_effect=probe) as checked, \
-             patch.object(collector, '_run_with_key_rotation', new_callable=AsyncMock) as search:
-            channels, rows = await udpxy.collect_multicast(cfg, [], ['广东'], session=Session(), log_fn=self.log)
-        search.assert_not_called()
-        self.assertEqual(1, checked.call_count)
-        self.assertEqual(2, len(channels))
-        self.assertEqual(2, rows[0]['extracted_channels'])
-        self.assertTrue(all(row['platform'] == 'UDPXY' and row['source_ip'] == '8.8.8.8' for row in channels))
+    async def playable(self, proxy, *args):
+        return {**proxy, 'active_clients': None}
+
+    async def test_shared_limits_deduplication_round_robin_and_provenance(self):
+        cfg = settings(multicast_max_proxies=2, multicast_max_channels=3)
+        discovery = udpxy.MulticastDiscovery(cfg, ['广东'])
+        with udpxy.discovery_source('Fofa', 'fofa-main', '广东'):
+            discovery.add('http://8.8.8.8:4022')
+            discovery.add('http://8.8.8.8:4022')
+        with udpxy.discovery_source('Hunter', 'hunter-main', '广东'):
+            discovery.add('http://1.1.1.1:4022')
+            discovery.add('http://9.9.9.9:4022')
+        with patch.object(udpxy, 'probe_proxy', side_effect=self.playable) as probe:
+            channels = await discovery.finish(Session())
+        self.assertEqual(2, probe.call_count)
+        self.assertEqual(3, len(channels))
+        self.assertEqual(['Fofa', 'Hunter', 'Fofa'], [row['platform'] for row in channels])
+        self.assertEqual(['fofa-main', 'hunter-main', 'fofa-main'], [row['yield_stat_key'] for row in channels])
         self.assertTrue(all('bandwidth' not in row and 'stability' not in row for row in channels))
-        self.assertTrue(all(row['url'].startswith('http://8.8.8.8:4022/') for row in channels))
 
-    async def test_disabled_stopped_or_out_of_scope_never_probes(self):
-        for cfg, platforms, provinces in ((settings(multicast_enabled=False), ['quake'], []),
-                                           (settings(), [], ['浙江'])):
-            with patch.object(udpxy, 'probe_proxy', new_callable=AsyncMock) as probe:
-                self.assertEqual(([], []), await udpxy.collect_multicast(cfg, platforms, provinces, session=Session(), log_fn=self.log))
-                probe.assert_not_called()
-        with patch.object(udpxy, '_is_stop_requested', return_value=True), \
-             patch.object(udpxy, 'probe_proxy', new_callable=AsyncMock) as probe:
-            channels, _ = await udpxy.collect_multicast(settings(), [], [], session=Session(), log_fn=self.log)
-            self.assertEqual([], channels)
-            probe.assert_not_called()
+    async def test_all_platform_adapters_use_common_udpxy_extraction(self):
+        adapters = [
+            ('Quake 360', quake.quake_scan, {'code': 0, 'data': [{'ip': '8.8.8.8', 'port': 4022}]}),
+            ('Hunter', hunter.hunter_scan, {'code': 200, 'data': {'arr': [{'ip': '8.8.8.8', 'port': 4022}]}}),
+            ('DayDayMap', daydaymap.daydaymap_scan, {'code': 200, 'data': {'list': [{'ip': '8.8.8.8', 'port': 4022}]}}),
+            ('Fofa', fofa.fofa_scan, {}),
+        ]
+        for name, adapter, payload in adapters:
+            with self.subTest(platform=name):
+                cfg = settings(enable_c_scan=False)
+                session = Session(Response(payload))
+                session.post = session.get
+                with patch.object(config, 'get_scan_config', return_value=cfg), \
+                     patch.object(fofa, 'request_fofa', new_callable=AsyncMock,
+                                  return_value={'results': [['8.8.8.8', 4022, '广东', '广州']]}), \
+                     patch('asyncio.sleep', new_callable=AsyncMock), \
+                     patch.object(udpxy, 'probe_proxy', side_effect=self.playable):
+                    with udpxy.multicast_run(cfg, ['广东']) as discovery:
+                        with udpxy.discovery_source(name, name, '广东', udpxy_only=True):
+                            stats = {}
+                            await adapter('test-key', 'query', 1, session=session, stats=stats)
+                        channels = await discovery.finish(session)
+                self.assertEqual(1, stats['api_items'])
+                self.assertEqual(3, len(channels))
+                self.assertTrue(all(row['platform'] == name for row in channels))
+                self.assertTrue(all(row['province'] == '广东' for row in channels))
 
-    async def test_quake_budget_is_shared_across_groups_and_platform_selection_is_respected(self):
+    async def test_regular_extraction_recognizes_status_even_with_cached_empty_result(self):
+        response = SafeResponse(200, {}, b'<title>udpxy status</title>', 'http://8.8.8.8/status', '8.8.8.8', 1)
+        with udpxy.multicast_run(settings(), ['广东']) as discovery, \
+             udpxy.discovery_source('Quake 360', 'quake-main'), \
+             patch.object(ip_extract, '_get_extract_cache', return_value=[]), \
+             patch.object(udpxy, 'safe_fetch', new_callable=AsyncMock, return_value=response) as fetch:
+            await ip_extract.extract_channels_from_ip('8.8.8.8', 4022, Session(), '广东', operator='中国电信')
+            await ip_extract.extract_channels_from_ip('8.8.8.8', 4022, Session(), '广东')
+        self.assertEqual(1, fetch.call_count)
+        self.assertEqual(1, len(discovery.proxies))
+        self.assertFalse(fetch.call_args.kwargs['max_redirects'])
+
+    async def test_disabled_unknown_region_filtered_region_and_private_hosts_do_not_expand(self):
         templates = settings()['multicast_templates']
         templates.append({**templates[0], 'province': '浙江'})
-        cfg = settings(multicast_quake_enabled=True, multicast_search_size=3,
-                       multicast_templates=templates, multicast_proxy_urls='')
-        with patch.object(collector, '_run_with_key_rotation', new_callable=AsyncMock, return_value=[]) as search:
-            await udpxy.collect_multicast(cfg, ['quake'], ['广东', '浙江'], session=Session(), log_fn=self.log)
-            self.assertEqual(3, sum(call.args[3] for call in search.call_args_list))
-            self.assertEqual(2, search.call_count)
-            self.assertTrue(all('isp:"电信"' in call.args[2] for call in search.call_args_list))
-            search.reset_mock()
-            await udpxy.collect_multicast(cfg, ['fofa'], [], session=Session(), log_fn=self.log)
-            search.assert_not_called()
+        for cfg, provinces, address, province in (
+            (settings(multicast_enabled=False), [], 'http://8.8.8.8', '广东'),
+            (settings(), ['浙江'], 'http://8.8.8.8', '广东'),
+            (settings(), ['广东'], 'http://127.0.0.1', '广东'),
+            (settings(multicast_templates=templates), [], 'http://8.8.8.8', ''),
+        ):
+            discovery = udpxy.MulticastDiscovery(cfg, provinces)
+            discovery.add(address, province)
+            with patch.object(udpxy, 'probe_proxy', side_effect=self.playable) as probe:
+                self.assertEqual([], await discovery.finish(Session()))
+                probe.assert_not_called()
 
     async def test_status_page_failure_still_checks_bounded_stream_samples(self):
         proxy = parse_manual_proxies(settings()['multicast_proxy_urls'])[0]
@@ -162,7 +195,7 @@ class MulticastRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, sample.call_count)
         self.assertEqual(0, fetch.call_args.kwargs['max_redirects'])
 
-    async def test_http_200_html_is_not_a_playable_proxy_and_stream_reads_are_bounded(self):
+    async def test_http_200_html_is_not_playable_and_stream_reads_are_bounded(self):
         for data, expected in ((b'<html>ok</html>' * 150, False), ((b'\x47' + bytes(187)) * 7, True)):
             response = Response({})
             response.content = MagicMock()
@@ -172,8 +205,10 @@ class MulticastRuntimeTests(unittest.IsolatedAsyncioTestCase):
             response.content.readexactly.assert_awaited_once_with(1316)
             self.assertFalse(session.calls[0][1]['allow_redirects'])
 
-    async def test_timeout_keeps_verified_proxies_and_cancels_unfinished_probes(self):
-        cfg = settings(multicast_proxy_urls='广东,电信,http://8.8.8.8\n广东,电信,http://1.1.1.1')
+    async def test_timeout_keeps_verified_proxies_and_cancels_pending_probes(self):
+        discovery = udpxy.MulticastDiscovery(settings(), ['广东'])
+        for host in ('8.8.8.8', '1.1.1.1'):
+            discovery.add('http://' + host)
         cancelled = asyncio.Event()
         async def probe(proxy, *args):
             if '8.8.8.8' in proxy['url']:
@@ -183,81 +218,137 @@ class MulticastRuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 cancelled.set()
         with patch.object(udpxy, 'probe_proxy', side_effect=probe), patch.object(udpxy, 'MAX_RUN_SECONDS', 0.02):
-            channels, _ = await udpxy.collect_multicast(cfg, [], [], session=Session(), log_fn=self.log)
+            channels = await discovery.finish(Session())
         self.assertEqual(3, len(channels))
         self.assertTrue(cancelled.is_set())
 
-    async def test_collector_allows_manual_only_run_without_search_keys(self):
-        cfg = settings()
+    async def test_stop_suppresses_expansion_and_context_is_reset(self):
+        stopped = False
+        with udpxy.multicast_run(settings(), ['广东'], stop_requested=lambda: stopped) as discovery:
+            discovery.add('http://8.8.8.8')
+            stopped = True
+            with patch.object(udpxy, 'probe_proxy', side_effect=self.playable) as probe:
+                self.assertEqual([], await discovery.finish(Session()))
+                probe.assert_not_called()
+        self.assertIsNone(udpxy.current_discovery())
+        with self.assertRaises(RuntimeError):
+            with udpxy.multicast_run(settings(), ['广东']):
+                raise RuntimeError('cancelled')
+        self.assertIsNone(udpxy.current_discovery())
+
+    async def test_collector_preserves_legacy_manual_proxies_without_search_keys(self):
         manager = MagicMock()
         manager.get_key.return_value = None
         manager.get_all_keys.return_value = []
-        async def probe(proxy, *args):
-            return {**proxy, 'active_clients': 0}
         with patch('scanner_integration.key_manager.KeyManager.instance', return_value=manager), \
-             patch.object(config, 'get_scan_config', return_value=cfg), \
+             patch.object(config, 'get_scan_config', return_value=settings()), \
              patch.object(collector, 'get_session', return_value=Session()), \
              patch.object(collector, '_is_stop_requested', return_value=False), \
-             patch.object(udpxy, 'probe_proxy', side_effect=probe):
+             patch.object(udpxy, 'probe_proxy', side_effect=self.playable):
             channels, platforms, rows = await collector.collect_all(log_fn=self.log)
         self.assertEqual(3, len(channels))
         self.assertEqual(['udpxy'], platforms)
         self.assertEqual(3, rows[0]['cleaned_channels'])
 
-    async def test_quake_endpoint_contract_and_partial_quota_results(self):
-        items = [{'ip': '8.8.8.8', 'port': 4022, 'location': {'city_cn': '广州'}}] * 50
-        session = Session(Response({'code': 0, 'data': items}), Response({'code': 400, 'message': '积分不足 secret'}))
-        session.post = session.get
-        async def read(response, limit):
-            return json.dumps(response.data).encode()
-        with patch.object(udpxy, 'read_response_limited', side_effect=read), \
-             patch('asyncio.sleep', new_callable=AsyncMock), self.assertRaises(KeyDepletedError) as raised:
-            await udpxy.search_quake_proxies('secret', 'udpxy', 60, session=session)
-        self.assertEqual(50, len(raised.exception.partial_entries))
-        self.assertNotIn('secret', str(raised.exception))
-        self.assertEqual([0, 50], [call[1]['json']['start'] for call in session.calls])
-        self.assertEqual([50, 10], [call[1]['json']['size'] for call in session.calls])
-        self.assertFalse(session.calls[0][1]['allow_redirects'])
-
-    async def test_multicast_failure_does_not_abort_other_collection_sources(self):
-        cfg = settings(enabled_platforms=['quake'])
+    async def test_collector_shares_profile_budget_and_updates_platform_yield(self):
+        cfg = settings(multicast_proxy_urls='', enabled_platforms=['fofa'], selected_provinces=['广东'],
+                       fofa_size=5, quality_discovery_enabled=True, quality_query_profile_size=12)
         manager = MagicMock()
-        manager.get_key.side_effect = lambda platform: 'key' if platform == 'quake' else None
-        manager.get_all_keys.side_effect = lambda platform: ['key'] if platform == 'quake' else []
-        channel = {'name': 'CCTV1', 'url': 'http://8.8.8.8/live.m3u8', 'province': '广东'}
+        manager.get_key.side_effect = lambda platform: 'key' if platform == 'fofa' else None
+        manager.get_all_keys.side_effect = lambda platform: ['key'] if platform == 'fofa' else []
+        async def scan(platform, func, query, target, **kwargs):
+            if udpxy.is_udpxy_query():
+                await ip_extract.extract_channels_from_ip('8.8.8.8', 4022, Session())
+            return []
         with patch('scanner_integration.key_manager.KeyManager.instance', return_value=manager), \
              patch.object(config, 'get_scan_config', return_value=cfg), \
              patch.object(collector, 'get_session', return_value=Session()), \
              patch.object(collector, '_is_stop_requested', return_value=False), \
-             patch.object(collector, 'collect_multicast', side_effect=RuntimeError('broken optional source')), \
-             patch.object(collector, '_run_with_key_rotation', new_callable=AsyncMock, return_value=[channel]):
-            channels, _, _ = await collector.collect_all(log_fn=self.log)
-        self.assertEqual(1, len(channels))
-        self.assertEqual('Quake 360', channels[0]['platform'])
+             patch.object(collector, '_run_with_key_rotation', side_effect=scan) as search, \
+             patch.object(udpxy, 'probe_proxy', side_effect=self.playable):
+            channels, platforms, rows = await collector.collect_all(log_fn=self.log)
+        self.assertEqual(5, search.call_args_list[0].args[3])
+        self.assertEqual(12, sum(call.args[3] for call in search.call_args_list[1:]))
+        self.assertTrue(all(call.args[0] == 'fofa' for call in search.call_args_list))
+        self.assertEqual(['fofa'], platforms)
+        self.assertEqual(3, len(channels))
+        self.assertTrue(all(row['platform'] == 'Fofa' for row in channels))
+        row = next(row for row in rows if row['profile'] == 'udpxy')
+        self.assertEqual(3, row['extracted_channels'])
+        self.assertEqual(3, row['cleaned_channels'])
 
-    async def test_key_rotation_resumes_pagination_without_repeating_paid_rows(self):
-        items = [{'ip': '8.8.8.8', 'port': 4022}] * 50
-        session = Session(Response({'code': 0, 'data': items}),
-                          Response({'code': 400, 'message': '积分不足'}),
-                          Response({'code': 0, 'data': items[:10]}))
-        session.post = session.get
-        manager = MagicMock()
-        manager.get_all_keys.return_value = ['first', 'second']
-        manager.get_credits_info.return_value = {}
-        stats = {}
-        async def read(response, limit):
-            return json.dumps(response.data).encode()
-        with patch('scanner_integration.key_manager.KeyManager.instance', return_value=manager), \
-             patch.object(udpxy, 'read_response_limited', side_effect=read), \
-             patch('asyncio.sleep', new_callable=AsyncMock):
-            proxies = await collector._run_with_key_rotation(
-                'quake', udpxy.search_quake_proxies, 'udpxy', 60, session=session, stats=stats, cursor={})
-        self.assertEqual(60, len(proxies))
-        self.assertEqual(60, stats['api_items'])
-        self.assertEqual([0, 50, 50], [call[1]['json']['start'] for call in session.calls])
+    async def test_manual_ip_scan_uses_templates_without_root_page_or_api_keys(self):
+        scanner = IPScanner({'scan_config': settings(multicast_enabled=False),
+                             'multicast_province': '广东', 'multicast_operator': '电信'})
+        with patch.object(udpxy, 'probe_proxy', side_effect=self.playable), \
+             patch('scanner_integration.network.get_session', return_value=Session()), \
+             patch('scanner_integration.ip_scanner.safe_fetch', new_callable=AsyncMock) as root_fetch:
+            results = await scanner.scan_targets('8.8.8.8:4022', ['MULTICAST'], [80])
+        root_fetch.assert_not_called()
+        self.assertEqual(3, results[0]['channel_count'])
+        self.assertTrue(results[0]['alive'])
+        self.assertEqual('MULTICAST', results[0]['scan_type_matched'])
+        self.assertTrue(all(row['url'].startswith('http://8.8.8.8:4022/')
+                            for row in json.loads(results[0]['channels_json'])))
+
+    async def test_broken_proxy_is_isolated_from_other_results(self):
+        discovery = udpxy.MulticastDiscovery(settings(), ['广东'])
+        discovery.add('http://8.8.8.8')
+        discovery.add('http://1.1.1.1')
+        async def probe(proxy, *args):
+            if '8.8.8.8' in proxy['url']:
+                raise RuntimeError('malformed endpoint')
+            return {**proxy, 'active_clients': 0}
+        with patch.object(udpxy, 'probe_proxy', side_effect=probe):
+            channels = await discovery.finish(Session())
+        self.assertEqual(3, len(channels))
+        self.assertTrue(all(row['source_ip'] == '1.1.1.1' for row in channels))
+
+    async def test_all_manual_scan_obeys_disabled_switch(self):
+        scanner = IPScanner({'scan_config': settings(multicast_enabled=False)})
+        response = SafeResponse(404, {}, b'', 'http://8.8.8.8/', '8.8.8.8', 1)
+        with patch.object(udpxy, 'probe_proxy', side_effect=self.playable) as probe, \
+             patch('scanner_integration.network.get_session', return_value=Session()), \
+             patch('scanner_integration.ip_scanner.safe_fetch', new_callable=AsyncMock, return_value=response):
+            results = await scanner.scan_targets('8.8.8.8:4022', ['ALL'], [80])
+        probe.assert_not_called()
+        self.assertEqual(0, results[0]['channel_count'])
 
 
 class MulticastConfigAPITests(unittest.TestCase):
+    def test_manual_route_validates_and_passes_template_scope(self):
+        ip_scan = load_scan_routes('web.routes.ip_scan')
+        app = Flask(__name__)
+        app.register_blueprint(ip_scan.ip_scan_bp)
+        scanner = MagicMock()
+        scanner.trigger_ip_scan.return_value = {'ok': True, 'task': {'task_id': 'test-scan'}}
+        with patch.object(ip_scan, '_ensure_ip_scan_bridge', return_value=(scanner, None, None)):
+            response = app.test_client().post('/api/ip-scan/trigger', json={
+                'targets': '8.8.8.8:4022', 'scan_types': ['MULTICAST'],
+                'multicast_province': '广东省', 'multicast_operator': '中国电信',
+            })
+            self.assertEqual(202, response.status_code)
+            self.assertEqual('广东', scanner.trigger_ip_scan.call_args.kwargs['multicast_province'])
+            self.assertEqual('电信', scanner.trigger_ip_scan.call_args.kwargs['multicast_operator'])
+            scanner.reset_mock()
+            response = app.test_client().post('/api/ip-scan/trigger', json={
+                'targets': '8.8.8.8:4022', 'multicast_province': '未知省份',
+            })
+            self.assertEqual(400, response.status_code)
+            scanner.trigger_ip_scan.assert_not_called()
+
+    def test_upgrade_removes_independent_search_controls_and_keeps_templates_and_seeds(self):
+        cfg = settings(multicast_search_size=60, multicast_quake_enabled=False)
+        self.assertNotIn('multicast_search_size', cfg)
+        self.assertNotIn('multicast_quake_enabled', cfg)
+        self.assertTrue(cfg['multicast_proxy_urls'])
+        self.assertTrue(cfg['multicast_templates'])
+        for platform, query in config.build_search_queries(cfg).items():
+            self.assertIn('udpxy', query)
+        for query in config.build_search_queries({**cfg, 'multicast_enabled': False}).values():
+            self.assertNotIn('udpxy', query)
+
+
     def test_invalid_template_returns_400_without_persisting(self):
         app = Flask(__name__)
         app.register_blueprint(scan_routes.scan_bp)

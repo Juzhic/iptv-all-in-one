@@ -73,7 +73,8 @@ async def hunter_scan(api_key, query, target_size, session=None, stats=None):
                     ch = await extract_channels_from_ip(
                         item.get("ip"), item.get("port", 8080), session,
                         (item.get("province", "") or (item.get("location", {}) or {}).get("province_cn", "")),
-                        (item.get("city", "") or (item.get("location", {}) or {}).get("city_cn", ""))
+                        (item.get("city", "") or (item.get("location", {}) or {}).get("city_cn", "")),
+                        operator=item.get('isp', ''),
                     )
                     if ch:
                         collected_success.append((item.get("ip"), item.get("port", 8080)))

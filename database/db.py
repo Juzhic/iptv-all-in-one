@@ -4173,8 +4173,10 @@ def delete_persistent_by_threshold(threshold):
             "UPDATE persistent_scan_results SET deleted_at = %s WHERE consecutive_failures >= %s AND deleted_at IS NULL",
             (now, threshold)
         )
+        # commit() closes the cursor and invalidates its rowcount.
+        deleted = cursor.rowcount
         conn.commit()
-        return cursor.rowcount
+        return deleted
 
 
 def get_deleted_persistent_for_resurrection(limit=100):

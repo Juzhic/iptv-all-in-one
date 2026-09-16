@@ -18,9 +18,10 @@ from .shared import (
     _parse_channels_payload, _extract_cache_key, _get_extract_cache,
     _set_extract_cache, _stats_add,
 )
+from .udpxy import current_discovery, is_udpxy_query, current_source_key
 
 
-async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5, *, include_fallback_ports=True):
+async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=5, *, include_fallback_ports=True, operator=''):
     """探测单个 IP 的常见 IPTV 接口，提取频道列表。"""
     # SSRF protection: reject private/internal IPs
     try:
@@ -28,6 +29,14 @@ async def extract_channels_from_ip(ip, port, session, prov="", city="", timeout=
         if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
             return []
     except ValueError:
+        return []
+
+    url_ip = f'[{ip}]' if addr.version == 6 else ip
+    discovery = current_discovery()
+    if discovery and is_udpxy_query():
+        await discovery.offer(f'http://{url_ip}:{port}', prov, operator, city, direct=True)
+        return []
+    if discovery and await discovery.offer(f'http://{url_ip}:{port}', prov, operator, city):
         return []
 
     cache_key = _extract_cache_key(ip, port, timeout)
@@ -249,6 +258,11 @@ def end_c_segment_budget(token):
     _c_segment_budget_context.reset(token)
 
 
+def get_c_segment_budget(scan_config=None):
+    """Reuse the active run's budget for ordinary interfaces and UDPXY alike."""
+    return _c_segment_budget_context.get() or CScanBudget(scan_config)
+
+
 async def smart_c_segment_scan(successful_ips, session, stats=None, source_key=None):
     """基于已成功 IP 智能扫描邻近 C 段。"""
     if not config_bridge.get_scan_config().get("enable_c_scan"):
@@ -266,8 +280,8 @@ async def smart_c_segment_scan(successful_ips, session, stats=None, source_key=N
         (segment, port, _pick_c_segment_ips(ip, cs_limit))
         for (segment, port), (ip, _port) in segs.items()
     ]
-    budget = _c_segment_budget_context.get() or CScanBudget(scan_config)
-    source_key = source_key or (id(stats) if isinstance(stats, dict) else 'standalone')
+    budget = get_c_segment_budget(scan_config)
+    source_key = source_key or current_source_key() or (id(stats) if isinstance(stats, dict) else 'standalone')
     all_ip, summary = await budget.reserve(source_key, plans)
     _stats_add(stats, 'c_segment_segments', summary['segments'])
     _stats_add(stats, 'c_segment_ips', summary['ips'])

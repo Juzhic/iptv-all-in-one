@@ -1652,7 +1652,8 @@ async def _run_leased_ip_scan(task_id, owner, operation):
 
 
 async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
-                      http_concurrent, timeout, task_id=None):
+                      http_concurrent, timeout, task_id=None, multicast_province='',
+                      multicast_operator='', scan_config=None):
     """执行IP扫描的核心协程。"""
     import database as _db
     from .ip_scanner import IPScanner
@@ -1701,6 +1702,9 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
             'rate_limit': rate_limit,
             'http_concurrent': http_concurrent,
             'timeout': timeout,
+            'multicast_province': multicast_province,
+            'multicast_operator': multicast_operator,
+            'scan_config': scan_config,
         })
         _set_active_ip_scanner(scanner, task_id)
         
@@ -1820,7 +1824,7 @@ async def _do_ip_scan(targets, scan_types, ports, workers, rate_limit,
 
 
 def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000, 
-                    http_concurrent=50, timeout=3600):
+                    http_concurrent=50, timeout=3600, multicast_province='', multicast_operator=''):
     """触发一次IP扫描。"""
     import database as _db
     from .ip_scanner import IPScanner, IPScanInputError
@@ -1833,6 +1837,8 @@ def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000,
     }
     try:
         IPScanner(config).validate_request(targets, ports)
+        from .config_bridge import get_scan_config
+        scan_config = get_scan_config()
     except (IPScanInputError, ValueError) as exc:
         return {'ok': False, 'error': str(exc), 'code': 'invalid_input'}
 
@@ -1857,6 +1863,9 @@ def trigger_ip_scan(targets, scan_types, ports, workers=16, rate_limit=5000,
         http_concurrent=http_concurrent,
         timeout=timeout,
         task_id=task_id,
+        multicast_province=multicast_province,
+        multicast_operator=multicast_operator,
+        scan_config=scan_config,
     )
     try:
         _submit_managed_background(

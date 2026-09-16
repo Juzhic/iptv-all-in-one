@@ -28,7 +28,7 @@ from .jsmpeg import jsmpeg_streamer_scan
 from .ddgs import ddgs_scan
 from .tvheadend import tvheadend_scan
 from .iptv_interactive import iptv_interactive_scan
-from .udpxy import collect_multicast
+from .udpxy import multicast_run, discovery_source
 
 
 async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwargs):
@@ -81,7 +81,7 @@ async def _run_with_key_rotation(platform, scan_func, *args, session=None, **kwa
 
 
 # ---------- 主收集函数（串行化平台，JSMpeg 全国扫描一次） ----------
-async def collect_all(size=None, log_fn=None, platforms_override=None, provinces_override=None):
+async def _collect_all(scan_cfg, discovery, size=None, log_fn=None, platforms_override=None, provinces_override=None):
     """采集所有平台的 IPTV 频道。
     返回 (clean_channels, actual_platforms) 元组。
     log_fn: 可选的日志回调函数，用于将进度写入前端扫描日志。"""
@@ -91,7 +91,6 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
             log_fn(msg)
     from ..key_manager import KeyManager
     km = KeyManager.instance()
-    scan_cfg = config_bridge.get_scan_config()
     search_queries = config_bridge.build_search_queries(scan_cfg)
 
     quake_key = km.get_key('quake')
@@ -188,18 +187,10 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         _log("[采集] 未启用任何平台且无 Hunter Key，请检查配置")
         return [], [], []
 
-    c_segment_budget_token = begin_c_segment_budget(scan_cfg)
     all_raw = []
     yield_stats = []
     async with get_session(limit=30, force_close=True) as scan_session:
-        if scan_cfg.get('multicast_enabled') and not _is_stop_requested():
-            try:
-                multicast_channels, multicast_stats = await collect_multicast(
-                    scan_cfg, enabled_platforms, selected_provs, session=scan_session, log_fn=_log)
-                all_raw.extend(multicast_channels)
-                yield_stats.extend(multicast_stats)
-            except Exception as error:
-                _log(f'[组播] 采集异常（{type(error).__name__}），继续其他采集来源')
+        discovery.add_legacy_proxies(scan_cfg)
         for prov_idx, prov in enumerate(selected_provs, 1):
             if len(selected_provs) > 1:
                 _log(f"[采集] === 省份 ({prov_idx}/{len(selected_provs)}): {prov or '全国'} ===")
@@ -244,7 +235,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 _log(f"[采集] ({len(all_raw)}条) 并行扫描: {labels}...")
                 async def _run_and_tag(stat_key, name, platform_key, profile, profile_label, stat_prov, coro, stats):
                     try:
-                        result = await coro
+                        with discovery_source(name, stat_key, stat_prov):
+                            result = await coro
                         for ch in result:
                             ch['platform'] = name
                             ch['yield_stat_key'] = stat_key
@@ -281,7 +273,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                     quality_platforms = list(enabled_platforms)
             enabled_profiles = [
                 profile for profile in QUALITY_QUERY_PROFILES
-                if not enabled_profile_names or profile["name"] in enabled_profile_names
+                if (not enabled_profile_names or profile["name"] in enabled_profile_names)
+                and (profile["name"] != "udpxy" or scan_cfg.get("multicast_enabled"))
             ]
             if quality_platforms and enabled_profiles:
                 _log(
@@ -325,7 +318,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 async def _run_quality_profile(stat_key, log_name, platform_name, platform_key, profile_name, profile_label, stat_prov, coro, stats):
                     async with profile_sem:
                         try:
-                            result = await coro
+                            with discovery_source(platform_name, stat_key, stat_prov, udpxy_only=profile_name == 'udpxy'):
+                                result = await coro
                             for ch in result:
                                 ch['platform'] = platform_name
                                 ch['discovery_profile'] = log_name
@@ -381,7 +375,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
             _log(f"[采集] ({len(all_raw)}条) 并行扫描独立平台: {', '.join(n for n, _ in independent_tasks)}...")
             async def _run_independent(name, coro):
                 try:
-                    result = await asyncio.wait_for(coro, timeout=PLATFORM_TIMEOUT)
+                    with discovery_source(name, _yield_stat_key('supplemental', name)):
+                        result = await asyncio.wait_for(coro, timeout=PLATFORM_TIMEOUT)
                     for ch in result:
                         if name == 'JSMpeg':
                             ch['platform'] = ch.pop('scan_source', 'Quake 360')
@@ -411,7 +406,8 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 for ent in domain_entries:
                     ip = ent['ip']
                     for port in scan_ports:
-                        ch = await extract_channels_from_ip(ip, port, scan_session)
+                        with discovery_source('域名/IP', _yield_stat_key('supplemental', 'domain_ip')):
+                            ch = await extract_channels_from_ip(ip, port, scan_session)
                         if ch:
                             for c in ch:
                                 c['platform'] = '域名/IP'
@@ -420,6 +416,25 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
                 _log(f"[采集] 域名/IP补探测完成，累计 {len(all_raw)} 条")
             except Exception as e:
                 _log(f"[采集] 域名/IP补探测失败: {e}")
+
+        multicast_channels = await discovery.finish(scan_session, expand_c_segments=True)
+        all_raw.extend(multicast_channels)
+        counts = {}
+        for channel in multicast_channels:
+            key = channel.get('yield_stat_key')
+            counts[key] = counts.get(key, 0) + 1
+        for row in yield_stats:
+            row['extracted_channels'] += counts.pop(row['stat_key'], 0)
+        for key, count in counts.items():
+            source = next(channel['platform'] for channel in multicast_channels
+                          if channel.get('yield_stat_key') == key)
+            legacy = source == 'UDPXY'
+            yield_stats.append(_build_yield_stat(key, 'manual' if legacy else 'supplemental',
+                                                'udpxy' if legacy else source, 'udpxy',
+                                                'UDPXY 已保存代理' if legacy else 'UDPXY 组播', '', {}, count))
+        for row in yield_stats:
+            for field, value in discovery.expansion_stats.get(row['stat_key'], {}).items():
+                row[field] = row.get(field, 0) + value
 
     clean = []
     invalid_url_count = 0
@@ -447,7 +462,7 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
     actual_platforms = []
     if ddgs_enabled:
         actual_platforms.append('ddgs')
-    if scan_cfg.get('multicast_enabled'):
+    if any(channel.get('platform') == 'UDPXY' for channel in multicast_channels):
         actual_platforms.append('udpxy')
     if enabled_platforms:
         actual_platforms.extend(enabled_platforms)
@@ -467,5 +482,18 @@ async def collect_all(size=None, log_fn=None, platforms_override=None, provinces
         stat_key = row.get('stat_key')
         row['cleaned_channels'] = clean_counts.get(stat_key, 0)
     _log(f"[采集] 全部平台采集完成，原始 {len(all_raw)} 条，清洗后 {len(clean)} 条")
-    end_c_segment_budget(c_segment_budget_token)
     return clean, actual_platforms, yield_stats
+
+
+async def collect_all(size=None, log_fn=None, platforms_override=None, provinces_override=None):
+    cfg = config_bridge.get_scan_config()
+    provinces = provinces_override if provinces_override is not None else cfg.get('selected_provinces', [])
+    if isinstance(provinces, str):
+        provinces = [provinces]
+    provinces = provinces or [cfg.get('province', '')]
+    budget_token = begin_c_segment_budget(cfg)
+    try:
+        with multicast_run(cfg, provinces, log_fn) as discovery:
+            return await _collect_all(cfg, discovery, size, log_fn, platforms_override, provinces_override)
+    finally:
+        end_c_segment_budget(budget_token)

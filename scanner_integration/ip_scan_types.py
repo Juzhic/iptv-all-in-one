@@ -47,7 +47,8 @@ SCAN_TYPES = {
         ]
     },
     "MULTICAST": {
-        "name": "组播地址",
+        "name": "UDPXY 组播",
+        "description": "使用省份/运营商模板验证 UDPXY 并展开候选频道",
         "check_type": "multicast",
         "paths": [
             "/udpxy/chanlist",

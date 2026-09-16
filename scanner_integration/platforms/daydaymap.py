@@ -62,7 +62,8 @@ async def daydaymap_scan(api_key, query, target_size, session=None, stats=None):
                                 all_items.append({
                                     "ip": ip, "port": port,
                                     "province": (item.get("province", "") or (item.get("location", {}) or {}).get("province_cn", "")),
-                                    "city": (item.get("city", "") or (item.get("location", {}) or {}).get("city_cn", ""))
+                                    "city": (item.get("city", "") or (item.get("location", {}) or {}).get("city_cn", "")),
+                                    "operator": item.get('isp', ''),
                                 })
                         _stats_set(stats, 'probed_hosts', len(all_items))
                         if len(items) < size:
@@ -91,7 +92,7 @@ async def daydaymap_scan(api_key, query, target_size, session=None, stats=None):
     entries, success = [], []
 
     async def f(item):
-        ch = await extract_channels_from_ip(item["ip"], item["port"], session, item["province"], item["city"])
+        ch = await extract_channels_from_ip(item["ip"], item["port"], session, item["province"], item["city"], operator=item['operator'])
         if ch:
             success.append((item["ip"], item["port"]))
         return ch
