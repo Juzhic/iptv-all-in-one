@@ -40,7 +40,7 @@ describe('tested subscription playlist', () => {
     expect(() => playbackSource(url)).toThrow()
   })
 
-  it('explains mixed content before starting a connection', () => {
-    expect(() => playbackSource('http://tv.test/live', 'auto', 'https:')).toThrow('HTTPS')
+  it('accepts HTTP sources for server-side proxy playback', () => {
+    expect(playbackSource('http://tv.test/live')).toEqual({ url: 'http://tv.test/live', type: 'hls' })
   })
 })

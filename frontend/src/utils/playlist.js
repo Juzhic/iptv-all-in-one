@@ -28,12 +28,11 @@ function decodeAttribute(value) {
   return value.replace(/&(?:quot|lt|gt|amp|#x27|#39);/g, (entity) => entities[entity])
 }
 
-export function playbackSource(raw, mode = 'auto', pageProtocol = window.location.protocol) {
+export function playbackSource(raw, mode = 'auto') {
   let url
   try { url = new URL(raw) } catch { throw new Error('线路地址无效，请切换线路。') }
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('浏览器不支持此协议，请复制线路地址到外部播放器。')
   if (url.username || url.password) throw new Error('此线路需要地址内认证，请使用外部播放器。')
-  if (pageProtocol === 'https:' && url.protocol === 'http:') throw new Error('当前页面为 HTTPS，浏览器会拦截 HTTP 线路，请选择 HTTPS 线路或使用外部播放器。')
   const path = url.pathname.toLowerCase()
   const type = mode !== 'auto' ? mode
     : /\.flv$/.test(path) ? 'flv'

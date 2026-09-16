@@ -53,6 +53,8 @@ def _public_scan_config(cfg):
             count = 1
         key_status[platform] = {'has_keys': count > 0, 'count': count}
     public['key_status'] = key_status
+    from scanner_integration.multicast_templates import builtin_catalog
+    public['multicast_builtin_catalog'] = builtin_catalog()
     return public
 
 
@@ -61,7 +63,7 @@ def _strip_scan_secret_updates(data):
         return {}
     return {
         key: value for key, value in data.items()
-        if not _is_scan_secret_field(str(key))
+        if not _is_scan_secret_field(str(key)) and key != 'multicast_builtin_catalog'
     }
 
 
@@ -374,6 +376,8 @@ def api_scan_config_set():
                 logger.warning(f"[ScanConfig] 重载定时扫描配置失败: {e}")
         cfg = get_scan_config()
         return jsonify({'ok': True, 'data': _public_scan_config(cfg)})
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
     except Exception as e:
         return jsonify({'ok': False, 'error': f'保存失败: {e}'}), 500
 
